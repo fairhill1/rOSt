@@ -1,0 +1,14 @@
+[build]
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+rustflags = [
+    "-C", "link-arg=-Tlinker.ld",
+    "-C", "relocation-model=static",
+]
+
+# UEFI target configuration
+[target.aarch64-unknown-uefi]
+rustflags = [
+    "-C", "target-feature=+strict-align",
+]

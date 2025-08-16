@@ -1,0 +1,20 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# UEFI disk directory (contains built binaries)
+/uefi_disk/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
