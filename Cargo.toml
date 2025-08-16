@@ -1,0 +1,24 @@
+[package]
+name = "rust_os"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+
+[[bin]]
+name = "uefi_boot"
+path = "src/uefi_main.rs"
+
+[dependencies]
+linked_list_allocator = "0.10.5"
+uefi = { version = "0.35.0", features = ["alloc"] }
+
+[profile.release]
+opt-level = 2
+lto = true
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
