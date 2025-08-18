@@ -25,21 +25,36 @@ The EDK2 firmware files are already available in your QEMU installation.
 ```bash
 qemu-system-aarch64 \
     -M virt \
-    -cpu cortex-a72 \
+    -cpu cortex-a57 \
     -m 1G \
-    -bios /opt/homebrew/Cellar/qemu/10.0.3/share/qemu/edk2-aarch64-code.fd \
+    -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
     -device virtio-gpu-pci \
     -device qemu-xhci \
-    -device usb-kbd \
-    -device usb-mouse \
+    -device usb-tablet \
     -drive format=raw,file=fat:rw:uefi_disk \
     -serial stdio
 ```
 
-### Step 3: Create UEFI disk structure
+### Step 3: Build and test the kernel
 ```bash
-mkdir -p uefi_disk/EFI/BOOT
-cp target/aarch64-unknown-uefi/release/uefi_boot.efi uefi_disk/EFI/BOOT/BOOTAA64.EFI
+# Build the UEFI bootloader with kernel
+cargo build --target aarch64-unknown-uefi --release --bin uefi_boot
+
+# Copy to UEFI disk and run
+cp target/aarch64-unknown-uefi/release/uefi_boot.efi uefi_disk/EFI/BOOT/BOOTAA64.EFI && \
+qemu-system-aarch64 \
+    -nodefaults \
+    -M virt \
+    -cpu cortex-a57 \
+    -m 1G \
+    -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+    -device ramfb \
+    -display cocoa \
+    -device qemu-xhci \
+    -device usb-tablet \
+    -drive format=raw,file=fat:rw:uefi_disk \
+    -serial stdio \
+    -fw_cfg "name=opt/org.tianocore/X-Cpuhp-Bugcheck-Override,string=yes"
 ```
 
 This will boot our UEFI application which initializes graphics properly!

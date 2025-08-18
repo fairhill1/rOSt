@@ -4,16 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "kernel"
-path = "src/main.rs"
-
-[[bin]]
 name = "uefi_boot"
-path = "src/uefi_main.rs"
+path = "src/uefi_boot.rs"
 
 [dependencies]
 linked_list_allocator = "0.10.5"
-uefi = { version = "0.35.0", features = ["alloc"] }
 
 [profile.release]
 opt-level = 2
