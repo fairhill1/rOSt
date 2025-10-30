@@ -109,6 +109,28 @@ pub fn alloc_physical_page() -> Option<u64> {
     }
 }
 
+/// Allocate multiple contiguous physical pages (4KB each)
+pub fn allocate_pages(num_pages: usize) -> Option<u64> {
+    if num_pages == 0 {
+        return None;
+    }
+    
+    unsafe {
+        if !PHYS_MEM_ALLOCATOR.initialized {
+            return None;
+        }
+        
+        let total_size = num_pages * 4096;
+        if PHYS_MEM_ALLOCATOR.next_free_page + total_size as u64 >= PHYS_MEM_ALLOCATOR.memory_end {
+            return None;
+        }
+        
+        let base_addr = PHYS_MEM_ALLOCATOR.next_free_page;
+        PHYS_MEM_ALLOCATOR.next_free_page += total_size as u64;
+        Some(base_addr)
+    }
+}
+
 /// Page table structures for ARM64
 #[repr(C, align(4096))]
 pub struct PageTable {
