@@ -16,6 +16,9 @@ pub mod interrupts;
 pub mod framebuffer;
 pub mod pci;
 pub mod virtio_gpu;
+pub mod ehci_usb;
+pub mod usb_hid;
+pub mod ps2_keyboard;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]
@@ -31,6 +34,32 @@ fn uart_write_string(s: &str) {
     for byte in s.bytes() {
         unsafe {
             core::ptr::write_volatile(UART_BASE as *mut u8, byte);
+        }
+    }
+}
+
+// Simple hex printing for debug
+fn print_hex_simple(n: u64) {
+    let hex_chars = b"0123456789ABCDEF";
+    if n == 0 {
+        uart_write_string("0");
+        return;
+    }
+    
+    let mut buffer = [0u8; 16];
+    let mut i = 0;
+    let mut num = n;
+    
+    while num > 0 && i < 16 {
+        buffer[i] = hex_chars[(num % 16) as usize];
+        num /= 16;
+        i += 1;
+    }
+    
+    // Print in reverse order
+    for j in 0..i {
+        unsafe {
+            core::ptr::write_volatile(0x09000000 as *mut u8, buffer[i - 1 - j]);
         }
     }
 }
@@ -254,6 +283,37 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Set up timer
     interrupts::init_timer();
     uart_write_string("Timer: OK\r\n");
+    
+    // Initialize USB input devices using clean EHCI implementation
+    uart_write_string("Initializing USB input devices...\r\n");
+    
+    // Try EHCI USB controller - real hardware communication only
+    let usb_controller = if let Some(controller_addr) = ehci_usb::find_ehci_in_device_tree() {
+        if let Some(ehci) = ehci_usb::EhciController::create_ehci_from_device_tree(controller_addr) {
+            uart_write_string("EHCI controller initialized - scanning for input devices\r\n");
+            
+            // Scan for connected USB devices (keyboards, mice, etc.)
+            ehci.scan_ports();
+            
+            // Initialize interrupt-driven USB HID system for GUI keyboard input
+            usb_hid::init_usb_hid();
+            uart_write_string("GUI keyboard input system ready!\r\n");
+            Some(ehci)
+        } else {
+            uart_write_string("EHCI controller initialization failed\r\n");
+            None
+        }
+    } else {
+        uart_write_string("No EHCI controller found in device tree\r\n");
+        uart_write_string("Trying XHCI or interrupt-based input system...\r\n");
+        None
+    };
+    
+    // Initialize interrupt-based input system regardless of USB controller detection
+    uart_write_string("Initializing interrupt-based input system...\r\n");
+    usb_hid::init_usb_hid();
+    uart_write_string("Input system ready for GUI keyboard events!\r\n");
+    
     uart_write_string("Kernel initialization complete!\r\n");
     
     // Clean stable loop - no framebuffer interference
@@ -265,11 +325,16 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     uart_write_string("- Red, Green, Blue squares\r\n");
     uart_write_string("Check the QEMU display window!\r\n");
     
-    // Stable infinite loop - no flashing or interference  
+    // Main kernel loop - actively poll for USB input while keeping graphics stable
+    uart_write_string("Starting main kernel loop with USB input polling...\r\n");
+    
     loop {
-        // Just a quiet loop - let VirtIO-GPU graphics stay visible
-        unsafe {
-            core::arch::asm!("wfe"); // Wait for event - power efficient
+        // Poll for USB HID input events from GUI window
+        usb_hid::test_input_events();
+        
+        // Small delay to prevent CPU overload
+        for _ in 0..10000 {
+            unsafe { core::arch::asm!("nop"); }
         }
     }
 }

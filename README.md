@@ -50,8 +50,10 @@ qemu-system-aarch64 \
     -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
     -device ramfb \
     -display cocoa \
-    -device qemu-xhci \
-    -device usb-tablet \
+    -usb \
+    -device usb-ehci,id=ehci \
+    -device usb-kbd,bus=ehci.0 \
+    -device usb-tablet,bus=ehci.0 \
     -drive format=raw,file=fat:rw:uefi_disk \
     -serial stdio \
     -fw_cfg "name=opt/org.tianocore/X-Cpuhp-Bugcheck-Override,string=yes"

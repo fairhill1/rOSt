@@ -3,7 +3,10 @@
     "allow": [
       "Bash(cargo new:*)",
       "Bash(cargo build:*)",
-      "Bash(cp:*)"
+      "Bash(cp:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []

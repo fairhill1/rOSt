@@ -30,6 +30,19 @@ pub struct PciDevice {
     pub device_id: u16,
     pub class_code: u32,
     pub bar0: u32,
+    pub device_info: PciDeviceInfo,
+}
+
+#[derive(Clone, Debug)]
+pub struct PciDeviceInfo {
+    pub bus: u8,
+    pub device: u8,
+    pub function: u8,
+    pub vendor_id: u16,
+    pub device_id: u16,
+    pub class_code: u8,
+    pub subclass: u8,
+    pub prog_if: u8,
 }
 
 pub struct PciConfig {
@@ -85,6 +98,17 @@ impl PciDevice {
         let class_code = config.read_u32(bus, device, function, PCI_CLASS_CODE);
         let bar0 = config.read_u32(bus, device, function, PCI_BAR0);
 
+        let device_info = PciDeviceInfo {
+            bus,
+            device,
+            function,
+            vendor_id,
+            device_id,
+            class_code: (class_code >> 24) as u8,
+            subclass: ((class_code >> 16) & 0xFF) as u8,
+            prog_if: ((class_code >> 8) & 0xFF) as u8,
+        };
+
         Some(PciDevice {
             bus,
             device,
@@ -93,6 +117,7 @@ impl PciDevice {
             device_id,
             class_code,
             bar0,
+            device_info,
         })
     }
 
@@ -250,4 +275,16 @@ pub fn print_pci_devices() {
     
     // For now, just count devices since we can't easily print after UEFI exit
     let _device_count = devices.len();
+}
+
+/// Enumerate all PCI devices and return with device info
+pub fn enumerate_pci_devices() -> alloc::vec::Vec<PciDevice> {
+    scan_pci_bus()
+}
+
+impl PciDevice {
+    /// Enable bus mastering for the device
+    pub fn enable_bus_master(&self) {
+        self.enable_bus_mastering();
+    }
 }
