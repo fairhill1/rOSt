@@ -528,8 +528,8 @@ impl WindowManager {
         false
     }
 
-    /// Handle mouse drag (while button is held)
-    pub fn handle_mouse_drag(&mut self, x: i32, y: i32) {
+    /// Handle mouse drag (while button is held) - returns true if selection changed
+    pub fn handle_mouse_drag(&mut self, x: i32, y: i32) -> bool {
         // Check if we're dragging in an editor window
         for i in (0..self.windows.len()).rev() {
             if self.windows[i].content == WindowContent::Editor && self.windows[i].is_focused {
@@ -541,12 +541,13 @@ impl WindowManager {
                     let instance_id = self.windows[i].instance_id;
 
                     if let Some(editor) = crate::kernel::editor::get_editor(instance_id) {
-                        editor.handle_mouse_drag(relative_x, relative_y);
+                        return editor.handle_mouse_drag(relative_x, relative_y);
                     }
-                    return;
+                    return false;
                 }
             }
         }
+        false
     }
 
     /// Handle mouse up (button release)
@@ -648,10 +649,12 @@ pub fn handle_mouse_down(x: i32, y: i32) -> bool {
     }
 }
 
-pub fn handle_mouse_drag(x: i32, y: i32) {
+pub fn handle_mouse_drag(x: i32, y: i32) -> bool {
     unsafe {
         if let Some(ref mut wm) = WINDOW_MANAGER {
-            wm.handle_mouse_drag(x, y);
+            wm.handle_mouse_drag(x, y)
+        } else {
+            false
         }
     }
 }

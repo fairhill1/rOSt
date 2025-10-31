@@ -452,6 +452,12 @@ pub fn test_input_events() -> (bool, bool) {
                                 editor.paste();
                             }
                             needs_full_redraw = true;
+                        } else if is_ctrl && key == 44 { // KEY_Z = 44 in evdev (Ctrl+Z)
+                            // Handle undo
+                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                editor.undo();
+                            }
+                            needs_full_redraw = true;
                         } else {
                             // Arrow keys for editor navigation (Linux evdev codes)
                             match key {
@@ -544,8 +550,12 @@ pub fn test_input_events() -> (bool, bool) {
 
                 // If left mouse button is down, handle drag
                 if is_mouse_button_down() {
-                    crate::kernel::window_manager::handle_mouse_drag(cx, cy);
-                    needs_full_redraw = true;
+                    let changed = crate::kernel::window_manager::handle_mouse_drag(cx, cy);
+                    if changed {
+                        needs_full_redraw = true;
+                    } else {
+                        needs_cursor_redraw = true;
+                    }
                 }
             }
             InputEvent::MouseButton { button, pressed } => {

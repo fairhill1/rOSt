@@ -19,6 +19,15 @@ const COLOR_CURSOR: u32 = 0xFF00FF00;      // Green cursor
 const COLOR_STATUS: u32 = 0xFFCCCCCC;      // Light gray for status bar
 const COLOR_SELECTION: u32 = 0xFF3366CC;   // Bright blue selection highlight
 
+/// Snapshot of editor state for undo
+#[derive(Clone)]
+struct EditorSnapshot {
+    lines: Vec<String>,
+    cursor_row: usize,
+    cursor_col: usize,
+    scroll_offset: usize,
+}
+
 pub struct TextEditor {
     /// Lines of text in the editor
     lines: Vec<String>,
@@ -39,6 +48,8 @@ pub struct TextEditor {
     selection_end: Option<(usize, usize)>,
     /// Whether we're currently selecting (mouse drag)
     is_selecting: bool,
+    /// Undo stack (max 100 snapshots)
+    undo_stack: Vec<EditorSnapshot>,
 }
 
 impl TextEditor {
@@ -54,6 +65,7 @@ impl TextEditor {
             selection_start: None,
             selection_end: None,
             is_selecting: false,
+            undo_stack: Vec::new(),
         }
     }
 
@@ -81,6 +93,40 @@ impl TextEditor {
             selection_start: None,
             selection_end: None,
             is_selecting: false,
+            undo_stack: Vec::new(),
+        }
+    }
+
+    /// Save current state to undo stack
+    fn save_snapshot(&mut self) {
+        const MAX_UNDO_STACK: usize = 100;
+
+        let snapshot = EditorSnapshot {
+            lines: self.lines.clone(),
+            cursor_row: self.cursor_row,
+            cursor_col: self.cursor_col,
+            scroll_offset: self.scroll_offset,
+        };
+
+        self.undo_stack.push(snapshot);
+
+        // Limit stack size
+        if self.undo_stack.len() > MAX_UNDO_STACK {
+            self.undo_stack.remove(0);
+        }
+    }
+
+    /// Undo last edit
+    pub fn undo(&mut self) {
+        if let Some(snapshot) = self.undo_stack.pop() {
+            self.lines = snapshot.lines;
+            self.cursor_row = snapshot.cursor_row;
+            self.cursor_col = snapshot.cursor_col;
+            self.scroll_offset = snapshot.scroll_offset;
+            self.clear_selection();
+            self.set_status("Undo");
+        } else {
+            self.set_status("Nothing to undo");
         }
     }
 
@@ -134,6 +180,9 @@ impl TextEditor {
 
     /// Insert a character at the cursor position
     pub fn insert_char(&mut self, ch: char) {
+        // Save state before modification
+        self.save_snapshot();
+
         // Delete selection first if there is one
         self.delete_selection();
 
@@ -154,6 +203,9 @@ impl TextEditor {
 
     /// Insert a newline at the cursor position
     pub fn insert_newline(&mut self) {
+        // Save state before modification
+        self.save_snapshot();
+
         // Delete selection first if there is one
         self.delete_selection();
 
@@ -185,6 +237,9 @@ impl TextEditor {
 
     /// Delete character before cursor (backspace)
     pub fn delete_char(&mut self) {
+        // Save state before modification
+        self.save_snapshot();
+
         // If there's a selection, delete it instead
         if self.delete_selection() {
             return;
@@ -339,10 +394,10 @@ impl TextEditor {
         }
     }
 
-    /// Handle mouse drag - update selection
-    pub fn handle_mouse_drag(&mut self, click_x: i32, click_y: i32) {
+    /// Handle mouse drag - update selection (returns true if selection changed)
+    pub fn handle_mouse_drag(&mut self, click_x: i32, click_y: i32) -> bool {
         if !self.is_selecting {
-            return;
+            return false;
         }
 
         // Convert click position to row/column
@@ -358,11 +413,19 @@ impl TextEditor {
             let line_len = self.lines[row].len();
             let clamped_col = col.min(line_len);
 
+            // Check if selection actually changed
+            let new_pos = (row, clamped_col);
+            if self.selection_end == Some(new_pos) {
+                return false; // No change
+            }
+
             // Update selection end and cursor
-            self.selection_end = Some((row, clamped_col));
+            self.selection_end = Some(new_pos);
             self.cursor_row = row;
             self.cursor_col = clamped_col;
+            return true;
         }
+        false
     }
 
     /// Handle mouse up - end selection
@@ -444,6 +507,9 @@ impl TextEditor {
     /// Cut selected text to clipboard
     pub fn cut(&mut self) {
         if let Some(text) = self.get_selected_text() {
+            // Save state before modification
+            self.save_snapshot();
+
             unsafe {
                 CLIPBOARD = Some(text);
             }
@@ -459,15 +525,49 @@ impl TextEditor {
         let clipboard_text = unsafe { CLIPBOARD.clone() };
 
         if let Some(text) = clipboard_text {
+            // Save state before modification
+            self.save_snapshot();
+
             // Delete selection first if there is one
             self.delete_selection();
 
-            // Insert the text
+            // Insert the text (without saving snapshots for each char)
             for ch in text.chars() {
                 if ch == '\n' {
-                    self.insert_newline();
+                    // Insert newline without snapshot
+                    if self.cursor_row >= self.lines.len() {
+                        self.lines.push(String::new());
+                        self.cursor_row = self.lines.len() - 1;
+                        self.cursor_col = 0;
+                        self.modified = true;
+                        continue;
+                    }
+
+                    let current_line = &self.lines[self.cursor_row];
+                    let before = current_line[..self.cursor_col].to_string();
+                    let after = current_line[self.cursor_col..].to_string();
+
+                    self.lines[self.cursor_row] = before;
+                    self.lines.insert(self.cursor_row + 1, after);
+
+                    self.cursor_row += 1;
+                    self.cursor_col = 0;
+                    self.modified = true;
+
+                    if self.cursor_row >= self.scroll_offset + EDITOR_HEIGHT {
+                        self.scroll_offset = self.cursor_row - EDITOR_HEIGHT + 1;
+                    }
                 } else {
-                    self.insert_char(ch);
+                    // Insert char without snapshot
+                    if self.cursor_row >= self.lines.len() {
+                        self.lines.push(String::new());
+                    }
+
+                    if self.lines[self.cursor_row].len() < EDITOR_WIDTH {
+                        self.lines[self.cursor_row].insert(self.cursor_col, ch);
+                        self.cursor_col += 1;
+                        self.modified = true;
+                    }
                 }
             }
             self.set_status("Pasted from clipboard");
