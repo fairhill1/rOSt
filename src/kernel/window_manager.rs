@@ -471,8 +471,8 @@ impl WindowManager {
         }
     }
 
-    /// Handle mouse click
-    pub fn handle_click(&mut self, x: i32, y: i32) -> bool {
+    /// Handle mouse down (button press)
+    pub fn handle_mouse_down(&mut self, x: i32, y: i32) -> bool {
         // First check if menu bar was clicked
         if let Some(window_type) = self.check_menu_click(x, y) {
             // Create the requested window
@@ -505,17 +505,17 @@ impl WindowManager {
                     return true;
                 }
 
-                // If it's an editor window and click is in content area, handle cursor movement
+                // If it's an editor window and click is in content area, handle selection start
                 if self.windows[i].content == WindowContent::Editor {
                     let (cx, cy, cw, ch) = self.windows[i].get_content_bounds();
                     if x >= cx && x < cx + cw as i32 && y >= cy && y < cy + ch as i32 {
-                        // Click is inside editor content area - move cursor
+                        // Click is inside editor content area - start selection
                         let relative_x = x - cx;
                         let relative_y = y - cy;
                         let instance_id = self.windows[i].instance_id;
 
                         if let Some(editor) = crate::kernel::editor::get_editor(instance_id) {
-                            editor.handle_click(relative_x, relative_y);
+                            editor.handle_mouse_down(relative_x, relative_y);
                         }
                     }
                 }
@@ -526,6 +526,39 @@ impl WindowManager {
             }
         }
         false
+    }
+
+    /// Handle mouse drag (while button is held)
+    pub fn handle_mouse_drag(&mut self, x: i32, y: i32) {
+        // Check if we're dragging in an editor window
+        for i in (0..self.windows.len()).rev() {
+            if self.windows[i].content == WindowContent::Editor && self.windows[i].is_focused {
+                let (cx, cy, cw, ch) = self.windows[i].get_content_bounds();
+                // Allow dragging even slightly outside bounds for smoother selection
+                if x >= cx - 10 && x < cx + cw as i32 + 10 && y >= cy - 10 && y < cy + ch as i32 + 10 {
+                    let relative_x = (x - cx).max(0).min(cw as i32 - 1);
+                    let relative_y = (y - cy).max(0).min(ch as i32 - 1);
+                    let instance_id = self.windows[i].instance_id;
+
+                    if let Some(editor) = crate::kernel::editor::get_editor(instance_id) {
+                        editor.handle_mouse_drag(relative_x, relative_y);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Handle mouse up (button release)
+    pub fn handle_mouse_up(&mut self, _x: i32, _y: i32) {
+        // End selection in all editors
+        for window in &self.windows {
+            if window.content == WindowContent::Editor {
+                if let Some(editor) = crate::kernel::editor::get_editor(window.instance_id) {
+                    editor.handle_mouse_up();
+                }
+            }
+        }
     }
 
     /// Render all windows and menu bar
@@ -605,12 +638,28 @@ pub fn add_window(window: Window) -> usize {
     }
 }
 
-pub fn handle_mouse_click(x: i32, y: i32) -> bool {
+pub fn handle_mouse_down(x: i32, y: i32) -> bool {
     unsafe {
         if let Some(ref mut wm) = WINDOW_MANAGER {
-            wm.handle_click(x, y)
+            wm.handle_mouse_down(x, y)
         } else {
             false
+        }
+    }
+}
+
+pub fn handle_mouse_drag(x: i32, y: i32) {
+    unsafe {
+        if let Some(ref mut wm) = WINDOW_MANAGER {
+            wm.handle_mouse_drag(x, y);
+        }
+    }
+}
+
+pub fn handle_mouse_up(x: i32, y: i32) {
+    unsafe {
+        if let Some(ref mut wm) = WINDOW_MANAGER {
+            wm.handle_mouse_up(x, y);
         }
     }
 }
