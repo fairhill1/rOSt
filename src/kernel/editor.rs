@@ -804,10 +804,11 @@ impl TextEditor {
                 }
             }
 
-            // Draw line number in gutter (right-aligned with padding)
+            // Draw line number in gutter (centered)
             let line_number = line_num + 1; // 1-indexed for display
-            let line_num_str = alloc::format!("{:3}", line_number);
-            let line_num_x = offset_x + 4; // Small left padding
+            let line_num_str = alloc::format!("{:2}", line_number); // 2 digits
+            let line_num_width = 2 * CHAR_WIDTH; // 2 chars = 32 pixels
+            let line_num_x = offset_x + ((GUTTER_WIDTH - line_num_width) / 2) as i32; // Center in gutter
             framebuffer::draw_string(line_num_x as u32, y as u32, &line_num_str, COLOR_LINE_NUMBER);
 
             // Draw selection background for this line if applicable
