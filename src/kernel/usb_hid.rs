@@ -389,8 +389,9 @@ pub fn simulate_keyboard_input() {
 }
 
 /// Process input events from the queue and update GUI
+/// Returns true if any input was processed that requires a screen update
 pub fn test_input_events() -> bool {
-    let mut mouse_moved = false;
+    let mut needs_redraw = false;
     // Process all queued input events and update cursor
     while let Some(event) = get_input_event() {
         match event {
@@ -403,6 +404,7 @@ pub fn test_input_events() -> bool {
                             shell.handle_char(ascii);
                         }
                     }
+                    needs_redraw = true; // Keyboard input requires redraw
                 }
             }
             InputEvent::KeyReleased { key: _, modifiers: _ } => {
@@ -411,16 +413,16 @@ pub fn test_input_events() -> bool {
             InputEvent::MouseMove { x_delta, y_delta } => {
                 // Move the cursor on screen
                 crate::kernel::framebuffer::move_cursor(x_delta, y_delta);
-                mouse_moved = true;
+                needs_redraw = true;
             }
             InputEvent::MouseButton { .. } => {
-                mouse_moved = true; // Clicks should also trigger a redraw
+                needs_redraw = true; // Clicks should also trigger a redraw
             }
             InputEvent::MouseWheel { .. } => {
             }
         }
     }
-    mouse_moved
+    needs_redraw
 }
 
 /// Initialize USB HID subsystem
