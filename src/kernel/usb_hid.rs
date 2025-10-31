@@ -396,8 +396,21 @@ pub fn test_input_events() -> (bool, bool) {
     while let Some(event) = get_input_event() {
         match event {
             InputEvent::KeyPressed { key, modifiers } => {
-                // Check if we're prompting for a filename (global state, works from any window)
-                if is_prompting_filename() {
+                // Check if we're in delete confirmation mode
+                if is_confirming_delete() {
+                    // Handle y/n input for delete confirmation
+                    if let Some(ascii) = evdev_to_ascii(key, modifiers) {
+                        if ascii == b'y' || ascii == b'Y' {
+                            // Confirm deletion
+                            confirm_delete_file();
+                            needs_full_redraw = true;
+                        } else if ascii == b'n' || ascii == b'N' || ascii == 27 { // n, N, or ESC
+                            // Cancel deletion
+                            cancel_delete_confirm();
+                            needs_full_redraw = true;
+                        }
+                    }
+                } else if is_prompting_filename() {
                     // Handle filename input
                     if let Some(ascii) = evdev_to_ascii(key, modifiers) {
                         if ascii == b'\n' {
@@ -753,6 +766,9 @@ static mut FILENAME_PROMPT: Option<String> = None;
 /// Rename mode state (stores old filename when renaming)
 static mut RENAME_OLD_FILENAME: Option<String> = None;
 
+/// Delete confirmation state (stores filename to delete)
+static mut DELETE_CONFIRM_FILENAME: Option<String> = None;
+
 /// Status message to show in menu bar
 static mut MENU_STATUS_MESSAGE: Option<String> = None;
 
@@ -949,6 +965,44 @@ pub fn finish_rename_prompt_for_file_explorer() {
         }
         // Make sure to clear both states
         RENAME_OLD_FILENAME = None;
+    }
+}
+
+/// Start prompting for delete confirmation
+pub fn start_delete_confirm(filename: &str) {
+    unsafe {
+        DELETE_CONFIRM_FILENAME = Some(String::from(filename));
+    }
+}
+
+/// Check if we're in delete confirmation mode
+pub fn is_confirming_delete() -> bool {
+    unsafe { DELETE_CONFIRM_FILENAME.is_some() }
+}
+
+/// Get the filename being confirmed for deletion
+pub fn get_delete_confirm_filename() -> Option<String> {
+    unsafe { DELETE_CONFIRM_FILENAME.clone() }
+}
+
+/// Cancel delete confirmation
+pub fn cancel_delete_confirm() {
+    unsafe {
+        DELETE_CONFIRM_FILENAME = None;
+    }
+}
+
+/// Confirm deletion and delete the file
+pub fn confirm_delete_file() {
+    unsafe {
+        if let Some(filename) = DELETE_CONFIRM_FILENAME.take() {
+            // Get the focused file explorer
+            if let Some(explorer_id) = crate::kernel::window_manager::get_focused_file_explorer_id() {
+                if crate::kernel::file_explorer::delete_selected(explorer_id) {
+                    crate::kernel::file_explorer::refresh(explorer_id);
+                }
+            }
+        }
     }
 }
 
