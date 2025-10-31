@@ -234,24 +234,21 @@ impl VirtioBlkDevice {
         // Scan PCI bus
         for device_num in 0..32 {
             if let Some(pci_dev) = PciDevice::new(0, device_num, 0, &config) {
-                // Check if this is a MODERN VirtIO block device (skip legacy!)
+                // Check if this is a VirtIO block device
+                // Accept both modern (0x1042) and transitional (0x1001) devices
+                // Transitional devices support both legacy and modern - we'll use modern mode
                 if pci_dev.vendor_id == VIRTIO_VENDOR_ID &&
-                   pci_dev.device_id == VIRTIO_BLK_DEVICE_ID_MODERN {
+                   (pci_dev.device_id == VIRTIO_BLK_DEVICE_ID_MODERN ||
+                    pci_dev.device_id == VIRTIO_BLK_DEVICE_ID_LEGACY) {
 
                     crate::kernel::uart_write_string(&alloc::format!(
-                        "Found modern VirtIO block device at 0:{}:0 (device_id=0x{:x})\r\n",
+                        "Found VirtIO block device at 0:{}:0 (device_id=0x{:x})\r\n",
                         device_num, pci_dev.device_id
                     ));
 
                     if let Some(blk_dev) = unsafe { Self::init_device(pci_dev, mmio_base) } {
                         devices.push(blk_dev);
                     }
-                } else if pci_dev.vendor_id == VIRTIO_VENDOR_ID &&
-                          pci_dev.device_id == VIRTIO_BLK_DEVICE_ID_LEGACY {
-                    crate::kernel::uart_write_string(&alloc::format!(
-                        "Skipping legacy VirtIO device at 0:{}:0 (device_id=0x{:x}) - not supported\r\n",
-                        device_num, pci_dev.device_id
-                    ));
                 }
             }
         }
@@ -477,8 +474,6 @@ impl VirtioBlkDevice {
             ptr::write_volatile(notify_addr as *mut u16, 0);
             mb();
 
-            crate::kernel::uart_write_string("Read request submitted, waiting for completion...\r\n");
-
             // Poll for completion (busy wait)
             let start_used_idx = self.virtq.last_seen_used;
             loop {
@@ -508,7 +503,6 @@ impl VirtioBlkDevice {
 
             self.virtq.last_seen_used = ptr::read_volatile(ptr::addr_of!((*self.virtq.used).idx));
 
-            crate::kernel::uart_write_string("Sector read successfully!\r\n");
             Ok(())
         }
     }

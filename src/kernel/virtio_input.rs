@@ -631,37 +631,6 @@ impl VirtioInputDevice {
             // Check if there are any used buffers in the used ring
             let used_idx = core::ptr::read_volatile(&(*self.used_ring).idx);
 
-            // Debug: print used_idx more frequently
-            static mut POLL_COUNT: u32 = 0;
-            POLL_COUNT += 1;
-            if POLL_COUNT % 100000 == 0 {
-                // Read device status to verify device is still OK
-                let device_status = core::ptr::read_volatile((self.base_addr + 0x14) as *const u8);
-                uart_write_string("used_idx=");
-                print_hex(used_idx as u64);
-                uart_write_string(" avail_idx=");
-                let avail_idx = core::ptr::read_volatile(&(*self.avail_ring).idx);
-                print_hex(avail_idx as u64);
-                uart_write_string(" status=0x");
-                print_hex(device_status as u64);
-                uart_write_string("\r\n");
-
-                // Print first time only
-                static mut FIRST_PRINT: bool = true;
-                if FIRST_PRINT {
-                    FIRST_PRINT = false;
-                    uart_write_string("  base_addr=0x");
-                    print_hex(self.base_addr);
-                    uart_write_string(" avail_ring=0x");
-                    print_hex(self.avail_ring as u64);
-                    uart_write_string("\r\n  used_ring=0x");
-                    print_hex(self.used_ring as u64);
-                    uart_write_string(" desc_table=0x");
-                    print_hex(self.desc_table as u64);
-                    uart_write_string("\r\n");
-                }
-            }
-
             if self.last_used_idx == used_idx {
                 // No new events
                 return None;

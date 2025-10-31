@@ -494,10 +494,6 @@ impl SimpleFilesystem {
             }
         }
 
-        crate::kernel::uart_write_string(&alloc::format!(
-            "Read {} bytes from file '{}'\r\n", bytes_read, name
-        ));
-
         Ok(bytes_read)
     }
 }
