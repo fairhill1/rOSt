@@ -4,19 +4,32 @@
 
 ---
 
-# VirtIO Input Status - ARM64 OS on QEMU
+# Rust OS Development Status - ARM64 OS on QEMU
 
 ## Current Date
 2025-10-31
 
-## Goal
-Get real keyboard and mouse input working from QEMU graphical window (not serial console) using VirtIO input devices (`virtio-keyboard-pci`, `virtio-mouse-pci`).
+## Current Goal
+Implement file I/O using VirtIO block device driver
 
-## Current Status: ✅ **WORKING!** Mouse and Keyboard Input Functional!
+## Previous Goals (✅ Completed)
+- ✅ Get real keyboard and mouse input working from QEMU graphical window using VirtIO input devices
+- ✅ Implement VirtIO block device driver for disk read/write
 
-### ✅ What's Working - EVERYTHING!
-- **MOUSE INPUT WORKING** - Mouse movement and button clicks detected! 🐭
-- **KEYBOARD INPUT WORKING** - Key presses detected! ⌨️
+## Current Status: ✅ **VirtIO Block Device Working!**
+
+### ✅ VirtIO Block Device - WORKING! 💾
+- **SECTOR READ WORKING** - Successfully reading sectors from disk!
+- VirtIO block device (PCI 0:3:0) initialized successfully
+- Virtqueue setup complete (descriptor, available, used rings)
+- 3-descriptor chain working (header → data → status)
+- Device found and initialized using modern VirtIO 1.0 protocol
+- Tested with 10MB test disk image
+- Ready for filesystem implementation!
+
+### ✅ VirtIO Input - WORKING! ⌨️🐭
+- **MOUSE INPUT WORKING** - Mouse movement and button clicks detected!
+- **KEYBOARD INPUT WORKING** - Key presses detected!
 - Both VirtIO input devices (0:1:0 and 0:2:0) initialize successfully
 - DTB parser successfully reads PCI ECAM base (0x4010000000) and MMIO base (0x10000000)
 - 64-bit BAR programming works correctly (BAR4 + BAR5)
@@ -72,8 +85,54 @@ Get real keyboard and mouse input working from QEMU graphical window (not serial
 ### Core Files
 - `src/kernel/dtb.rs` - DTB parser (reads device tree at 0x40000000)
 - `src/kernel/virtio_input.rs` - VirtIO input driver
-- `src/kernel/pci.rs` - PCI config space access (added `read_u8()`)
-- `src/kernel/mod.rs` - Kernel init (calls DTB parser and VirtIO init)
+- `src/kernel/virtio_blk.rs` - **NEW!** VirtIO block device driver
+- `src/kernel/pci.rs` - PCI config space access (added `read_u8()`, `write_config_u32()`, `get_bar_size()`, `get_capabilities_ptr()`)
+- `src/kernel/mod.rs` - Kernel init (calls DTB parser, VirtIO input, and VirtIO block init)
+
+## VirtIO Block Driver Implementation (2025-10-31)
+
+### Key Implementation Details
+Based on [Stephen Brennan's blog post](https://brennan.io/2020/03/22/sos-block-device/) and VirtIO 1.0 spec:
+
+1. **Device Discovery & Initialization**
+   - Scan PCI bus for vendor 0x1AF4, device 0x1042 (modern) or 0x1001 (legacy)
+   - Parse VirtIO PCI capabilities to find common_cfg and notify registers
+   - Standard VirtIO handshake: ACKNOWLEDGE → DRIVER → FEATURES_OK → DRIVER_OK
+
+2. **Virtqueue Structure** (3-ring architecture)
+   - **Descriptor table**: Array of buffer descriptors (addr, len, flags, next)
+   - **Available ring**: Driver writes descriptor chains here
+   - **Used ring**: Device writes completed descriptors here
+   - Memory allocated at 0x50000000 (same region as VirtIO input, different offset)
+
+3. **3-Descriptor Chain for Reads** (Critical insight from blog!)
+   - **Desc 1**: Request header (16 bytes: type, reserved, sector) - READ-ONLY for device
+   - **Desc 2**: Data buffer (512 bytes) - WRITE for device (on read requests)
+   - **Desc 3**: Status byte (1 byte) - WRITE for device
+   - All READ-ONLY descriptors MUST come before WRITE descriptors (VirtIO spec requirement)
+
+4. **Memory Barriers**
+   - Use ARM `dsb sy` instruction after critical operations
+   - Ensures writes are visible to device before notification
+
+5. **Critical Gotchas**
+   - **MUST use modern VirtIO**: `virtio-blk-pci,disable-legacy=on`
+   - Legacy device (0x1001) hangs on completion polling
+   - Modern device (0x1042) works perfectly
+   - **Packed struct fields**: Use `ptr::addr_of!()` and `ptr::addr_of_mut!()` to avoid UB
+   - **BAR programming**: Same 64-bit BAR issue as input devices (program BAR4 + BAR5)
+
+### What Works
+- ✅ Device detection and initialization
+- ✅ Virtqueue allocation and configuration
+- ✅ Sector reads (tested with sector 0)
+- ✅ Completion polling (busy-wait on used ring index)
+
+### What's Next
+- Add write_sector() function
+- Implement simple filesystem (FAT or custom)
+- Add file operations (open, read, write, close)
+- Build simple shell for file interaction
 
 ## ✅ GOAL ACHIEVED - WORKING INPUT!
 
@@ -95,16 +154,45 @@ Get real keyboard and mouse input working from QEMU graphical window (not serial
 # Build (must specify UEFI target explicitly)
 cargo build --release --target aarch64-unknown-uefi --bin uefi_boot
 
-# Deploy and Run
+# Create test disk image (10MB, only needed once)
+dd if=/dev/zero of=test_disk.img bs=1M count=10
+
+# Deploy and Run WITH BLOCK DEVICE (RECOMMENDED - includes all features)
 cp target/aarch64-unknown-uefi/release/uefi_boot.efi uefi_disk/EFI/BOOT/BOOTAA64.EFI && \
-qemu-system-aarch64 -nodefaults -M virt -cpu cortex-a57 -m 1G \
+qemu-system-aarch64 \
+  -nodefaults \
+  -M virt \
+  -cpu cortex-a57 \
+  -m 1G \
   -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
-  -device ramfb -display cocoa \
-  -device virtio-keyboard-pci -device virtio-mouse-pci \
+  -device ramfb \
+  -display cocoa \
+  -device virtio-keyboard-pci \
+  -device virtio-mouse-pci \
+  -drive format=raw,file=fat:rw:uefi_disk \
+  -drive file=test_disk.img,if=none,format=raw,id=hd0 \
+  -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off \
+  -serial stdio
+
+# Deploy and Run WITHOUT BLOCK DEVICE (input only)
+cp target/aarch64-unknown-uefi/release/uefi_boot.efi uefi_disk/EFI/BOOT/BOOTAA64.EFI && \
+qemu-system-aarch64 \
+  -nodefaults \
+  -M virt \
+  -cpu cortex-a57 \
+  -m 1G \
+  -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+  -device ramfb \
+  -display cocoa \
+  -device virtio-keyboard-pci \
+  -device virtio-mouse-pci \
   -drive format=raw,file=fat:rw:uefi_disk \
   -serial stdio
 
-# NOTE: Must focus on QEMU graphical window (not terminal) for input to be captured!
+# IMPORTANT NOTES:
+# - Must focus on QEMU graphical window (not terminal) for input to be captured!
+# - For block device: MUST use virtio-blk-pci with disable-legacy=on (not virtio-blk-device)
+# - Legacy VirtIO (0x1001) hangs on reads; modern VirtIO (0x1042) works perfectly
 ```
 
 ## Known Issues (Resolved!)
