@@ -307,9 +307,9 @@ pub fn simulate_keyboard_input() {
     uart_write_string("Simulated keyboard events queued\r\n");
 }
 
-/// Process input events from the queue (no debug spam)
+/// Process input events from the queue and update GUI
 pub fn test_input_events() {
-    // Process all queued input events without debug output
+    // Process all queued input events and update cursor
     while let Some(event) = get_input_event() {
         match event {
             InputEvent::KeyPressed { key, modifiers } => {
@@ -327,6 +327,9 @@ pub fn test_input_events() {
                 // uart_write_string("Key released\r\n");
             }
             InputEvent::MouseMove { x_delta, y_delta } => {
+                // Move the cursor on screen
+                crate::kernel::framebuffer::move_cursor(x_delta, y_delta);
+
                 uart_write_string("Mouse moved: ");
                 // Simple hex output for deltas
                 unsafe {
@@ -367,13 +370,6 @@ pub fn init_usb_hid() {
     unsafe {
         INPUT_EVENT_QUEUE = Some(VecDeque::new());
     }
-    
-    // Add a test event to verify the system works
-    unsafe {
-        if let Some(ref mut queue) = INPUT_EVENT_QUEUE {
-            queue.push_back(InputEvent::KeyPressed { key: 0x04, modifiers: 0 }); // 'a' key test
-        }
-    }
-    
+
     uart_write_string("USB HID subsystem ready for XHCI keyboard events!\r\n");
 }

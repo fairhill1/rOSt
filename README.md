@@ -50,16 +50,19 @@ qemu-system-aarch64 \
     -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
     -device ramfb \
     -display cocoa \
-    -usb \
-    -device usb-ehci,id=ehci \
-    -device usb-kbd,bus=ehci.0 \
-    -device usb-tablet,bus=ehci.0 \
+    -device virtio-keyboard-pci \
+    -device virtio-mouse-pci \
     -drive format=raw,file=fat:rw:uefi_disk \
-    -serial stdio \
-    -fw_cfg "name=opt/org.tianocore/X-Cpuhp-Bugcheck-Override,string=yes"
+    -serial stdio
 ```
 
-This will boot our UEFI application which initializes graphics properly!
+This will boot our UEFI application which initializes graphics and input properly!
+
+### Features
+- Full graphics support with GOP framebuffer
+- VirtIO keyboard input (type keys to see them in UART output)
+- VirtIO mouse input (move trackpad to control cursor)
+- Real-time input event processing
 
 To exit QEMU: Press `Ctrl-A` then `X` (text mode) or close the window (graphics mode)
 
