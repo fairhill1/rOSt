@@ -428,7 +428,13 @@ pub fn test_input_events() -> (bool, bool) {
                         // Check for Ctrl+S (save)
                         let is_ctrl = (modifiers & (MOD_LEFT_CTRL | MOD_RIGHT_CTRL)) != 0;
 
-                        if is_ctrl && key == 31 { // KEY_S = 31 in evdev
+                        if is_ctrl && key == 30 { // KEY_A = 30 in evdev (Ctrl+A)
+                            // Handle select all
+                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                editor.select_all();
+                            }
+                            needs_full_redraw = true;
+                        } else if is_ctrl && key == 31 { // KEY_S = 31 in evdev (Ctrl+S)
                             // Handle save in editor
                             if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
                                 save_editor_file(editor);
