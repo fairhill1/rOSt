@@ -523,12 +523,23 @@ pub fn test_input_events() -> (bool, bool) {
                         needs_cursor_redraw = true;
                     }
                 }
+
+                // If left mouse button is down, handle drag
+                if is_mouse_button_down() {
+                    crate::kernel::window_manager::handle_mouse_drag(cx, cy);
+                    needs_full_redraw = true;
+                }
             }
             InputEvent::MouseButton { button, pressed } => {
-                if button == 0 && pressed { // Left mouse button press
+                if button == 0 { // Left mouse button
                     let (cx, cy) = crate::kernel::framebuffer::get_cursor_pos();
-                    // Check for window clicks (menu bar, close button, focus)
-                    crate::kernel::window_manager::handle_mouse_click(cx, cy);
+                    if pressed {
+                        set_mouse_button_down(true);
+                        crate::kernel::window_manager::handle_mouse_down(cx, cy);
+                    } else {
+                        set_mouse_button_down(false);
+                        crate::kernel::window_manager::handle_mouse_up(cx, cy);
+                    }
                     needs_full_redraw = true; // Clicks trigger a full redraw
                 }
             }
@@ -547,6 +558,19 @@ static mut MENU_STATUS_MESSAGE: Option<String> = None;
 
 /// Track last hovered menu button index (for hover optimization)
 static mut LAST_HOVERED_BUTTON: Option<usize> = None;
+
+/// Track left mouse button state (for drag operations)
+static mut MOUSE_BUTTON_DOWN: bool = false;
+
+/// Check if left mouse button is currently down
+pub fn is_mouse_button_down() -> bool {
+    unsafe { MOUSE_BUTTON_DOWN }
+}
+
+/// Set left mouse button state
+fn set_mouse_button_down(down: bool) {
+    unsafe { MOUSE_BUTTON_DOWN = down; }
+}
 
 /// Check if we're currently prompting for a filename
 pub fn is_prompting_filename() -> bool {

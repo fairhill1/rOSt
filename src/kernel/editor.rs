@@ -17,6 +17,7 @@ const LINE_HEIGHT: u32 = CHAR_HEIGHT + LINE_SPACING;
 const COLOR_TEXT: u32 = 0xFFFFFFFF;        // White text
 const COLOR_CURSOR: u32 = 0xFF00FF00;      // Green cursor
 const COLOR_STATUS: u32 = 0xFFCCCCCC;      // Light gray for status bar
+const COLOR_SELECTION: u32 = 0xFF3366CC;   // Bright blue selection highlight
 
 pub struct TextEditor {
     /// Lines of text in the editor
@@ -32,6 +33,12 @@ pub struct TextEditor {
     scroll_offset: usize,
     /// Status message
     status: String,
+    /// Selection start (row, col) - None if no selection
+    selection_start: Option<(usize, usize)>,
+    /// Selection end (row, col) - None if no selection
+    selection_end: Option<(usize, usize)>,
+    /// Whether we're currently selecting (mouse drag)
+    is_selecting: bool,
 }
 
 impl TextEditor {
@@ -44,6 +51,9 @@ impl TextEditor {
             modified: false,
             scroll_offset: 0,
             status: String::from("NEW FILE - Ctrl+S: Save, Ctrl+Q: Quit"),
+            selection_start: None,
+            selection_end: None,
+            is_selecting: false,
         }
     }
 
@@ -68,11 +78,65 @@ impl TextEditor {
             modified: false,
             scroll_offset: 0,
             status: String::from("Editing - Ctrl+S: Save, Ctrl+Q: Quit"),
+            selection_start: None,
+            selection_end: None,
+            is_selecting: false,
+        }
+    }
+
+    /// Delete selected text and return true if something was deleted
+    fn delete_selection(&mut self) -> bool {
+        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
+            // Normalize selection
+            let (start, end) = if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            };
+
+            if start == end {
+                // Empty selection
+                self.clear_selection();
+                return false;
+            }
+
+            let (start_row, start_col) = start;
+            let (end_row, end_col) = end;
+
+            if start_row == end_row {
+                // Single line selection
+                self.lines[start_row].replace_range(start_col..end_col, "");
+            } else {
+                // Multi-line selection
+                // Keep the text before selection start and after selection end
+                let before = self.lines[start_row][..start_col].to_string();
+                let after = self.lines[end_row][end_col..].to_string();
+
+                // Remove all lines in between
+                for _ in start_row..=end_row {
+                    self.lines.remove(start_row);
+                }
+
+                // Insert the combined line
+                self.lines.insert(start_row, before + &after);
+            }
+
+            // Move cursor to start of selection
+            self.cursor_row = start_row;
+            self.cursor_col = start_col;
+            self.clear_selection();
+            self.modified = true;
+            true
+        } else {
+            false
         }
     }
 
     /// Insert a character at the cursor position
     pub fn insert_char(&mut self, ch: char) {
+        // Delete selection first if there is one
+        self.delete_selection();
+
         if self.cursor_row >= self.lines.len() {
             self.lines.push(String::new());
         }
@@ -90,6 +154,9 @@ impl TextEditor {
 
     /// Insert a newline at the cursor position
     pub fn insert_newline(&mut self) {
+        // Delete selection first if there is one
+        self.delete_selection();
+
         if self.cursor_row >= self.lines.len() {
             self.lines.push(String::new());
             self.cursor_row = self.lines.len() - 1;
@@ -118,6 +185,11 @@ impl TextEditor {
 
     /// Delete character before cursor (backspace)
     pub fn delete_char(&mut self) {
+        // If there's a selection, delete it instead
+        if self.delete_selection() {
+            return;
+        }
+
         if self.cursor_col > 0 {
             // Delete character in current line
             self.lines[self.cursor_row].remove(self.cursor_col - 1);
@@ -140,6 +212,7 @@ impl TextEditor {
 
     /// Move cursor up
     pub fn move_up(&mut self) {
+        self.clear_selection(); // Clear selection on cursor movement
         if self.cursor_row > 0 {
             self.cursor_row -= 1;
             // Clamp column to line length
@@ -157,6 +230,7 @@ impl TextEditor {
 
     /// Move cursor down
     pub fn move_down(&mut self) {
+        self.clear_selection(); // Clear selection on cursor movement
         if self.cursor_row < self.lines.len() - 1 {
             self.cursor_row += 1;
             // Clamp column to line length
@@ -174,6 +248,7 @@ impl TextEditor {
 
     /// Move cursor left
     pub fn move_left(&mut self) {
+        self.clear_selection(); // Clear selection on cursor movement
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
         } else if self.cursor_row > 0 {
@@ -190,6 +265,7 @@ impl TextEditor {
 
     /// Move cursor right
     pub fn move_right(&mut self) {
+        self.clear_selection(); // Clear selection on cursor movement
         if self.cursor_col < self.lines[self.cursor_row].len() {
             self.cursor_col += 1;
         } else if self.cursor_row < self.lines.len() - 1 {
@@ -239,10 +315,9 @@ impl TextEditor {
         self.get_text().len()
     }
 
-    /// Handle mouse click at a position (relative to editor content area)
-    pub fn handle_click(&mut self, click_x: i32, click_y: i32) {
+    /// Handle mouse down - start selection
+    pub fn handle_mouse_down(&mut self, click_x: i32, click_y: i32) {
         // Convert click position to row/column
-        // Add half character width so clicking right side of char positions cursor after it
         let col = ((click_x + CHAR_WIDTH as i32 / 2) / CHAR_WIDTH as i32).max(0) as usize;
         let visible_row = ((click_y + LINE_HEIGHT as i32 / 2) / LINE_HEIGHT as i32).max(0) as usize;
 
@@ -256,17 +331,104 @@ impl TextEditor {
             // Clamp column to line length
             let line_len = self.lines[row].len();
             self.cursor_col = col.min(line_len);
+
+            // Start selection
+            self.selection_start = Some((row, self.cursor_col));
+            self.selection_end = Some((row, self.cursor_col));
+            self.is_selecting = true;
         }
+    }
+
+    /// Handle mouse drag - update selection
+    pub fn handle_mouse_drag(&mut self, click_x: i32, click_y: i32) {
+        if !self.is_selecting {
+            return;
+        }
+
+        // Convert click position to row/column
+        let col = ((click_x + CHAR_WIDTH as i32 / 2) / CHAR_WIDTH as i32).max(0) as usize;
+        let visible_row = ((click_y + LINE_HEIGHT as i32 / 2) / LINE_HEIGHT as i32).max(0) as usize;
+
+        // Calculate actual row accounting for scroll offset
+        let row = self.scroll_offset + visible_row;
+
+        // Clamp row to valid range
+        if row < self.lines.len() {
+            // Clamp column to line length
+            let line_len = self.lines[row].len();
+            let clamped_col = col.min(line_len);
+
+            // Update selection end and cursor
+            self.selection_end = Some((row, clamped_col));
+            self.cursor_row = row;
+            self.cursor_col = clamped_col;
+        }
+    }
+
+    /// Handle mouse up - end selection
+    pub fn handle_mouse_up(&mut self) {
+        self.is_selecting = false;
+
+        // If selection is empty (start == end), clear it
+        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
+            if start == end {
+                self.selection_start = None;
+                self.selection_end = None;
+            }
+        }
+    }
+
+    /// Clear selection
+    pub fn clear_selection(&mut self) {
+        self.selection_start = None;
+        self.selection_end = None;
+        self.is_selecting = false;
     }
 
     /// Render the editor at a specific offset (for window rendering)
     pub fn render_at(&self, offset_x: i32, offset_y: i32) {
+        // Normalize selection (start should be before end)
+        let selection = if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
+            if start <= end {
+                Some((start, end))
+            } else {
+                Some((end, start))
+            }
+        } else {
+            None
+        };
+
         // Draw visible lines
         let visible_end = (self.scroll_offset + EDITOR_HEIGHT).min(self.lines.len());
 
         for (idx, line_num) in (self.scroll_offset..visible_end).enumerate() {
             let line = &self.lines[line_num];
             let y = offset_y + (idx as i32 * LINE_HEIGHT as i32);
+
+            // Draw selection background for this line if applicable
+            if let Some(((start_row, start_col), (end_row, end_col))) = selection {
+                if line_num >= start_row && line_num <= end_row {
+                    // Determine selection range for this line
+                    let sel_start_col = if line_num == start_row { start_col } else { 0 };
+                    let sel_end_col = if line_num == end_row { end_col } else { line.len() };
+
+                    // Draw selection highlight
+                    if sel_start_col < sel_end_col {
+                        let sel_x = offset_x + (sel_start_col as i32 * CHAR_WIDTH as i32);
+                        let sel_width = (sel_end_col - sel_start_col) as u32 * CHAR_WIDTH;
+
+                        for dy in 0..CHAR_HEIGHT {
+                            for dx in 0..sel_width {
+                                let px = sel_x + dx as i32;
+                                let py = y + dy as i32;
+                                if px >= 0 && py >= 0 {
+                                    framebuffer::draw_pixel(px as u32, py as u32, COLOR_SELECTION);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // Draw each character
             for (col, ch) in line.chars().enumerate() {
