@@ -10,24 +10,28 @@
 2025-10-31
 
 ## Current Goal
-Build interactive shell for file operations
+✅ **COMPLETE!** Interactive shell with persistent file storage working!
 
 ## Previous Goals (✅ Completed)
 - ✅ Get real keyboard and mouse input working from QEMU graphical window using VirtIO input devices
 - ✅ Implement VirtIO block device driver for disk read/write (read_sector, write_sector)
 - ✅ Implement custom filesystem (SimpleFS) with full CRUD operations
+- ✅ Build interactive shell for file operations
+- ✅ Fix file persistence across reboots
 
-## Current Status: ✅ **Filesystem Fully Working!**
+## Current Status: ✅ **Full Persistent Filesystem with Interactive Shell Working!**
 
-### ✅ SimpleFS Filesystem - WORKING! 📁
+### ✅ SimpleFS Filesystem - FULLY WORKING WITH PERSISTENCE! 📁💾
 - **ALL FILE OPERATIONS WORKING** - Complete filesystem implementation!
+- **✅ FILE PERSISTENCE WORKING** - Files survive across reboots!
 - **Format & Mount** - Initialize new disks and load existing filesystems
 - **Create Files** - Allocate sectors and update file table (tested: 100B, 2KB, 512B files)
 - **Delete Files** - Mark entries as free and update metadata
 - **Write Data** - Sector-by-sector writes with proper buffer handling
 - **Read Data** - Sector-by-sector reads with size validation
 - **List Files** - Enumerate all stored files with size/location info
-- All tests passing: format, mount, create, delete, read, write, verification
+- **Interactive Shell** - Type commands to create, write, read, delete files
+- All tests passing: format, mount, create, delete, read, write, verification, persistence
 
 ### ✅ VirtIO Block Device - WORKING! 💾
 - **SECTOR READ/WRITE WORKING** - Full disk I/O capabilities!
@@ -84,6 +88,37 @@ To avoid conflicts, devices MUST use non-overlapping addresses:
 2. **PCI 0:2:0** - ✅ Mouse - Working!
 
 ### Recent Fixes (2025-10-31)
+
+#### File Persistence Fixes
+10. **🔥 CRITICAL: File Persistence Not Working - VirtIO Test Overwriting File Table** 🔥
+   - **Problem**: Files created in shell didn't survive reboots - file table corrupted on every boot
+   - **Symptom**: `file_count > 0` but `list_files()` returned empty; file entries showed garbage data
+   - **Root Cause**: VirtIO block device test wrote pattern data to **sector 1** on EVERY boot
+     - Filesystem stores file table at sectors 1-2
+     - Test overwrote file table with `00 01 02 03...` pattern before filesystem mounted
+   - **Solution**: Changed test from sector 1 → sector 1000 (high sector, no collision)
+   - **Code**: `mod.rs:342` (changed `write_sector(1, ...)` → `write_sector(1000, ...)`)
+   - **Impact**: Without this fix, file persistence is completely broken despite proper write/read
+
+11. **File Table Buffer Overflow - 640 Bytes into 512-Byte Sector**
+   - **Problem**: File table (32 entries × 20 bytes = 640 bytes) doesn't fit in one 512-byte sector
+   - **Symptom**: Only first ~25 file entries could be stored; remaining entries lost
+   - **Solution**: Expanded file table to use **2 sectors** (sectors 1-2)
+     - Updated format() to write across both sectors
+     - Updated mount() to read from both sectors
+     - Updated create_file() and delete_file() to write both sectors
+   - **Code**: `filesystem.rs:18` (added `FILE_TABLE_SECTORS = 2`), multiple read/write loops
+   - **Impact**: Now supports full 32-file capacity
+
+#### Shell Implementation Fixes
+12. **Dangling Pointer to Block Devices**
+   - **Problem**: Shell stored raw pointer to block devices that went out of scope
+   - **Symptom**: Use-after-free causing undefined behavior
+   - **Solution**:
+     - Created static `BLOCK_DEVICES` storage in mod.rs
+     - Changed Shell to store device index instead of pointer
+     - Shell methods access device via static reference using index
+   - **Code**: `mod.rs:36` (static storage), `shell.rs:15` (device_index field)
 
 #### VirtIO Block Device Fixes
 9. **🔥 CRITICAL: Memory Conflicts Breaking Keyboard Input** 🔥
@@ -144,8 +179,9 @@ To avoid conflicts, devices MUST use non-overlapping addresses:
 - `src/kernel/virtio_input.rs` - VirtIO input driver
 - `src/kernel/virtio_blk.rs` - **NEW!** VirtIO block device driver (read/write sectors)
 - `src/kernel/filesystem.rs` - **NEW!** SimpleFS filesystem implementation (format, mount, create, delete, read, write)
+- `src/kernel/shell.rs` - **NEW!** Interactive shell for file operations (ls, cat, create, rm, write, clear)
 - `src/kernel/pci.rs` - PCI config space access (added `read_u8()`, `write_config_u32()`, `get_bar_size()`, `get_capabilities_ptr()`)
-- `src/kernel/mod.rs` - Kernel init and filesystem tests
+- `src/kernel/mod.rs` - Kernel init, static block device storage, filesystem tests
 
 ## VirtIO Block Driver Implementation (2025-10-31)
 
@@ -194,11 +230,11 @@ Simple custom filesystem with superblock, file table, and data sectors:
 
 **Disk Layout:**
 - **Sector 0**: Superblock (512 bytes) - magic number, version, total sectors, file count
-- **Sector 1**: File table (512 bytes) - up to 32 file entries (16 bytes each)
-- **Sectors 2-9**: Reserved for future use
-- **Sectors 10+**: Data blocks (file contents)
+- **Sectors 1-2**: File table (1024 bytes) - up to 32 file entries (20 bytes each)
+- **Sectors 3-10**: Reserved for future use
+- **Sectors 11+**: Data blocks (file contents)
 
-**File Entry Structure (16 bytes):**
+**File Entry Structure (20 bytes):**
 - name: 8 bytes (null-terminated)
 - start_sector: 2 bytes (starting sector number)
 - size_sectors: 2 bytes (number of sectors allocated)
@@ -289,9 +325,9 @@ All tests passing:
 cargo build --release --target aarch64-unknown-uefi --bin uefi_boot
 
 # Create test disk image (10MB, only needed once)
-dd if=/dev/zero of=test_disk.img bs=1M count=10
+qemu-img create -f raw test_disk.img 10M
 
-# Deploy and Run WITH BLOCK DEVICE (RECOMMENDED - includes all features)
+# Deploy and Run WITH PERSISTENT FILESYSTEM (RECOMMENDED)
 cp target/aarch64-unknown-uefi/release/uefi_boot.efi uefi_disk/EFI/BOOT/BOOTAA64.EFI && \
 qemu-system-aarch64 \
   -nodefaults \
@@ -303,9 +339,9 @@ qemu-system-aarch64 \
   -display cocoa \
   -device virtio-keyboard-pci \
   -device virtio-mouse-pci \
-  -drive format=raw,file=fat:rw:uefi_disk \
   -drive file=test_disk.img,if=none,format=raw,id=hd0 \
   -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off \
+  -drive format=raw,file=fat:rw:uefi_disk \
   -serial stdio
 
 # Deploy and Run WITHOUT BLOCK DEVICE (input only)
@@ -327,6 +363,9 @@ qemu-system-aarch64 \
 # - Must focus on QEMU graphical window (not terminal) for input to be captured!
 # - For block device: MUST use virtio-blk-pci with disable-legacy=on (not virtio-blk-device)
 # - Legacy VirtIO (0x1001) hangs on reads; modern VirtIO (0x1042) works perfectly
+# - DEVICE ORDER MATTERS: test_disk.img MUST come BEFORE uefi_disk for persistence
+#   - Device 0:3:0 = test_disk.img (persistent storage)
+#   - Device 0:4:0 = uefi_disk (boot disk, rejected by OS)
 ```
 
 ## Known Issues (Resolved!)

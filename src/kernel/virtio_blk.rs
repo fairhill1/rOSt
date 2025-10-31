@@ -154,8 +154,11 @@ impl Virtqueue {
         let total_size = desc_size + avail_size + used_size + 64 + 4;
 
         // Allocate physical memory (must be DMA accessible)
-        // Use 0x50020000 to avoid conflict with input devices at 0x50000000 and 0x50010000
-        let phys_addr = 0x50020000u64;
+        // Use static counter to allocate unique addresses for each device
+        // Start at 0x50020000, incrementing by 64KB for each device
+        static mut NEXT_VIRTQ_ADDR: u64 = 0x50020000;
+        let phys_addr = NEXT_VIRTQ_ADDR;
+        NEXT_VIRTQ_ADDR += 0x10000; // 64KB per device
         let virt_addr = phys_addr; // Identity mapped for now
 
         // Zero out the memory
@@ -235,8 +238,7 @@ impl VirtioBlkDevice {
         for device_num in 0..32 {
             if let Some(pci_dev) = PciDevice::new(0, device_num, 0, &config) {
                 // Check if this is a VirtIO block device
-                // Accept both modern (0x1042) and transitional (0x1001) devices
-                // Transitional devices support both legacy and modern - we'll use modern mode
+                // Try both modern and transitional, but will reject if queue_size is broken
                 if pci_dev.vendor_id == VIRTIO_VENDOR_ID &&
                    (pci_dev.device_id == VIRTIO_BLK_DEVICE_ID_MODERN ||
                     pci_dev.device_id == VIRTIO_BLK_DEVICE_ID_LEGACY) {
@@ -317,8 +319,17 @@ impl VirtioBlkDevice {
         mb();
 
         let queue_size = ptr::read_volatile(&(*common_cfg).queue_size);
+
+        // Validate queue size - reject broken devices
+        if queue_size == 0 || queue_size == 0xFFFF || queue_size > 1024 {
+            crate::kernel::uart_write_string(&alloc::format!(
+                "Invalid/broken queue size: {} - REJECTING DEVICE\r\n", queue_size
+            ));
+            return None;
+        }
+
         crate::kernel::uart_write_string(&alloc::format!(
-            "Device reports queue size: {}\r\n", queue_size
+            "Device reports queue size: {} - OK!\r\n", queue_size
         ));
 
         // Set queue size
@@ -372,8 +383,11 @@ impl VirtioBlkDevice {
 
         // Read and program BAR4 (where VirtIO capabilities point)
         let bar4_size = pci_dev.get_bar_size(4)?;
-        // Allocate at 0x300000 offset to avoid conflict with input devices at 0x100000 and 0x200000
-        let bar4_addr = mmio_base + 0x300000;
+        // Use static counter to allocate unique BAR addresses for each device
+        // Allocate starting at 0x300000, incrementing by 1MB for each device
+        static mut NEXT_BLK_BAR_OFFSET: u64 = 0x300000;
+        let bar4_addr = mmio_base + NEXT_BLK_BAR_OFFSET;
+        NEXT_BLK_BAR_OFFSET += 0x100000; // 1MB per device
 
         pci_dev.write_config_u32(0x20, bar4_addr as u32);
         pci_dev.write_config_u32(0x24, (bar4_addr >> 32) as u32);
