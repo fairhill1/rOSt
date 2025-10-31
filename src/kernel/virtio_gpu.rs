@@ -345,6 +345,8 @@ pub struct VirtioGpuDriver {
     framebuffer_resource_id: u32,
     cursor_resource_id: u32,
     cursor_cmd_buffer: u64, // Reusable buffer for cursor commands
+    control_cmd_buffer: u64, // Reusable buffer for control commands
+    control_resp_buffer: u64, // Reusable buffer for control responses
 }
 
 impl VirtioGpuDriver {
@@ -368,6 +370,8 @@ impl VirtioGpuDriver {
                 framebuffer_resource_id: 1,
                 cursor_resource_id: 2,
                 cursor_cmd_buffer: 0,
+                control_cmd_buffer: 0,
+                control_resp_buffer: 0,
             })
         } else {
             None
@@ -440,8 +444,10 @@ impl VirtioGpuDriver {
         // Set up virtqueues
         self.setup_virtqueues()?;
 
-        // Allocate reusable buffer for cursor commands
+        // Allocate reusable buffers
         self.cursor_cmd_buffer = crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate cursor buffer")?;
+        self.control_cmd_buffer = crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate control cmd buffer")?;
+        self.control_resp_buffer = crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate control resp buffer")?;
 
         // Set DRIVER_OK
         self.set_status(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
@@ -633,9 +639,9 @@ impl VirtioGpuDriver {
 
     fn send_command(&mut self, cmd: &[u8], resp: &mut [u8]) -> Result<(), &'static str> {
 
-        // Allocate buffers for command and response
-        let cmd_buf = crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate cmd buffer")?;
-        let resp_buf = crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate resp buffer")?;
+        // Use pre-allocated reusable buffers
+        let cmd_buf = self.control_cmd_buffer;
+        let resp_buf = self.control_resp_buffer;
 
         // Copy command to buffer
         unsafe {
@@ -673,7 +679,7 @@ impl VirtioGpuDriver {
                         }
                     }
 
-                    // Free descriptors
+                    // Free descriptors (buffers are reused, don't free them)
                     controlq.free_desc(desc_idx);
                     if buffers.len() > 1 {
                         controlq.free_desc((desc_idx + 1) % controlq.queue_size);

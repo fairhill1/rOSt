@@ -639,6 +639,41 @@ pub fn test_input_events() -> (bool, bool) {
                         }
                         _ => {}
                     }
+                } else if let Some(snake_id) = crate::kernel::window_manager::get_focused_snake_id() {
+                    // Snake game keyboard controls
+                    match key {
+                        103 => { // KEY_UP
+                            if let Some(game) = crate::kernel::snake::get_snake_game(snake_id) {
+                                game.set_direction(crate::kernel::snake::Direction::Up);
+                            }
+                            needs_full_redraw = true;
+                        }
+                        108 => { // KEY_DOWN
+                            if let Some(game) = crate::kernel::snake::get_snake_game(snake_id) {
+                                game.set_direction(crate::kernel::snake::Direction::Down);
+                            }
+                            needs_full_redraw = true;
+                        }
+                        105 => { // KEY_LEFT
+                            if let Some(game) = crate::kernel::snake::get_snake_game(snake_id) {
+                                game.set_direction(crate::kernel::snake::Direction::Left);
+                            }
+                            needs_full_redraw = true;
+                        }
+                        106 => { // KEY_RIGHT
+                            if let Some(game) = crate::kernel::snake::get_snake_game(snake_id) {
+                                game.set_direction(crate::kernel::snake::Direction::Right);
+                            }
+                            needs_full_redraw = true;
+                        }
+                        19 => { // KEY_R = 19 in evdev (R key to restart)
+                            if let Some(game) = crate::kernel::snake::get_snake_game(snake_id) {
+                                game.reset();
+                            }
+                            needs_full_redraw = true;
+                        }
+                        _ => {}
+                    }
                 }
             }
             InputEvent::KeyReleased { key: _, modifiers: _ } => {

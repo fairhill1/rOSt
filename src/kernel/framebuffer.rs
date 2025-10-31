@@ -470,3 +470,20 @@ pub fn get_screen_dimensions() -> (u32, u32) {
         (SCREEN_WIDTH, SCREEN_HEIGHT)
     }
 }
+
+/// Get direct access to the back buffer for custom rendering
+pub fn get_back_buffer() -> &'static mut [u32] {
+    unsafe {
+        if let Some(back) = BACK_BUFFER {
+            let size = (SCREEN_HEIGHT * SCREEN_STRIDE) as usize;
+            core::slice::from_raw_parts_mut(back, size)
+        } else if let Some(ref fb) = FRAMEBUFFER {
+            // Fallback to direct framebuffer if no back buffer
+            let size = (SCREEN_HEIGHT * SCREEN_STRIDE) as usize;
+            core::slice::from_raw_parts_mut(fb.base, size)
+        } else {
+            // Return empty slice if no framebuffer is initialized
+            &mut []
+        }
+    }
+}
