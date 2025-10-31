@@ -1,6 +1,8 @@
 // GUI Console/Terminal - Display text on the framebuffer
 
 use crate::kernel::framebuffer;
+extern crate alloc;
+use alloc::vec::Vec;
 
 const CONSOLE_WIDTH: usize = 64;  // 1024 pixels / 16 = 64 chars
 const CONSOLE_HEIGHT: usize = 38; // 768 pixels / 20 = 38 lines (with spacing)
@@ -18,7 +20,7 @@ pub struct Console {
     dirty: bool, // Track if we need to redraw
 }
 
-static mut CONSOLE: Option<Console> = None;
+static mut CONSOLES: Vec<Console> = Vec::new();
 
 impl Console {
     pub fn new() -> Self {
@@ -178,63 +180,73 @@ impl Console {
     }
 }
 
-/// Initialize the global console
+/// Initialize the console system
 pub fn init() {
+    // Nothing to do - consoles are created on demand
+}
+
+/// Create a new console instance and return its ID
+pub fn create_console() -> usize {
     unsafe {
-        CONSOLE = Some(Console::new());
+        CONSOLES.push(Console::new());
+        CONSOLES.len() - 1
     }
 }
 
-/// Write a character to the console
-pub fn write_char(ch: u8) {
+/// Remove a console instance by ID
+pub fn remove_console(id: usize) {
     unsafe {
-        if let Some(ref mut console) = CONSOLE {
-            console.write_char(ch);
+        if id < CONSOLES.len() {
+            CONSOLES.remove(id);
         }
     }
 }
 
-/// Write a string to the console
-pub fn write_string(s: &str) {
+/// Get a console instance by ID
+pub fn get_console(id: usize) -> Option<&'static mut Console> {
     unsafe {
-        if let Some(ref mut console) = CONSOLE {
-            console.write_string(s);
-        }
+        CONSOLES.get_mut(id)
     }
 }
 
-/// Clear the console
-pub fn clear() {
-    unsafe {
-        if let Some(ref mut console) = CONSOLE {
-            console.clear();
-        }
+/// Write a character to a specific console
+pub fn write_char(id: usize, ch: u8) {
+    if let Some(console) = get_console(id) {
+        console.write_char(ch);
     }
 }
 
-/// Render the console to the framebuffer
-pub fn render() {
-    unsafe {
-        if let Some(ref mut console) = CONSOLE {
-            console.render();
-        }
+/// Write a string to a specific console
+pub fn write_string(id: usize, s: &str) {
+    if let Some(console) = get_console(id) {
+        console.write_string(s);
     }
 }
 
-/// Render the console at a specific offset (for window rendering)
-pub fn render_at(offset_x: i32, offset_y: i32, max_width: u32, max_height: u32) {
-    unsafe {
-        if let Some(ref mut console) = CONSOLE {
-            console.render_at(offset_x, offset_y, max_width, max_height);
-        }
+/// Clear a specific console
+pub fn clear(id: usize) {
+    if let Some(console) = get_console(id) {
+        console.clear();
     }
 }
 
-/// Mark the console as dirty (needs redraw)
-pub fn mark_dirty() {
-    unsafe {
-        if let Some(ref mut console) = CONSOLE {
-            console.mark_dirty();
-        }
+/// Render a specific console to the framebuffer
+pub fn render(id: usize) {
+    if let Some(console) = get_console(id) {
+        console.render();
+    }
+}
+
+/// Render a specific console at a specific offset (for window rendering)
+pub fn render_at(id: usize, offset_x: i32, offset_y: i32, max_width: u32, max_height: u32) {
+    if let Some(console) = get_console(id) {
+        console.render_at(offset_x, offset_y, max_width, max_height);
+    }
+}
+
+/// Mark a specific console as dirty (needs redraw)
+pub fn mark_dirty(id: usize) {
+    if let Some(console) = get_console(id) {
+        console.mark_dirty();
     }
 }
