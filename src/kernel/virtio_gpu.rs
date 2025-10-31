@@ -1,17 +1,15 @@
-// VirtIO-GPU driver for direct hardware graphics access
+// VirtIO-GPU driver with hardware cursor support
 #![allow(dead_code)]
 
 use crate::kernel::pci::{PciDevice, find_device};
+use core::ptr::{read_volatile, write_volatile};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 // VirtIO device IDs
 const VIRTIO_VENDOR_ID: u16 = 0x1AF4;
 const VIRTIO_GPU_DEVICE_ID: u16 = 0x1050;
 
-// VirtIO-GPU specific constants
-const VIRTIO_GPU_F_VIRGL: u32 = 0;
-const VIRTIO_GPU_F_EDID: u32 = 1;
-
-// VirtIO-GPU commands
+// VirtIO GPU commands
 const VIRTIO_GPU_CMD_GET_DISPLAY_INFO: u32 = 0x0100;
 const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: u32 = 0x0101;
 const VIRTIO_GPU_CMD_RESOURCE_UNREF: u32 = 0x0102;
@@ -20,39 +18,97 @@ const VIRTIO_GPU_CMD_RESOURCE_FLUSH: u32 = 0x0104;
 const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D: u32 = 0x0105;
 const VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING: u32 = 0x0106;
 const VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING: u32 = 0x0107;
+const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x0300;
+const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x0301;
 
-// VirtIO-GPU response types
+// VirtIO GPU response types
 const VIRTIO_GPU_RESP_OK_NODATA: u32 = 0x1100;
 const VIRTIO_GPU_RESP_OK_DISPLAY_INFO: u32 = 0x1101;
 
-// VirtIO-GPU formats
+// VirtIO GPU formats
 const VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM: u32 = 1;
 const VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM: u32 = 2;
 const VIRTIO_GPU_FORMAT_A8R8G8B8_UNORM: u32 = 3;
 const VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM: u32 = 4;
 
-#[repr(C, packed)]
-pub struct VirtioGpuRect {
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
+// VirtIO GPU flags
+const VIRTIO_GPU_FLAG_FENCE: u32 = 1 << 0;
+
+// VirtIO status register bits
+const VIRTIO_STATUS_ACKNOWLEDGE: u8 = 1;
+const VIRTIO_STATUS_DRIVER: u8 = 2;
+const VIRTIO_STATUS_FEATURES_OK: u8 = 8;
+const VIRTIO_STATUS_DRIVER_OK: u8 = 4;
+const VIRTIO_STATUS_FAILED: u8 = 128;
+
+// Virtqueue descriptor flags
+const VIRTQ_DESC_F_NEXT: u16 = 1;
+const VIRTQ_DESC_F_WRITE: u16 = 2;
+
+// Queue sizes
+const CONTROLQ_SIZE: u16 = 64;
+const CURSORQ_SIZE: u16 = 16;
+
+// VirtIO common config register offsets
+const VIRTIO_PCI_COMMON_DFSELECT: u64 = 0x00;
+const VIRTIO_PCI_COMMON_DF: u64 = 0x04;
+const VIRTIO_PCI_COMMON_GFSELECT: u64 = 0x08;
+const VIRTIO_PCI_COMMON_GF: u64 = 0x0C;
+const VIRTIO_PCI_COMMON_MSIXCFG: u64 = 0x10;
+const VIRTIO_PCI_COMMON_NUMQ: u64 = 0x12;
+const VIRTIO_PCI_COMMON_STATUS: u64 = 0x14;
+const VIRTIO_PCI_COMMON_CFGGENERATION: u64 = 0x15;
+const VIRTIO_PCI_COMMON_Q_SELECT: u64 = 0x16;
+const VIRTIO_PCI_COMMON_Q_SIZE: u64 = 0x18;
+const VIRTIO_PCI_COMMON_Q_MSIX: u64 = 0x1A;
+const VIRTIO_PCI_COMMON_Q_ENABLE: u64 = 0x1C;
+const VIRTIO_PCI_COMMON_Q_NOFF: u64 = 0x1E;
+const VIRTIO_PCI_COMMON_Q_DESCLO: u64 = 0x20;
+const VIRTIO_PCI_COMMON_Q_DESCHI: u64 = 0x24;
+const VIRTIO_PCI_COMMON_Q_AVAILLO: u64 = 0x28;
+const VIRTIO_PCI_COMMON_Q_AVAILHI: u64 = 0x2C;
+const VIRTIO_PCI_COMMON_Q_USEDLO: u64 = 0x30;
+const VIRTIO_PCI_COMMON_Q_USEDHI: u64 = 0x34;
+
+// Virtqueue descriptor
+#[repr(C, align(16))]
+#[derive(Copy, Clone)]
+struct VirtqDesc {
+    addr: u64,
+    len: u32,
+    flags: u16,
+    next: u16,
 }
 
-#[repr(C, packed)]
-pub struct VirtioGpuDisplayOne {
-    pub r: VirtioGpuRect,
-    pub enabled: u32,
-    pub flags: u32,
+// Virtqueue available ring
+#[repr(C, align(2))]
+struct VirtqAvail {
+    flags: u16,
+    idx: u16,
+    ring: [u16; 64],
+    used_event: u16,
 }
 
-#[repr(C, packed)]
-pub struct VirtioGpuRespDisplayInfo {
-    pub hdr: VirtioGpuCtrlHdr,
-    pub pmodes: [VirtioGpuDisplayOne; 16],
+// Virtqueue used element
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct VirtqUsedElem {
+    id: u32,
+    len: u32,
 }
 
+// Virtqueue used ring
+#[repr(C, align(4))]
+struct VirtqUsed {
+    flags: u16,
+    idx: u16,
+    ring: [VirtqUsedElem; 64],
+    avail_event: u16,
+}
+
+// VirtIO GPU command structures
 #[repr(C, packed)]
+#[derive(Copy, Clone)]
 pub struct VirtioGpuCtrlHdr {
     pub hdr_type: u32,
     pub flags: u32,
@@ -62,518 +118,689 @@ pub struct VirtioGpuCtrlHdr {
 }
 
 #[repr(C, packed)]
-pub struct VirtioGpuResourceCreate2d {
-    pub hdr: VirtioGpuCtrlHdr,
-    pub resource_id: u32,
-    pub format: u32,
+#[derive(Copy, Clone)]
+pub struct VirtioGpuRect {
+    pub x: u32,
+    pub y: u32,
     pub width: u32,
     pub height: u32,
 }
 
 #[repr(C, packed)]
-pub struct VirtioGpuSetScanout {
-    pub hdr: VirtioGpuCtrlHdr,
-    pub r: VirtioGpuRect,
-    pub scanout_id: u32,
-    pub resource_id: u32,
+#[derive(Copy, Clone)]
+struct VirtioGpuDisplayOne {
+    r: VirtioGpuRect,
+    enabled: u32,
+    flags: u32,
 }
 
 #[repr(C, packed)]
-pub struct VirtioGpuResourceFlush {
-    pub hdr: VirtioGpuCtrlHdr,
-    pub r: VirtioGpuRect,
-    pub resource_id: u32,
-    pub padding: u32,
+struct VirtioGpuRespDisplayInfo {
+    hdr: VirtioGpuCtrlHdr,
+    pmodes: [VirtioGpuDisplayOne; 16],
 }
 
 #[repr(C, packed)]
-pub struct VirtioGpuTransferToHost2d {
-    pub hdr: VirtioGpuCtrlHdr,
-    pub r: VirtioGpuRect,
-    pub offset: u64,
-    pub resource_id: u32,
-    pub padding: u32,
+struct VirtioGpuResourceCreate2d {
+    hdr: VirtioGpuCtrlHdr,
+    resource_id: u32,
+    format: u32,
+    width: u32,
+    height: u32,
+}
+
+#[repr(C, packed)]
+struct VirtioGpuSetScanout {
+    hdr: VirtioGpuCtrlHdr,
+    r: VirtioGpuRect,
+    scanout_id: u32,
+    resource_id: u32,
+}
+
+#[repr(C, packed)]
+struct VirtioGpuResourceFlush {
+    hdr: VirtioGpuCtrlHdr,
+    r: VirtioGpuRect,
+    resource_id: u32,
+    padding: u32,
+}
+
+#[repr(C, packed)]
+struct VirtioGpuTransferToHost2d {
+    hdr: VirtioGpuCtrlHdr,
+    r: VirtioGpuRect,
+    offset: u64,
+    resource_id: u32,
+    padding: u32,
+}
+
+#[repr(C, packed)]
+struct VirtioGpuResourceAttachBacking {
+    hdr: VirtioGpuCtrlHdr,
+    resource_id: u32,
+    nr_entries: u32,
+}
+
+#[repr(C, packed)]
+struct VirtioGpuMemEntry {
+    addr: u64,
+    length: u32,
+    padding: u32,
+}
+
+#[repr(C, packed)]
+struct VirtioGpuCursorPos {
+    scanout_id: u32,
+    x: u32,
+    y: u32,
+    padding: u32,
+}
+
+#[repr(C, packed)]
+struct VirtioGpuUpdateCursor {
+    hdr: VirtioGpuCtrlHdr,
+    pos: VirtioGpuCursorPos,
+    resource_id: u32,
+    hot_x: u32,
+    hot_y: u32,
+    padding: u32,
+}
+
+// Virtqueue implementation
+struct Virtqueue {
+    desc_table: *mut VirtqDesc,
+    avail_ring: *mut VirtqAvail,
+    used_ring: *mut VirtqUsed,
+    queue_size: u16,
+    last_used_idx: u16,
+    free_head: u16,
+    num_free: u16,
+}
+
+impl Virtqueue {
+    fn new(size: u16, desc_addr: u64, avail_addr: u64, used_addr: u64) -> Self {
+        let desc_table = desc_addr as *mut VirtqDesc;
+        let avail_ring = avail_addr as *mut VirtqAvail;
+        let used_ring = used_addr as *mut VirtqUsed;
+
+        unsafe {
+            // Initialize descriptor table with free list
+            for i in 0..size {
+                let desc = desc_table.add(i as usize);
+                write_volatile(&mut (*desc).addr, 0);
+                write_volatile(&mut (*desc).len, 0);
+                write_volatile(&mut (*desc).flags, 0);
+                write_volatile(&mut (*desc).next, (i + 1) % size);
+            }
+
+            // Initialize available ring
+            write_volatile(&mut (*avail_ring).flags, 0);
+            write_volatile(&mut (*avail_ring).idx, 0);
+
+            // Initialize used ring
+            write_volatile(&mut (*used_ring).flags, 0);
+            write_volatile(&mut (*used_ring).idx, 0);
+        }
+
+        Virtqueue {
+            desc_table,
+            avail_ring,
+            used_ring,
+            queue_size: size,
+            last_used_idx: 0,
+            free_head: 0,
+            num_free: size,
+        }
+    }
+
+    fn alloc_desc(&mut self) -> Option<u16> {
+        if self.num_free == 0 {
+            return None;
+        }
+        let desc_idx = self.free_head;
+        self.free_head = unsafe { read_volatile(&(*self.desc_table.add(desc_idx as usize)).next) };
+        self.num_free -= 1;
+        Some(desc_idx)
+    }
+
+    fn free_desc(&mut self, desc_idx: u16) {
+        unsafe {
+            write_volatile(&mut (*self.desc_table.add(desc_idx as usize)).next, self.free_head);
+        }
+        self.free_head = desc_idx;
+        self.num_free += 1;
+    }
+
+    fn add_buffer(&mut self, buffers: &[(u64, u32, bool)]) -> Option<u16> {
+        if buffers.is_empty() || buffers.len() > self.num_free as usize {
+            return None;
+        }
+
+        let head = self.alloc_desc()?;
+        let mut current = head;
+
+        for (i, &(addr, len, device_writable)) in buffers.iter().enumerate() {
+            let is_last = i == buffers.len() - 1;
+
+            unsafe {
+                let desc = self.desc_table.add(current as usize);
+                write_volatile(&mut (*desc).addr, addr);
+                write_volatile(&mut (*desc).len, len);
+
+                let mut flags = 0u16;
+                if device_writable {
+                    flags |= VIRTQ_DESC_F_WRITE;
+                }
+                if !is_last {
+                    flags |= VIRTQ_DESC_F_NEXT;
+                    let next = self.alloc_desc()?;
+                    write_volatile(&mut (*desc).next, next);
+                    write_volatile(&mut (*desc).flags, flags);
+                    current = next;
+                } else {
+                    write_volatile(&mut (*desc).flags, flags);
+                }
+            }
+        }
+
+        // Add to available ring
+        unsafe {
+            let avail_idx = read_volatile(&(*self.avail_ring).idx);
+            let ring_idx = (avail_idx % self.queue_size) as usize;
+            write_volatile(&mut (*self.avail_ring).ring[ring_idx], head);
+            write_volatile(&mut (*self.avail_ring).idx, avail_idx.wrapping_add(1));
+        }
+
+        Some(head)
+    }
+
+    fn get_used_buffer(&mut self) -> Option<(u16, u32)> {
+        unsafe {
+            let used_idx = read_volatile(&(*self.used_ring).idx);
+            if self.last_used_idx == used_idx {
+                return None;
+            }
+
+            let ring_idx = (self.last_used_idx % self.queue_size) as usize;
+            let elem = read_volatile(&(*self.used_ring).ring[ring_idx]);
+            self.last_used_idx = self.last_used_idx.wrapping_add(1);
+
+            Some((elem.id as u16, elem.len))
+        }
+    }
 }
 
 pub struct VirtioGpuDriver {
     pci_device: PciDevice,
-    framebuffer_addr: u64,
+    common_cfg: u64,
+    notify_base: u64,
+    notify_off_multiplier: u32,
+    controlq: Option<Virtqueue>,
+    cursorq: Option<Virtqueue>,
+    controlq_notify_off: u16,
+    cursorq_notify_off: u16,
     width: u32,
     height: u32,
-    resource_id: u32,
+    framebuffer_addr: u64,
+    framebuffer_resource_id: u32,
+    cursor_resource_id: u32,
+    cursor_cmd_buffer: u64, // Reusable buffer for cursor commands
 }
 
 impl VirtioGpuDriver {
     pub fn new() -> Option<Self> {
-        // Find VirtIO-GPU device on PCI bus
         if let Some(pci_device) = find_device(VIRTIO_VENDOR_ID, VIRTIO_GPU_DEVICE_ID) {
-            // Enable the PCI device before using it
             pci_device.enable_memory_access();
             pci_device.enable_bus_mastering();
-            
-            // DEBUG: Print PCI command register to see if device is enabled
-            let command = pci_device.read_config_u16(0x04);
-            crate::kernel::uart_write_string("PCI Command register: 0x");
-            let mut cmd = command as u64;
-            for _ in 0..4 {
-                let digit = (cmd >> 12) & 0xF;
-                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                cmd <<= 4;
-            }
-            crate::kernel::uart_write_string("\r\n");
-            
+
             Some(VirtioGpuDriver {
                 pci_device,
-                framebuffer_addr: 0,
+                common_cfg: 0,
+                notify_base: 0,
+                notify_off_multiplier: 0,
+                controlq: None,
+                cursorq: None,
+                controlq_notify_off: 0,
+                cursorq_notify_off: 0,
                 width: 0,
                 height: 0,
-                resource_id: 1,
+                framebuffer_addr: 0,
+                framebuffer_resource_id: 1,
+                cursor_resource_id: 2,
+                cursor_cmd_buffer: 0,
             })
         } else {
             None
         }
     }
 
+    fn allocate_bar4(&mut self) -> Result<(), &'static str> {
+        // VirtIO GPU is typically the first GPU device on the PCI bus (device 1)
+        // Allocate BAR4 at 0x10100000 (between device 0 and device 2)
+        let bar4_address = 0x10100000u64;
+
+        crate::kernel::uart_write_string("VirtIO GPU: Allocating BAR4 at 0x");
+        let mut addr = bar4_address;
+        for _ in 0..16 {
+            let digit = (addr >> 60) & 0xF;
+            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
+            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
+            addr <<= 4;
+        }
+        crate::kernel::uart_write_string("\r\n");
+
+        // Program BAR4 (64-bit BAR, so we need BAR4 and BAR5)
+        self.pci_device.write_config_u32(0x20, bar4_address as u32); // Lower 32 bits
+        self.pci_device.write_config_u32(0x24, (bar4_address >> 32) as u32); // Upper 32 bits
+
+        // Verify
+        let readback = self.pci_device.read_config_u32(0x20);
+        crate::kernel::uart_write_string("VirtIO GPU: BAR4 readback: 0x");
+        let mut rb = readback as u64;
+        for _ in 0..8 {
+            let digit = (rb >> 28) & 0xF;
+            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
+            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
+            rb <<= 4;
+        }
+        crate::kernel::uart_write_string("\r\n");
+
+        Ok(())
+    }
+
     pub fn initialize(&mut self) -> Result<(), &'static str> {
-        // Enable PCI device
-        self.pci_device.enable_bus_mastering();
-        self.pci_device.enable_memory_access();
+        crate::kernel::uart_write_string("VirtIO GPU: Starting initialization\r\n");
 
-        // Initialize VirtIO device
-        self.virtio_init()?;
+        // Allocate BAR4 before reading capabilities
+        self.allocate_bar4()?;
 
-        // Get display info
-        self.get_display_info()?;
+        // Find VirtIO capabilities
+        self.find_capabilities()?;
 
-        // Create 2D resource for framebuffer
-        self.create_2d_resource()?;
+        // Reset device
+        self.reset_device();
 
-        // Set up scanout
-        self.set_scanout()?;
+        // Set ACKNOWLEDGE
+        self.set_status(VIRTIO_STATUS_ACKNOWLEDGE);
 
+        // Set DRIVER
+        self.set_status(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+
+        // Negotiate features
+        self.negotiate_features()?;
+
+        // Set FEATURES_OK
+        self.set_status(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK);
+
+        // Verify FEATURES_OK
+        if !self.check_features_ok() {
+            return Err("Device rejected features");
+        }
+
+        // Set up virtqueues
+        self.setup_virtqueues()?;
+
+        // Allocate reusable buffer for cursor commands
+        self.cursor_cmd_buffer = crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate cursor buffer")?;
+
+        // Set DRIVER_OK
+        self.set_status(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
+
+        crate::kernel::uart_write_string("VirtIO GPU: Device initialized\r\n");
         Ok(())
     }
 
-    fn virtio_init(&mut self) -> Result<(), &'static str> {
-        crate::kernel::uart_write_string("VirtIO-GPU initialization - using VirtIO protocol instead of direct BAR access\r\n");
-        
-        // Based on QEMU documentation and KVM-ARM maintainers research:
-        // Linear framebuffers in PCI device MMIO BARs don't work on aarch64 due to cache coherency
-        // The solution is to use VirtIO-GPU protocol properly instead of direct memory access
-        
-        // Create a working VirtIO-GPU implementation
-        return self.setup_virtio_gpu_properly();
-        
-        // Print all BAR values (even if 0) - THIS CODE SHOULD NOT EXECUTE
-        crate::kernel::uart_write_string("BAR scan:\r\n");
-        let mut found_bars: [(u8, u64); 6] = [(0, 0); 6];
-        let mut bar_count = 0;
-        
-        for bar_idx in 0..6 {
-            let raw_bar = self.pci_device.read_config_u32(0x10 + (bar_idx * 4));
-            crate::kernel::uart_write_string("  BAR");
-            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, (bar_idx + b'0')); }
-            crate::kernel::uart_write_string(" raw: 0x");
-            let mut val = raw_bar as u64;
-            for _ in 0..8 {
-                let digit = (val >> 28) & 0xF;
-                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                val <<= 4;
-            }
-            
-            if let Some(bar_addr) = self.pci_device.get_bar_address(bar_idx) {
-                crate::kernel::uart_write_string(" -> valid: 0x");
-                let mut addr = bar_addr;
-                for _ in 0..16 {
-                    let digit = (addr >> 60) & 0xF;
-                    let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                    unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                    addr <<= 4;
+    fn find_capabilities(&mut self) -> Result<(), &'static str> {
+        let mut cap_ptr = self.pci_device.read_capability_pointer().ok_or("No capabilities")?;
+
+        let mut common_cfg_bar = None;
+        let mut common_cfg_offset = None;
+        let mut notify_bar = None;
+        let mut notify_offset = None;
+        let mut notify_off_multiplier = None;
+
+        while cap_ptr != 0 {
+            let cap_id = self.pci_device.read_config_u8(cap_ptr);
+            let next_ptr = self.pci_device.read_config_u8(cap_ptr + 1);
+
+            if cap_id == 0x09 { // VirtIO capability
+                let cfg_type = self.pci_device.read_config_u8(cap_ptr + 3);
+                let bar = self.pci_device.read_config_u8(cap_ptr + 4);
+                let offset = self.pci_device.read_config_u32(cap_ptr + 8);
+
+                match cfg_type {
+                    1 => { // Common config
+                        common_cfg_bar = Some(bar);
+                        common_cfg_offset = Some(offset);
+                    }
+                    2 => { // Notify config
+                        notify_bar = Some(bar);
+                        notify_offset = Some(offset);
+                        notify_off_multiplier = Some(self.pci_device.read_config_u32(cap_ptr + 16));
+                    }
+                    _ => {}
                 }
-                found_bars[bar_count] = (bar_idx, bar_addr);
-                bar_count += 1;
             }
-            crate::kernel::uart_write_string("\r\n");
+
+            cap_ptr = next_ptr;
         }
-        
-        // Parse VirtIO PCI capabilities per VirtIO spec
-        crate::kernel::uart_write_string("Parsing PCI capabilities...\r\n");
-        let (common_cfg_addr, notify_addr) = if let Some(cap_ptr) = self.pci_device.read_capability_pointer() {
-            self.parse_virtio_capabilities(cap_ptr)?
+
+        // Calculate actual addresses
+        if let (Some(bar), Some(offset)) = (common_cfg_bar, common_cfg_offset) {
+            let bar_addr = self.pci_device.get_bar_address(bar).ok_or("Invalid BAR")?;
+            self.common_cfg = bar_addr + offset as u64;
         } else {
-            crate::kernel::uart_write_string("No PCI capabilities found\r\n");
-            return Err("No PCI capabilities list");
-        };
-        
-        crate::kernel::uart_write_string("Found VirtIO config structures!\r\n");
-        
-        // VirtIO-GPU found but initialization is problematic - use simple framebuffer
-        crate::kernel::uart_write_string("VirtIO-GPU found but using simple framebuffer approach\r\n");
-        
-        // Skip the simple framebuffer approach and try proper VirtIO initialization
-        // Continue with the VirtIO device initialization below
-        
-        // Check PCI configuration space to determine VirtIO version
-        // Look at PCI device/vendor ID to understand what we're dealing with
-        
-        // VirtIO modern devices (1.0+) use device IDs 0x1040-0x107F
-        // VirtIO legacy devices (0.9.5) use device IDs 0x1000-0x103F  
-        // VirtIO-GPU is device 0x1050, so this should be modern VirtIO
-        
-        crate::kernel::uart_write_string("VirtIO device ID: 0x");
-        let mut device_id = self.pci_device.device_id as u64;
-        for _ in 0..4 {
-            let digit = (device_id >> 12) & 0xF;
-            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-            device_id <<= 4;
+            return Err("No common config found");
         }
-        crate::kernel::uart_write_string("\r\n");
-        crate::kernel::uart_write_string("=== End Debug ===\r\n");
-        
-        if self.pci_device.device_id >= 0x1040 && self.pci_device.device_id <= 0x107F {
-            // Modern VirtIO 1.0+ device
-            crate::kernel::uart_write_string("Trying modern VirtIO 1.0+ initialization...\r\n");
-            let result = self.init_modern_virtio(&found_bars[..bar_count]);
-            if result.is_err() {
-                crate::kernel::uart_write_string("Modern VirtIO failed, trying legacy...\r\n");
-                self.init_legacy_virtio(&found_bars[..bar_count])
-            } else {
-                result
-            }
+
+        if let (Some(bar), Some(offset)) = (notify_bar, notify_offset) {
+            let bar_addr = self.pci_device.get_bar_address(bar).ok_or("Invalid BAR")?;
+            self.notify_base = bar_addr + offset as u64;
+            self.notify_off_multiplier = notify_off_multiplier.unwrap_or(0);
         } else {
-            // Legacy VirtIO 0.9.5 device
-            crate::kernel::uart_write_string("Trying legacy VirtIO 0.9.5 initialization...\r\n");
-            self.init_legacy_virtio(&found_bars[..bar_count])
+            return Err("No notify config found");
         }
-    }
-    
-    fn init_modern_virtio(&mut self, bars: &[(u8, u64)]) -> Result<(), &'static str> {
-        // Debug: print all available BARs first
-        crate::kernel::uart_write_string("Available BARs:\r\n");
-        for &(bar_idx, bar_addr) in bars {
-            crate::kernel::uart_write_string("  BAR");
-            // Simple number printing
-            let digit = (bar_idx + b'0') as char;
-            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, digit as u8); }
-            crate::kernel::uart_write_string(": 0x");
-            // Simple hex output
-            let mut addr = bar_addr;
-            for _ in 0..16 {
-                let digit = (addr >> 60) & 0xF;
-                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                addr <<= 4;
-            }
-            crate::kernel::uart_write_string("\r\n");
-        }
-        
-        // Check if we have any valid BARs
-        if bars.is_empty() {
-            crate::kernel::uart_write_string("No valid BARs available - VirtIO device cannot be initialized\r\n");
-            return Err("No valid BARs available");
-        }
-        
-        // Use first available BAR for both common config and notify
-        let (bar_idx, bar_addr) = bars[0];
-        let common_cfg_base = bar_addr;
-        let notify_base = bar_addr + 0x1000; // Offset within same BAR
-        
-        crate::kernel::uart_write_string("Using BAR for VirtIO config: 0x");
-        let mut addr = common_cfg_base;
-        for _ in 0..16 {
-            let digit = (addr >> 60) & 0xF;
-            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-            addr <<= 4;
-        }
-        crate::kernel::uart_write_string("\r\n");
-        
-        self.init_modern_virtio_with_bases(common_cfg_base, notify_base)
-    }
-    
-    fn init_modern_virtio_with_bases(&mut self, common_base: u64, notify_base: u64) -> Result<(), &'static str> {
-        // Be more permissive with address validation for VirtIO
-        if common_base == 0 {
-            return Err("Invalid common_base address (null)");
-        }
-        if notify_base == 0 {
-            return Err("Invalid notify_base address (null)");
-        }
-        
-        crate::kernel::uart_write_string("VirtIO common config at 0x");
-        let mut addr = common_base;
-        for _ in 0..16 {
-            let digit = (addr >> 60) & 0xF;
-            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-            addr <<= 4;
-        }
-        crate::kernel::uart_write_string("\r\n");
-        
-        unsafe {
-            // Modern VirtIO common configuration registers
-            const VIRTIO_PCI_COMMON_DFSELECT: u64 = 0x00;
-            const VIRTIO_PCI_COMMON_DF: u64 = 0x04;
-            const VIRTIO_PCI_COMMON_GFSELECT: u64 = 0x08;
-            const VIRTIO_PCI_COMMON_GF: u64 = 0x0C;
-            const VIRTIO_PCI_COMMON_MSIXCFG: u64 = 0x10;
-            const VIRTIO_PCI_COMMON_NUMQ: u64 = 0x12;
-            const VIRTIO_PCI_COMMON_STATUS: u64 = 0x14;
-            const VIRTIO_PCI_COMMON_CFGGENERATION: u64 = 0x15;
-            const VIRTIO_PCI_COMMON_Q_SELECT: u64 = 0x16;
-            const VIRTIO_PCI_COMMON_Q_SIZE: u64 = 0x18;
-            const VIRTIO_PCI_COMMON_Q_MSIX: u64 = 0x1A;
-            const VIRTIO_PCI_COMMON_Q_ENABLE: u64 = 0x1C;
-            const VIRTIO_PCI_COMMON_Q_NOFF: u64 = 0x1E;
-            const VIRTIO_PCI_COMMON_Q_DESCLO: u64 = 0x20;
-            const VIRTIO_PCI_COMMON_Q_DESCHI: u64 = 0x24;
-            const VIRTIO_PCI_COMMON_Q_AVAILLO: u64 = 0x28;
-            const VIRTIO_PCI_COMMON_Q_AVAILHI: u64 = 0x2C;
-            const VIRTIO_PCI_COMMON_Q_USEDLO: u64 = 0x30;
-            const VIRTIO_PCI_COMMON_Q_USEDHI: u64 = 0x34;
-            
-            let status_reg = (common_base + VIRTIO_PCI_COMMON_STATUS) as *mut u8;
-            let device_feat_sel_reg = (common_base + VIRTIO_PCI_COMMON_DFSELECT) as *mut u32;
-            let device_feat_reg = (common_base + VIRTIO_PCI_COMMON_DF) as *mut u32;
-            let guest_feat_sel_reg = (common_base + VIRTIO_PCI_COMMON_GFSELECT) as *mut u32;
-            let guest_feat_reg = (common_base + VIRTIO_PCI_COMMON_GF) as *mut u32;
-            
-            // VirtIO device initialization sequence
-            // 1. Reset device
-            core::ptr::write_volatile(status_reg, 0);
-            
-            // 2. Acknowledge device
-            core::ptr::write_volatile(status_reg, 1); // VIRTIO_STATUS_ACKNOWLEDGE
-            
-            // 3. Indicate we have a driver
-            core::ptr::write_volatile(status_reg, 3); // ACKNOWLEDGE | DRIVER
-            
-            // 4. Read and negotiate features (features are 64-bit in VirtIO 1.0+)
-            // Read low 32 bits of device features
-            core::ptr::write_volatile(device_feat_sel_reg, 0);
-            let device_features_low = core::ptr::read_volatile(device_feat_reg);
-            
-            // Read high 32 bits of device features  
-            core::ptr::write_volatile(device_feat_sel_reg, 1);
-            let device_features_high = core::ptr::read_volatile(device_feat_reg);
-            
-            // For now, accept all features
-            core::ptr::write_volatile(guest_feat_sel_reg, 0);
-            core::ptr::write_volatile(guest_feat_reg, device_features_low);
-            core::ptr::write_volatile(guest_feat_sel_reg, 1);
-            core::ptr::write_volatile(guest_feat_reg, device_features_high);
-            
-            // 5. Features OK
-            core::ptr::write_volatile(status_reg, 11); // ACKNOWLEDGE | DRIVER | FEATURES_OK
-            
-            // 6. Verify features OK was accepted
-            let status = core::ptr::read_volatile(status_reg);
-            if (status & 8) == 0 { // FEATURES_OK bit
-                return Err("Device rejected our feature set");
-            }
-            
-            // 7. Device is ready - set DRIVER_OK
-            core::ptr::write_volatile(status_reg, 15); // All status bits set
-        }
-        
-        // Now create a working framebuffer
-        self.create_working_framebuffer()?;
-        
+
+        crate::kernel::uart_write_string("VirtIO GPU: Found capabilities\r\n");
         Ok(())
     }
-    
-    fn create_working_framebuffer(&mut self) -> Result<(), &'static str> {
-        // Allocate framebuffer memory
-        self.width = 1024;
-        self.height = 768;
-        let fb_size = (self.width * self.height * 4) as usize; // 32-bit RGBA
-        
-        // Try to get a contiguous block of memory for framebuffer
-        if let Some(fb_addr) = crate::kernel::memory::alloc_physical_page() {
-            self.framebuffer_addr = fb_addr;
-            
-            crate::kernel::uart_write_string("Creating VirtIO framebuffer at 0x");
-            let mut addr = fb_addr;
-            for _ in 0..16 {
-                let digit = (addr >> 60) & 0xF;
-                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                addr <<= 4;
-            }
-            crate::kernel::uart_write_string("\r\n");
-            
-            // Initialize framebuffer with a test pattern
-            self.init_framebuffer_graphics()?;
-            
-            Ok(())
-        } else {
-            Err("Failed to allocate framebuffer memory")
+
+    fn reset_device(&self) {
+        unsafe {
+            let status_reg = (self.common_cfg + VIRTIO_PCI_COMMON_STATUS) as *mut u8;
+            write_volatile(status_reg, 0);
         }
     }
-    
-    fn init_framebuffer_graphics(&mut self) -> Result<(), &'static str> {
-        crate::kernel::uart_write_string("Initializing framebuffer graphics...\r\n");
-        
-        // Use a known good framebuffer address that should work
-        // Try the VirtIO BAR1 address which showed as valid: 0x10001000
-        self.framebuffer_addr = 0x10001000;
-        
+
+    fn set_status(&self, status: u8) {
+        unsafe {
+            let status_reg = (self.common_cfg + VIRTIO_PCI_COMMON_STATUS) as *mut u8;
+            write_volatile(status_reg, status);
+        }
+    }
+
+    fn get_status(&self) -> u8 {
+        unsafe {
+            let status_reg = (self.common_cfg + VIRTIO_PCI_COMMON_STATUS) as *mut u8;
+            read_volatile(status_reg)
+        }
+    }
+
+    fn check_features_ok(&self) -> bool {
+        (self.get_status() & VIRTIO_STATUS_FEATURES_OK) != 0
+    }
+
+    fn negotiate_features(&self) -> Result<(), &'static str> {
+        unsafe {
+            let dfselect_reg = (self.common_cfg + VIRTIO_PCI_COMMON_DFSELECT) as *mut u32;
+            let df_reg = (self.common_cfg + VIRTIO_PCI_COMMON_DF) as *mut u32;
+            let gfselect_reg = (self.common_cfg + VIRTIO_PCI_COMMON_GFSELECT) as *mut u32;
+            let gf_reg = (self.common_cfg + VIRTIO_PCI_COMMON_GF) as *mut u32;
+
+            // Read device features[0:31]
+            write_volatile(dfselect_reg, 0);
+            let device_features_low = read_volatile(df_reg);
+
+            // Read device features[32:63]
+            write_volatile(dfselect_reg, 1);
+            let device_features_high = read_volatile(df_reg);
+
+            // Accept all features for now
+            write_volatile(gfselect_reg, 0);
+            write_volatile(gf_reg, device_features_low);
+            write_volatile(gfselect_reg, 1);
+            write_volatile(gf_reg, device_features_high);
+        }
+
+        Ok(())
+    }
+
+    fn setup_virtqueues(&mut self) -> Result<(), &'static str> {
+        // Allocate memory for control queue
+        let controlq_desc_addr = self.alloc_queue_memory()?;
+        let controlq_avail_addr = controlq_desc_addr + (CONTROLQ_SIZE as u64 * 16);
+        let controlq_used_addr = controlq_avail_addr + (4 + CONTROLQ_SIZE as u64 * 2 + 2);
+
+        // Allocate memory for cursor queue
+        let cursorq_desc_addr = self.alloc_queue_memory()?;
+        let cursorq_avail_addr = cursorq_desc_addr + (CURSORQ_SIZE as u64 * 16);
+        let cursorq_used_addr = cursorq_avail_addr + (4 + CURSORQ_SIZE as u64 * 2 + 2);
+
+        // Setup control queue (queue 0)
+        self.controlq_notify_off = self.setup_queue(0, CONTROLQ_SIZE, controlq_desc_addr, controlq_avail_addr, controlq_used_addr)?;
+        self.controlq = Some(Virtqueue::new(CONTROLQ_SIZE, controlq_desc_addr, controlq_avail_addr, controlq_used_addr));
+
+        // Setup cursor queue (queue 1)
+        self.cursorq_notify_off = self.setup_queue(1, CURSORQ_SIZE, cursorq_desc_addr, cursorq_avail_addr, cursorq_used_addr)?;
+        self.cursorq = Some(Virtqueue::new(CURSORQ_SIZE, cursorq_desc_addr, cursorq_avail_addr, cursorq_used_addr));
+
+        crate::kernel::uart_write_string("VirtIO GPU: Virtqueues set up\r\n");
+        Ok(())
+    }
+
+    fn alloc_queue_memory(&self) -> Result<u64, &'static str> {
+        crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate queue memory")
+    }
+
+    fn setup_queue(&self, queue_idx: u16, queue_size: u16, desc_addr: u64, avail_addr: u64, used_addr: u64) -> Result<u16, &'static str> {
+        unsafe {
+            let qselect_reg = (self.common_cfg + VIRTIO_PCI_COMMON_Q_SELECT) as *mut u16;
+            let qsize_reg = (self.common_cfg + VIRTIO_PCI_COMMON_Q_SIZE) as *mut u16;
+            let qenable_reg = (self.common_cfg + VIRTIO_PCI_COMMON_Q_ENABLE) as *mut u16;
+            let qnoff_reg = (self.common_cfg + VIRTIO_PCI_COMMON_Q_NOFF) as *mut u16;
+            let qdesclo_reg = (self.common_cfg + VIRTIO_PCI_COMMON_Q_DESCLO) as *mut u32;
+            let qdeschi_reg = (self.common_cfg + VIRTIO_PCI_COMMON_Q_DESCHI) as *mut u32;
+            let qavaillow_reg = (self.common_cfg + VIRTIO_PCI_COMMON_Q_AVAILLO) as *mut u32;
+            let qavailhi_reg = (self.common_cfg + VIRTIO_PCI_COMMON_Q_AVAILHI) as *mut u32;
+            let qusedlo_reg = (self.common_cfg + VIRTIO_PCI_COMMON_Q_USEDLO) as *mut u32;
+            let qusedhi_reg = (self.common_cfg + VIRTIO_PCI_COMMON_Q_USEDHI) as *mut u32;
+
+            // Select queue
+            write_volatile(qselect_reg, queue_idx);
+
+            // Set queue size
+            write_volatile(qsize_reg, queue_size);
+
+            // Set descriptor table address
+            write_volatile(qdesclo_reg, (desc_addr & 0xFFFFFFFF) as u32);
+            write_volatile(qdeschi_reg, (desc_addr >> 32) as u32);
+
+            // Set available ring address
+            write_volatile(qavaillow_reg, (avail_addr & 0xFFFFFFFF) as u32);
+            write_volatile(qavailhi_reg, (avail_addr >> 32) as u32);
+
+            // Set used ring address
+            write_volatile(qusedlo_reg, (used_addr & 0xFFFFFFFF) as u32);
+            write_volatile(qusedhi_reg, (used_addr >> 32) as u32);
+
+            // Read notify offset
+            let notify_off = read_volatile(qnoff_reg);
+
+            // Enable queue
+            write_volatile(qenable_reg, 1);
+
+            Ok(notify_off)
+        }
+    }
+
+    fn notify_queue(&self, queue_idx: u16, notify_off: u16) {
+        unsafe {
+            let notify_addr = self.notify_base + (notify_off as u64 * self.notify_off_multiplier as u64);
+            let notify_reg = notify_addr as *mut u16;
+            write_volatile(notify_reg, queue_idx);
+        }
+    }
+
+    fn send_command(&mut self, cmd: &[u8], resp: &mut [u8]) -> Result<(), &'static str> {
+        crate::kernel::uart_write_string("VirtIO GPU: Sending command (");
+        let mut len = cmd.len() as u64;
+        for _ in 0..4 {
+            let digit = (len >> 12) & 0xF;
+            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
+            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
+            len <<= 4;
+        }
+        crate::kernel::uart_write_string(" bytes)\r\n");
+
+        // Allocate buffers for command and response
+        let cmd_buf = crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate cmd buffer")?;
+        let resp_buf = crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate resp buffer")?;
+
+        // Copy command to buffer
+        unsafe {
+            let cmd_ptr = cmd_buf as *mut u8;
+            for (i, &byte) in cmd.iter().enumerate() {
+                write_volatile(cmd_ptr.add(i), byte);
+            }
+        }
+
+        // Add buffers to queue
+        let buffers = [
+            (cmd_buf, cmd.len() as u32, false),
+            (resp_buf, resp.len() as u32, true),
+        ];
+
+        let desc_idx = {
+            let controlq = self.controlq.as_mut().ok_or("Control queue not initialized")?;
+            controlq.add_buffer(&buffers).ok_or("Failed to add buffer to queue")?
+        };
+
+        // Notify device
+        let notify_off = self.controlq_notify_off;
+        self.notify_queue(0, notify_off);
+
+        // Wait for response
+        crate::kernel::uart_write_string("VirtIO GPU: Waiting for response...\r\n");
+        for i in 0..1000000 {
+            let controlq = self.controlq.as_mut().ok_or("Control queue not initialized")?;
+            if let Some((used_idx, _len)) = controlq.get_used_buffer() {
+                if used_idx == desc_idx {
+                    crate::kernel::uart_write_string("VirtIO GPU: Got response!\r\n");
+                    // Copy response
+                    unsafe {
+                        let resp_ptr = resp_buf as *const u8;
+                        for (i, byte) in resp.iter_mut().enumerate() {
+                            *byte = read_volatile(resp_ptr.add(i));
+                        }
+                    }
+
+                    // Free descriptors
+                    controlq.free_desc(desc_idx);
+                    if buffers.len() > 1 {
+                        controlq.free_desc((desc_idx + 1) % controlq.queue_size);
+                    }
+
+                    return Ok(());
+                }
+            }
+
+            // Print progress every 100000 iterations
+            if i % 100000 == 0 && i > 0 {
+                crate::kernel::uart_write_string(".");
+            }
+        }
+
+        crate::kernel::uart_write_string("\r\nVirtIO GPU: Command timeout!\r\n");
+        Err("Command timeout")
+    }
+
+    pub fn get_display_info(&mut self) -> Result<(), &'static str> {
+        let cmd = VirtioGpuCtrlHdr {
+            hdr_type: VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
+            flags: 0,
+            fence_id: 0,
+            ctx_id: 0,
+            padding: 0,
+        };
+
+        let mut resp = VirtioGpuRespDisplayInfo {
+            hdr: VirtioGpuCtrlHdr {
+                hdr_type: 0,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 0,
+                padding: 0,
+            },
+            pmodes: [VirtioGpuDisplayOne {
+                r: VirtioGpuRect { x: 0, y: 0, width: 0, height: 0 },
+                enabled: 0,
+                flags: 0,
+            }; 16],
+        };
+
+        let cmd_bytes = unsafe {
+            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<VirtioGpuCtrlHdr>())
+        };
+
+        let resp_bytes = unsafe {
+            core::slice::from_raw_parts_mut(&mut resp as *mut _ as *mut u8, core::mem::size_of::<VirtioGpuRespDisplayInfo>())
+        };
+
+        self.send_command(cmd_bytes, resp_bytes)?;
+
+        // Extract display info
+        unsafe {
+            let pmode0_ptr = &resp.pmodes[0] as *const VirtioGpuDisplayOne;
+            let pmode0_addr = pmode0_ptr as usize;
+            // Calculate offsets within packed struct
+            let rect_offset = core::mem::offset_of!(VirtioGpuDisplayOne, r);
+            let width_offset = core::mem::offset_of!(VirtioGpuRect, width);
+            let height_offset = core::mem::offset_of!(VirtioGpuRect, height);
+
+            let width_ptr = (pmode0_addr + rect_offset + width_offset) as *const u32;
+            let height_ptr = (pmode0_addr + rect_offset + height_offset) as *const u32;
+
+            self.width = core::ptr::read_unaligned(width_ptr);
+            self.height = core::ptr::read_unaligned(height_ptr);
+        }
+
+        if self.width == 0 || self.height == 0 {
+            self.width = 1024;
+            self.height = 768;
+        }
+
+        crate::kernel::uart_write_string("VirtIO GPU: Display ");
+        // Print width/height
+        crate::kernel::uart_write_string("\r\n");
+
+        Ok(())
+    }
+
+    pub fn create_framebuffer(&mut self) -> Result<(), &'static str> {
+        // Allocate framebuffer memory
+        let fb_size = (self.width * self.height * 4) as usize;
+        let fb_pages = (fb_size + 4095) / 4096;
+
+        self.framebuffer_addr = crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate framebuffer")?;
+
+        // Create 2D resource
+        self.create_2d_resource(self.framebuffer_resource_id, self.width, self.height)?;
+
+        // Attach backing memory
+        self.attach_backing(self.framebuffer_resource_id, self.framebuffer_addr, fb_size as u32)?;
+
+        // Clear framebuffer to black
         unsafe {
             let fb_ptr = self.framebuffer_addr as *mut u32;
-            let pixel_count = (self.width * self.height) as usize;
-            
-            crate::kernel::uart_write_string("Drawing test pattern...\r\n");
-            
-            // Clear screen to blue
-            for i in 0..pixel_count {
-                core::ptr::write_volatile(fb_ptr.add(i), 0xFF0000FF); // Blue background
+            for i in 0..(self.width * self.height) {
+                write_volatile(fb_ptr.add(i as usize), 0xFF000000);
             }
-            
-            // Draw a red rectangle
-            for y in 100..200 {
-                for x in 100..300 {
-                    let offset = (y * self.width + x) as usize;
-                    if offset < pixel_count {
-                        core::ptr::write_volatile(fb_ptr.add(offset), 0xFFFF0000); // Red
-                    }
-                }
-            }
-            
-            // Draw a green triangle
-            for y in 300..400 {
-                let width = y - 300;
-                for x in 400..(400 + width) {
-                    let offset = (y * self.width + x) as usize;
-                    if offset < pixel_count {
-                        core::ptr::write_volatile(fb_ptr.add(offset), 0xFF00FF00); // Green
-                    }
-                }
-            }
-            
-            crate::kernel::uart_write_string("Graphics initialized!\r\n");
         }
-        
-        Ok(())
-    }
-    
-    fn init_legacy_virtio(&mut self, bars: &[(u8, u64)]) -> Result<(), &'static str> {
-        // Check if we have any valid BARs
-        if bars.is_empty() {
-            crate::kernel::uart_write_string("No valid BARs available for legacy VirtIO\r\n");
-            return Err("No valid BARs available");
-        }
-        
-        // Use the first available BAR for legacy VirtIO
-        let (bar_idx, bar_addr) = bars[0];
-        
-        // Validate BAR address - be more permissive for VirtIO
-        if bar_addr == 0 {
-            return Err("Invalid BAR address for legacy VirtIO (null)");
-        }
-        
-        crate::kernel::uart_write_string("Legacy VirtIO using BAR at 0x");
-        let mut addr = bar_addr;
-        for _ in 0..16 {
-            let digit = (addr >> 60) & 0xF;
-            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-            addr <<= 4;
-        }
-        crate::kernel::uart_write_string("\r\n");
-        
-        unsafe {
-            // Legacy VirtIO register offsets (VirtIO 0.9.5)
-            const VIRTIO_PCI_DEVICE_FEATURES: u64 = 0x00;
-            const VIRTIO_PCI_GUEST_FEATURES: u64 = 0x04;
-            const VIRTIO_PCI_QUEUE_PFN: u64 = 0x08;
-            const VIRTIO_PCI_QUEUE_NUM: u64 = 0x0C;
-            const VIRTIO_PCI_QUEUE_SEL: u64 = 0x0E;
-            const VIRTIO_PCI_QUEUE_NOTIFY: u64 = 0x10;
-            const VIRTIO_PCI_STATUS: u64 = 0x12;
-            const VIRTIO_PCI_ISR: u64 = 0x13;
-            
-            let status_reg = (bar_addr + VIRTIO_PCI_STATUS) as *mut u8;
-            let device_feat_reg = (bar_addr + VIRTIO_PCI_DEVICE_FEATURES) as *mut u32;
-            let guest_feat_reg = (bar_addr + VIRTIO_PCI_GUEST_FEATURES) as *mut u32;
-            
-            // VirtIO device initialization sequence
-            // 1. Reset device
-            core::ptr::write_volatile(status_reg, 0);
-            
-            // 2. Acknowledge device
-            core::ptr::write_volatile(status_reg, 1); // ACKNOWLEDGE
-            
-            // 3. Indicate we have a driver
-            core::ptr::write_volatile(status_reg, 3); // ACKNOWLEDGE | DRIVER
-            
-            // 4. Read and negotiate features
-            let device_features = core::ptr::read_volatile(device_feat_reg);
-            
-            // Accept all features for now
-            core::ptr::write_volatile(guest_feat_reg, device_features);
-            
-            // 5. Features OK
-            core::ptr::write_volatile(status_reg, 11); // ACKNOWLEDGE | DRIVER | FEATURES_OK
-            
-            // 6. Verify features OK was accepted
-            let status = core::ptr::read_volatile(status_reg);
-            if (status & 8) == 0 { // FEATURES_OK bit
-                return Err("Device rejected our feature set");
-            }
-            
-            // 7. Device is ready - set DRIVER_OK
-            core::ptr::write_volatile(status_reg, 15); // All bits set
-        }
-        
-        // Create framebuffer for legacy VirtIO too
-        self.create_working_framebuffer()?;
-        
+
+        // Transfer to host
+        self.transfer_to_host_2d(self.framebuffer_resource_id, 0, 0, self.width, self.height)?;
+
+        // Set scanout
+        self.set_scanout(0, self.framebuffer_resource_id, 0, 0, self.width, self.height)?;
+
+        // Flush
+        self.flush_resource(self.framebuffer_resource_id, 0, 0, self.width, self.height)?;
+
+        crate::kernel::uart_write_string("VirtIO GPU: Framebuffer created\r\n");
         Ok(())
     }
 
-    fn get_display_info(&mut self) -> Result<(), &'static str> {
-        // Send GET_DISPLAY_INFO command to get screen resolution
-        // For now, use default resolution
-        self.width = 1024;
-        self.height = 768;
-        Ok(())
-    }
-
-    fn create_2d_resource(&mut self) -> Result<(), &'static str> {
-        // Calculate framebuffer size (4 bytes per pixel for RGBA)
-        let fb_size = (self.width * self.height * 4) as usize;
-        
-        // Allocate framebuffer memory from physical memory allocator
-        let fb_pages = (fb_size + 0xFFF) / 0x1000; // Round up to page boundary
-        let mut fb_addr = None;
-        
-        // Allocate consecutive pages for framebuffer
-        for _ in 0..fb_pages {
-            if let Some(page_addr) = crate::kernel::memory::alloc_physical_page() {
-                // Validate the allocated address
-                if page_addr != 0 && page_addr >= 0x40000000 && page_addr < 0x80000000 {
-                    if fb_addr.is_none() {
-                        fb_addr = Some(page_addr);
-                    }
-                } else {
-                    return Err("Got invalid physical page address");
-                }
-            } else {
-                return Err("Failed to allocate framebuffer memory");
-            }
-        }
-        
-        let validated_fb_addr = fb_addr.ok_or("No framebuffer memory allocated")?;
-        if validated_fb_addr == 0 {
-            return Err("Allocated framebuffer address is null");
-        }
-        
-        self.framebuffer_addr = validated_fb_addr;
-        
-        // Create the 2D resource command
+    fn create_2d_resource(&mut self, resource_id: u32, width: u32, height: u32) -> Result<(), &'static str> {
         let cmd = VirtioGpuResourceCreate2d {
             hdr: VirtioGpuCtrlHdr {
                 hdr_type: VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
@@ -582,30 +809,83 @@ impl VirtioGpuDriver {
                 ctx_id: 0,
                 padding: 0,
             },
-            resource_id: 1, // Use resource ID 1
-            format: 1, // VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM
-            width: self.width,
-            height: self.height,
+            resource_id,
+            format: VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
+            width,
+            height,
         };
-        
-        // Send command to VirtIO-GPU device
-        self.send_virtio_command(&cmd as *const _ as *const u8, core::mem::size_of::<VirtioGpuResourceCreate2d>())?;
-        
-        // Now we need to attach backing memory to the resource
-        self.attach_backing_memory(1, self.framebuffer_addr, fb_size)?;
-        
-        // Skip framebuffer memory access to avoid crashes
-        // TODO: Implement proper virtual memory mapping for framebuffer
-        crate::kernel::uart_write_string("Skipping framebuffer test pattern to avoid memory access issues\r\n");
-        
-        // Transfer framebuffer data to host
-        self.transfer_to_host_2d(1)?;
-        
+
+        let mut resp_hdr = VirtioGpuCtrlHdr {
+            hdr_type: 0,
+            flags: 0,
+            fence_id: 0,
+            ctx_id: 0,
+            padding: 0,
+        };
+
+        let cmd_bytes = unsafe {
+            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<VirtioGpuResourceCreate2d>())
+        };
+
+        let resp_bytes = unsafe {
+            core::slice::from_raw_parts_mut(&mut resp_hdr as *mut _ as *mut u8, core::mem::size_of::<VirtioGpuCtrlHdr>())
+        };
+
+        self.send_command(cmd_bytes, resp_bytes)?;
+
         Ok(())
     }
-    
-    fn transfer_to_host_2d(&self, resource_id: u32) -> Result<(), &'static str> {
-        let transfer_cmd = VirtioGpuTransferToHost2d {
+
+    fn attach_backing(&mut self, resource_id: u32, addr: u64, length: u32) -> Result<(), &'static str> {
+        // Combined command with mem entry
+        #[repr(C, packed)]
+        struct AttachBackingCmd {
+            hdr: VirtioGpuResourceAttachBacking,
+            entry: VirtioGpuMemEntry,
+        }
+
+        let cmd = AttachBackingCmd {
+            hdr: VirtioGpuResourceAttachBacking {
+                hdr: VirtioGpuCtrlHdr {
+                    hdr_type: VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+                    flags: 0,
+                    fence_id: 0,
+                    ctx_id: 0,
+                    padding: 0,
+                },
+                resource_id,
+                nr_entries: 1,
+            },
+            entry: VirtioGpuMemEntry {
+                addr,
+                length,
+                padding: 0,
+            },
+        };
+
+        let mut resp_hdr = VirtioGpuCtrlHdr {
+            hdr_type: 0,
+            flags: 0,
+            fence_id: 0,
+            ctx_id: 0,
+            padding: 0,
+        };
+
+        let cmd_bytes = unsafe {
+            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<AttachBackingCmd>())
+        };
+
+        let resp_bytes = unsafe {
+            core::slice::from_raw_parts_mut(&mut resp_hdr as *mut _ as *mut u8, core::mem::size_of::<VirtioGpuCtrlHdr>())
+        };
+
+        self.send_command(cmd_bytes, resp_bytes)?;
+
+        Ok(())
+    }
+
+    fn transfer_to_host_2d(&mut self, resource_id: u32, x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
+        let cmd = VirtioGpuTransferToHost2d {
             hdr: VirtioGpuCtrlHdr {
                 hdr_type: VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
                 flags: 0,
@@ -613,22 +893,34 @@ impl VirtioGpuDriver {
                 ctx_id: 0,
                 padding: 0,
             },
-            r: VirtioGpuRect {
-                x: 0,
-                y: 0,
-                width: self.width,
-                height: self.height,
-            },
+            r: VirtioGpuRect { x, y, width, height },
             offset: 0,
             resource_id,
             padding: 0,
         };
-        
-        self.send_virtio_command(&transfer_cmd as *const _ as *const u8, core::mem::size_of::<VirtioGpuTransferToHost2d>())
+
+        let mut resp_hdr = VirtioGpuCtrlHdr {
+            hdr_type: 0,
+            flags: 0,
+            fence_id: 0,
+            ctx_id: 0,
+            padding: 0,
+        };
+
+        let cmd_bytes = unsafe {
+            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<VirtioGpuTransferToHost2d>())
+        };
+
+        let resp_bytes = unsafe {
+            core::slice::from_raw_parts_mut(&mut resp_hdr as *mut _ as *mut u8, core::mem::size_of::<VirtioGpuCtrlHdr>())
+        };
+
+        self.send_command(cmd_bytes, resp_bytes)?;
+
+        Ok(())
     }
 
-    fn set_scanout(&mut self) -> Result<(), &'static str> {
-        // Create scanout command to attach resource to display
+    fn set_scanout(&mut self, scanout_id: u32, resource_id: u32, x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
         let cmd = VirtioGpuSetScanout {
             hdr: VirtioGpuCtrlHdr {
                 hdr_type: VIRTIO_GPU_CMD_SET_SCANOUT,
@@ -637,20 +929,34 @@ impl VirtioGpuDriver {
                 ctx_id: 0,
                 padding: 0,
             },
-            r: VirtioGpuRect {
-                x: 0,
-                y: 0,
-                width: self.width,
-                height: self.height,
-            },
-            scanout_id: 0, // Primary scanout
-            resource_id: 1, // Our resource
+            r: VirtioGpuRect { x, y, width, height },
+            scanout_id,
+            resource_id,
         };
-        
-        self.send_virtio_command(&cmd as *const _ as *const u8, core::mem::size_of::<VirtioGpuSetScanout>())?;
-        
-        // Now flush the resource to make it visible
-        let flush_cmd = VirtioGpuResourceFlush {
+
+        let mut resp_hdr = VirtioGpuCtrlHdr {
+            hdr_type: 0,
+            flags: 0,
+            fence_id: 0,
+            ctx_id: 0,
+            padding: 0,
+        };
+
+        let cmd_bytes = unsafe {
+            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<VirtioGpuSetScanout>())
+        };
+
+        let resp_bytes = unsafe {
+            core::slice::from_raw_parts_mut(&mut resp_hdr as *mut _ as *mut u8, core::mem::size_of::<VirtioGpuCtrlHdr>())
+        };
+
+        self.send_command(cmd_bytes, resp_bytes)?;
+
+        Ok(())
+    }
+
+    fn flush_resource(&mut self, resource_id: u32, x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
+        let cmd = VirtioGpuResourceFlush {
             hdr: VirtioGpuCtrlHdr {
                 hdr_type: VIRTIO_GPU_CMD_RESOURCE_FLUSH,
                 flags: 0,
@@ -658,716 +964,247 @@ impl VirtioGpuDriver {
                 ctx_id: 0,
                 padding: 0,
             },
-            r: VirtioGpuRect {
-                x: 0,
-                y: 0,
-                width: self.width,
-                height: self.height,
-            },
-            resource_id: 1,
+            r: VirtioGpuRect { x, y, width, height },
+            resource_id,
             padding: 0,
         };
-        
-        self.send_virtio_command(&flush_cmd as *const _ as *const u8, core::mem::size_of::<VirtioGpuResourceFlush>())?;
-        
+
+        let mut resp_hdr = VirtioGpuCtrlHdr {
+            hdr_type: 0,
+            flags: 0,
+            fence_id: 0,
+            ctx_id: 0,
+            padding: 0,
+        };
+
+        let cmd_bytes = unsafe {
+            core::slice::from_raw_parts(&cmd as *const _ as *const u8, core::mem::size_of::<VirtioGpuResourceFlush>())
+        };
+
+        let resp_bytes = unsafe {
+            core::slice::from_raw_parts_mut(&mut resp_hdr as *mut _ as *mut u8, core::mem::size_of::<VirtioGpuCtrlHdr>())
+        };
+
+        self.send_command(cmd_bytes, resp_bytes)?;
+
         Ok(())
     }
 
-    pub fn get_framebuffer_info(&self) -> (u64, u32, u32, u32) {
-        // For QEMU virtio-gpu, try common framebuffer addresses
-        // QEMU often maps framebuffer at these addresses
-        let fb_addr = if self.framebuffer_addr != 0 {
-            self.framebuffer_addr
-        } else {
-            // If VirtIO initialization failed, try common QEMU framebuffer addresses
-            // QEMU PCI memory window starts at 0x10000000
-            // VirtIO-GPU framebuffer is often mapped in PCI MMIO space
-            0x10000000 // Start of PCI MMIO window
-        };
-        
-        // Use standard resolution if not set
-        let width = if self.width > 0 { self.width } else { 1024 };
-        let height = if self.height > 0 { self.height } else { 768 };
-        
-        crate::kernel::uart_write_string("Framebuffer info - addr: 0x");
-        let mut addr = fb_addr;
-        for _ in 0..16 {
-            let digit = (addr >> 60) & 0xF;
-            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-            addr <<= 4;
+    pub fn create_cursor(&mut self, cursor_data: &[u32; 64 * 64]) -> Result<(), &'static str> {
+        // Allocate cursor memory (64x64 RGBA)
+        let cursor_addr = crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate cursor memory")?;
+
+        // Copy cursor data
+        unsafe {
+            let cursor_ptr = cursor_addr as *mut u32;
+            for (i, &pixel) in cursor_data.iter().enumerate() {
+                write_volatile(cursor_ptr.add(i), pixel);
+            }
         }
-        crate::kernel::uart_write_string(" size: ");
-        let mut w = width as u64;
-        for _ in 0..8 {
-            let digit = (w >> 28) & 0xF;
-            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-            w <<= 4;
-        }
-        crate::kernel::uart_write_string("x");
-        let mut h = height as u64;
-        for _ in 0..8 {
-            let digit = (h >> 28) & 0xF;
-            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-            h <<= 4;
-        }
-        crate::kernel::uart_write_string("\r\n");
-        
-        (fb_addr, width, height, width * 4)
+
+        // Create 64x64 resource
+        self.create_2d_resource(self.cursor_resource_id, 64, 64)?;
+
+        // Attach backing memory
+        self.attach_backing(self.cursor_resource_id, cursor_addr, (64 * 64 * 4) as u32)?;
+
+        // Transfer to host
+        self.transfer_to_host_2d(self.cursor_resource_id, 0, 0, 64, 64)?;
+
+        crate::kernel::uart_write_string("VirtIO GPU: Cursor created\r\n");
+        Ok(())
     }
 
-    pub fn flush_region(&self, x: u32, y: u32, width: u32, height: u32) {
-        // Skip VirtIO hardware access to avoid crashes on aarch64
-        // Our software framebuffer doesn't need hardware flushing
-        crate::kernel::uart_write_string("VirtIO-GPU flush skipped - using software framebuffer\r\n");
-    }
-    
-    fn send_virtio_command(&self, cmd_ptr: *const u8, cmd_size: usize) -> Result<(), &'static str> {
-        // Skip VirtIO hardware commands to avoid crashes on aarch64
-        // Our software framebuffer doesn't need VirtIO protocol commands
-        crate::kernel::uart_write_string("VirtIO command skipped - using software framebuffer\r\n");
-        return Ok(());
-        
-        // UNREACHABLE CODE BELOW - kept for reference but should not execute
-        if cmd_ptr.is_null() || cmd_size == 0 {
-            return Err("Invalid command parameters");
-        }
-        
-        // Find any available BAR for VirtIO device
-        let mut bar_addr = None;
-        for bar_idx in 0..6 {
-            if let Some(addr) = self.pci_device.get_bar_address(bar_idx) {
-                // Double-check the address is valid (PCI module now validates)
-                bar_addr = Some(addr);
-                break;
-            }
-        }
-        
-        if let Some(bar_base) = bar_addr {
-            unsafe {
-                // VirtIO legacy register offsets
-                const VIRTIO_PCI_QUEUE_NOTIFY: u64 = 0x10;
-                const VIRTIO_PCI_QUEUE_SEL: u64 = 0x0E;
-                
-                // Validate register addresses before accessing
-                if bar_base + VIRTIO_PCI_QUEUE_SEL >= 0x80000000 ||
-                   bar_base + VIRTIO_PCI_QUEUE_NOTIFY >= 0x80000000 {
-                    return Err("Register address out of range");
-                }
-                
-                // Select controlq (queue 0) for GPU commands
-                let queue_sel_reg = (bar_base + VIRTIO_PCI_QUEUE_SEL) as *mut u16;
-                core::ptr::write_volatile(queue_sel_reg, 0);
-                
-                // For this simplified implementation, just write command data
-                // to a memory region and notify the device
-                // Real implementation would use proper virtqueue ring buffers
-                
-                if let Some(cmd_buffer_addr) = crate::kernel::memory::alloc_physical_page() {
-                    let cmd_buffer = cmd_buffer_addr as *mut u8;
-                    
-                    // Copy command to allocated buffer
-                    for i in 0..cmd_size {
-                        let src = cmd_ptr.add(i);
-                        let dst = cmd_buffer.add(i);
-                        core::ptr::write_volatile(dst, core::ptr::read_volatile(src));
-                    }
-                    
-                    // Notify device that we have a command ready
-                    let notify_reg = (bar_base + VIRTIO_PCI_QUEUE_NOTIFY) as *mut u16;
-                    core::ptr::write_volatile(notify_reg, 0); // Notify controlq
-                }
-            }
-            Ok(())
-        } else {
-            Err("No valid BAR address found for VirtIO device")
-        }
-    }
-    
-    fn attach_backing_memory(&self, resource_id: u32, mem_addr: u64, mem_size: usize) -> Result<(), &'static str> {
-        // VirtIO-GPU backing memory attachment structure
-        #[repr(C, packed)]
-        struct VirtioGpuResourceAttachBacking {
-            hdr: VirtioGpuCtrlHdr,
-            resource_id: u32,
-            nr_entries: u32,
-        }
-        
-        #[repr(C, packed)]
-        struct VirtioGpuMemEntry {
-            addr: u64,
-            length: u32,
-            padding: u32,
-        }
-        
-        let attach_cmd = VirtioGpuResourceAttachBacking {
+    pub fn update_cursor(&mut self, x: u32, y: u32, hot_x: u32, hot_y: u32) -> Result<(), &'static str> {
+        let cursorq = self.cursorq.as_mut().ok_or("Cursor queue not initialized")?;
+
+        let cmd = VirtioGpuUpdateCursor {
             hdr: VirtioGpuCtrlHdr {
-                hdr_type: VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+                hdr_type: VIRTIO_GPU_CMD_UPDATE_CURSOR,
                 flags: 0,
                 fence_id: 0,
                 ctx_id: 0,
                 padding: 0,
             },
-            resource_id,
-            nr_entries: 1,
-        };
-        
-        let mem_entry = VirtioGpuMemEntry {
-            addr: mem_addr,
-            length: mem_size as u32,
+            pos: VirtioGpuCursorPos {
+                scanout_id: 0,
+                x,
+                y,
+                padding: 0,
+            },
+            resource_id: self.cursor_resource_id,
+            hot_x,
+            hot_y,
             padding: 0,
         };
-        
-        // Send attach backing command
-        self.send_virtio_command(&attach_cmd as *const _ as *const u8, core::mem::size_of::<VirtioGpuResourceAttachBacking>())?;
-        
-        // Send memory entry
-        self.send_virtio_command(&mem_entry as *const _ as *const u8, core::mem::size_of::<VirtioGpuMemEntry>())?;
-        
+
+        // Allocate buffer for command
+        let cmd_buf = crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate cmd buffer")?;
+
+        // Copy command to buffer
+        unsafe {
+            let cmd_ptr = cmd_buf as *mut VirtioGpuUpdateCursor;
+            write_volatile(cmd_ptr, cmd);
+        }
+
+        // Add buffer to cursor queue (no response needed)
+        let buffers = [(cmd_buf, core::mem::size_of::<VirtioGpuUpdateCursor>() as u32, false)];
+        let desc_idx = cursorq.add_buffer(&buffers).ok_or("Failed to add buffer to queue")?;
+
+        // Notify device
+        self.notify_queue(1, self.cursorq_notify_off);
+
         Ok(())
     }
-    
-    fn parse_virtio_capabilities(&mut self, mut cap_ptr: u8) -> Result<(u64, u64), &'static str> {
-        // Parse PCI capabilities list looking for VirtIO structures
-        // According to VirtIO spec section 4.1.4
-        
-        let mut common_cfg_addr = None;
-        let mut notify_addr = None;
-        
-        let mut iteration = 0;
-        while cap_ptr != 0 && iteration < 64 { // Prevent infinite loops
-            let cap_id = self.pci_device.read_config_u8(cap_ptr);
-            let next_ptr = self.pci_device.read_config_u8(cap_ptr + 1);
-            
-            crate::kernel::uart_write_string("  Cap at 0x");
-            let mut ptr = cap_ptr as u64;
-            for _ in 0..2 {
-                let digit = (ptr >> 4) & 0xF;
-                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                ptr <<= 4;
-            }
-            crate::kernel::uart_write_string(": ID=0x");
-            let mut id = cap_id as u64;
-            for _ in 0..2 {
-                let digit = (id >> 4) & 0xF;
-                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                id <<= 4;
-            }
-            crate::kernel::uart_write_string("\r\n");
-            
-            // VirtIO capability ID is 0x09
-            if cap_id == 0x09 {
-                let cfg_type = self.pci_device.read_config_u8(cap_ptr + 3);
-                let bar = self.pci_device.read_config_u8(cap_ptr + 4);
-                let offset = self.pci_device.read_config_u32(cap_ptr + 8);
-                
-                crate::kernel::uart_write_string("    VirtIO capability: type=");
-                unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, cfg_type + b'0'); }
-                crate::kernel::uart_write_string(" bar=");
-                unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, bar + b'0'); }
-                crate::kernel::uart_write_string(" offset=0x");
-                let mut off = offset as u64;
-                for _ in 0..8 {
-                    let digit = (off >> 28) & 0xF;
-                    let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                    unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                    off <<= 4;
-                }
-                crate::kernel::uart_write_string("\r\n");
-                
-                // Get BAR base address
-                if let Some(bar_base) = self.pci_device.get_bar_address(bar) {
-                    let config_addr = bar_base + offset as u64;
-                    
-                    match cfg_type {
-                        1 => { // VIRTIO_PCI_CAP_COMMON_CFG
-                            crate::kernel::uart_write_string("    Found common config at 0x");
-                            let mut addr = config_addr;
-                            for _ in 0..16 {
-                                let digit = (addr >> 60) & 0xF;
-                                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                                unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                                addr <<= 4;
-                            }
-                            crate::kernel::uart_write_string("\r\n");
-                            common_cfg_addr = Some(config_addr);
-                        }
-                        2 => { // VIRTIO_PCI_CAP_NOTIFY_CFG
-                            crate::kernel::uart_write_string("    Found notify config at 0x");
-                            let mut addr = config_addr;
-                            for _ in 0..16 {
-                                let digit = (addr >> 60) & 0xF;
-                                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                                unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                                addr <<= 4;
-                            }
-                            crate::kernel::uart_write_string("\r\n");
-                            notify_addr = Some(config_addr);
-                        }
-                        3 => crate::kernel::uart_write_string("    Found ISR config\r\n"),
-                        4 => crate::kernel::uart_write_string("    Found device-specific config\r\n"),
-                        5 => crate::kernel::uart_write_string("    Found PCI config access\r\n"),
-                        _ => crate::kernel::uart_write_string("    Unknown config type\r\n"),
-                    }
-                } else {
-                    crate::kernel::uart_write_string("    BAR not available (invalid address range)\r\n");
-                }
-            }
-            
-            cap_ptr = next_ptr;
-            iteration += 1;
-        }
-        
-        match (common_cfg_addr, notify_addr) {
-            (Some(common), Some(notify)) => Ok((common, notify)),
-            (Some(common), None) => Ok((common, common + 0x1000)), // Fallback
-            _ => {
-                // If no capabilities found, try using BAR1 directly since it has a valid address
-                crate::kernel::uart_write_string("No VirtIO capabilities, trying direct BAR1 access\r\n");
-                if let Some(bar1_addr) = self.pci_device.get_bar_address(1) {
-                    Ok((bar1_addr, bar1_addr + 0x1000))
-                } else {
-                    Err("No usable VirtIO addresses found")
-                }
-            }
-        }
-    }
-    
-    fn init_direct_access(&mut self) -> Result<(), &'static str> {
-        // Fallback: try direct framebuffer access at common QEMU addresses
-        crate::kernel::uart_write_string("Attempting direct framebuffer access...\r\n");
-        
-        // Common QEMU VirtIO-GPU framebuffer locations
-        let test_addresses = [
-            0x10000000, // PCI MMIO base
-            0x18000000, // Common VGA framebuffer location in some QEMU configs
-            0x20000000, // Another common location
-        ];
-        
-        for &addr in &test_addresses {
-            crate::kernel::uart_write_string("Testing framebuffer at 0x");
-            let mut test_addr = addr;
-            for _ in 0..8 {
-                let digit = (test_addr >> 28) & 0xF;
-                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                test_addr <<= 4;
-            }
-            
-            // Try to write and read back a test pattern
-            unsafe {
-                let ptr = addr as *mut u32;
-                // Save original value
-                let original = core::ptr::read_volatile(ptr);
-                // Write test pattern
-                core::ptr::write_volatile(ptr, 0xDEADBEEF);
-                // Read it back
-                let readback = core::ptr::read_volatile(ptr);
-                // Restore original
-                core::ptr::write_volatile(ptr, original);
-                
-                if readback == 0xDEADBEEF {
-                    crate::kernel::uart_write_string(" - SUCCESS!\r\n");
-                    self.framebuffer_addr = addr;
-                    self.width = 1024;
-                    self.height = 768;
-                    return Ok(());
-                } else {
-                    crate::kernel::uart_write_string(" - failed\r\n");
-                }
-            }
-        }
-        
-        Err("No working framebuffer found")
-    }
-    
-    fn init_virtio_proper(&mut self, common_cfg: u64, notify_base: u64) -> Result<(), &'static str> {
-        // VirtIO 1.1 initialization sequence per section 3.1.1
-        crate::kernel::uart_write_string("Starting proper VirtIO initialization...\r\n");
-        
+
+    pub fn move_cursor(&mut self, x: u32, y: u32) -> Result<(), &'static str> {
+        static mut CURSOR_MOVE_COUNT: u32 = 0;
         unsafe {
-            // Validate the configuration address range
-            if common_cfg == 0 {
-                return Err("Invalid common configuration address");
-            }
-            
-            // VirtIO common configuration structure offsets (section 4.1.4.3)
-            let device_status_reg = (common_cfg + 20) as *mut u8;          // offset 20
-            let device_feature_select_reg = (common_cfg + 0) as *mut u32;  // offset 0  
-            let device_feature_reg = (common_cfg + 4) as *mut u32;         // offset 4
-            let driver_feature_select_reg = (common_cfg + 8) as *mut u32;  // offset 8
-            let driver_feature_reg = (common_cfg + 12) as *mut u32;        // offset 12
-            let num_queues_reg = (common_cfg + 22) as *mut u16;            // offset 22
-            
-            crate::kernel::uart_write_string("Common config at 0x");
-            let mut addr = common_cfg;
-            for _ in 0..16 {
-                let digit = (addr >> 60) & 0xF;
-                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                core::ptr::write_volatile(0x09000000 as *mut u8, ch);
-                addr <<= 4;
-            }
-            
-            // Check if this is I/O space (low address) or memory space
-            let is_io_space = common_cfg < 0x10000;
-            if is_io_space {
-                crate::kernel::uart_write_string(" (I/O space)");
-            } else {
-                crate::kernel::uart_write_string(" (Memory space)");
-            }
-            crate::kernel::uart_write_string("\r\n");
-            
-            // Step 1: Reset device
-            crate::kernel::uart_write_string("1. Resetting device...\r\n");
-            core::ptr::write_volatile(device_status_reg, 0);
-            
-            // Step 2: Set ACKNOWLEDGE status bit
-            crate::kernel::uart_write_string("2. Setting ACKNOWLEDGE bit...\r\n");
-            core::ptr::write_volatile(device_status_reg, 1); // VIRTIO_STATUS_ACKNOWLEDGE
-            
-            // Step 3: Set DRIVER status bit  
-            crate::kernel::uart_write_string("3. Setting DRIVER bit...\r\n");
-            core::ptr::write_volatile(device_status_reg, 3); // ACKNOWLEDGE | DRIVER
-            
-            // Step 4: Read and negotiate features
-            crate::kernel::uart_write_string("4. Reading device features...\r\n");
-            
-            // Read low 32 bits of device features
-            core::ptr::write_volatile(device_feature_select_reg, 0);
-            let device_features_low = core::ptr::read_volatile(device_feature_reg);
-            
-            crate::kernel::uart_write_string("Device features [0:31]: 0x");
-            let mut features = device_features_low as u64;
-            for _ in 0..8 {
-                let digit = (features >> 28) & 0xF;
-                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                core::ptr::write_volatile(0x09000000 as *mut u8, ch);
-                features <<= 4;
-            }
-            crate::kernel::uart_write_string("\r\n");
-            
-            // Read high 32 bits of device features
-            core::ptr::write_volatile(device_feature_select_reg, 1);
-            let device_features_high = core::ptr::read_volatile(device_feature_reg);
-            
-            crate::kernel::uart_write_string("Device features [32:63]: 0x");
-            let mut features = device_features_high as u64;
-            for _ in 0..8 {
-                let digit = (features >> 28) & 0xF;
-                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                core::ptr::write_volatile(0x09000000 as *mut u8, ch);
-                features <<= 4;
-            }
-            crate::kernel::uart_write_string("\r\n");
-            
-            // For now, accept all features (we should be more selective)
-            core::ptr::write_volatile(driver_feature_select_reg, 0);
-            core::ptr::write_volatile(driver_feature_reg, device_features_low);
-            core::ptr::write_volatile(driver_feature_select_reg, 1);
-            core::ptr::write_volatile(driver_feature_reg, device_features_high);
-            
-            // Step 5: Set FEATURES_OK status bit
-            crate::kernel::uart_write_string("5. Setting FEATURES_OK bit...\r\n");
-            core::ptr::write_volatile(device_status_reg, 11); // ACKNOWLEDGE | DRIVER | FEATURES_OK
-            
-            // Step 6: Re-read device status to ensure FEATURES_OK is still set
-            let status = core::ptr::read_volatile(device_status_reg);
-            if (status & 8) == 0 { // FEATURES_OK bit
-                crate::kernel::uart_write_string("ERROR: Device rejected our feature set\r\n");
-                return Err("Device rejected our feature set");
-            }
-            crate::kernel::uart_write_string("6. FEATURES_OK confirmed by device\r\n");
-            
-            // Step 7: Device-specific setup (virtqueues, etc)
-            crate::kernel::uart_write_string("7. Device-specific setup...\r\n");
-            
-            // Read number of queues
-            let num_queues = core::ptr::read_volatile(num_queues_reg);
-            crate::kernel::uart_write_string("Number of queues: ");
-            core::ptr::write_volatile(0x09000000 as *mut u8, (num_queues as u8) + b'0');
-            crate::kernel::uart_write_string("\r\n");
-            
-            // For VirtIO-GPU, we typically need at least the control queue (queue 0)
-            // For now, skip detailed virtqueue setup
-            
-            // Step 8: Set DRIVER_OK status bit
-            crate::kernel::uart_write_string("8. Setting DRIVER_OK bit...\r\n");
-            core::ptr::write_volatile(device_status_reg, 15); // All status bits set
-            
-            crate::kernel::uart_write_string("VirtIO device initialization complete!\r\n");
-            
-            // Now set up a basic framebuffer for testing
-            self.width = 1024;
-            self.height = 768;
-            // Use some memory we allocated earlier
-            if let Some(fb_addr) = crate::kernel::memory::alloc_physical_page() {
-                self.framebuffer_addr = fb_addr;
-                crate::kernel::uart_write_string("Allocated framebuffer at 0x");
-                let mut addr = fb_addr;
-                for _ in 0..16 {
-                    let digit = (addr >> 60) & 0xF;
+            CURSOR_MOVE_COUNT += 1;
+            if CURSOR_MOVE_COUNT <= 20 {
+                crate::kernel::uart_write_string("VirtIO GPU: move_cursor to ");
+                let mut pos = x as u64;
+                for _ in 0..8 {
+                    let digit = (pos >> 28) & 0xF;
                     let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
                     core::ptr::write_volatile(0x09000000 as *mut u8, ch);
-                    addr <<= 4;
+                    pos <<= 4;
+                }
+                crate::kernel::uart_write_string(",");
+                let mut pos = y as u64;
+                for _ in 0..8 {
+                    let digit = (pos >> 28) & 0xF;
+                    let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
+                    core::ptr::write_volatile(0x09000000 as *mut u8, ch);
+                    pos <<= 4;
                 }
                 crate::kernel::uart_write_string("\r\n");
-                
-                return Ok(());
-            } else {
-                return Err("Failed to allocate framebuffer memory");
             }
         }
-    }
-    
-    fn setup_virtio_gpu_properly(&mut self) -> Result<(), &'static str> {
-        crate::kernel::uart_write_string("Setting up VirtIO-GPU with proper protocol support\r\n");
-        
-        // Set basic framebuffer parameters
-        self.width = 1024;
-        self.height = 768;
-        
-        // Allocate memory for a software framebuffer that works with VirtIO-GPU
-        if let Some(fb_addr) = crate::kernel::memory::alloc_physical_page() {
-            self.framebuffer_addr = fb_addr;
-            
-            crate::kernel::uart_write_string("VirtIO-GPU framebuffer allocated at: 0x");
-            let mut addr = fb_addr;
-            for _ in 0..16 {
-                let digit = (addr >> 60) & 0xF;
-                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                addr <<= 4;
-            }
-            crate::kernel::uart_write_string("\r\n");
-            
-            // Initialize framebuffer with test graphics
-            self.init_safe_graphics()?;
-            
-            // Register our framebuffer with the display system
-            self.register_framebuffer_with_display()?;
-            
-            Ok(())
-        } else {
-            Err("Failed to allocate VirtIO-GPU framebuffer")
-        }
-    }
-    
-    fn init_safe_graphics(&mut self) -> Result<(), &'static str> {
-        crate::kernel::uart_write_string("Initializing clean graphics output...\r\n");
-        
+
+        // Use static buffer to avoid allocating/freeing on every move
+        let cmd = VirtioGpuUpdateCursor {
+            hdr: VirtioGpuCtrlHdr {
+                hdr_type: VIRTIO_GPU_CMD_MOVE_CURSOR,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 0,
+                padding: 0,
+            },
+            pos: VirtioGpuCursorPos {
+                scanout_id: 0,
+                x,
+                y,
+                padding: 0,
+            },
+            resource_id: self.cursor_resource_id, // Keep resource_id to prevent hiding
+            hot_x: 0,
+            hot_y: 0,
+            padding: 0,
+        };
+
+        // Write to static buffer
         unsafe {
-            let fb_ptr = self.framebuffer_addr as *mut u32;
-            let pixel_count = (self.width * self.height) as usize;
-            
-            // Clear entire screen to black first
-            for i in 0..pixel_count {
-                core::ptr::write_volatile(fb_ptr.add(i), 0xFF000000); // Black
-            }
-            
-            // Draw a single large "RUST OS WORKING!" message
-            // Use simple block letters that should be clearly visible
-            
-            // Draw "R" at position (50, 50)
-            self.draw_block_letter_r(50, 50, fb_ptr);
-            
-            // Draw "U" at position (120, 50) 
-            self.draw_block_letter_u(120, 50, fb_ptr);
-            
-            // Draw "S" at position (190, 50)
-            self.draw_block_letter_s(190, 50, fb_ptr);
-            
-            // Draw "T" at position (260, 50)
-            self.draw_block_letter_t(260, 50, fb_ptr);
-            
-            // Draw a simple colored test pattern
-            // Red square
-            for y in 200..250 {
-                for x in 100..150 {
-                    let offset = (y * self.width + x) as usize;
-                    if offset < pixel_count {
-                        core::ptr::write_volatile(fb_ptr.add(offset), 0xFFFF0000); // Red
-                    }
-                }
-            }
-            
-            // Green square  
-            for y in 200..250 {
-                for x in 200..250 {
-                    let offset = (y * self.width + x) as usize;
-                    if offset < pixel_count {
-                        core::ptr::write_volatile(fb_ptr.add(offset), 0xFF00FF00); // Green
-                    }
-                }
-            }
-            
-            // Blue square
-            for y in 200..250 {
-                for x in 300..350 {
-                    let offset = (y * self.width + x) as usize;
-                    if offset < pixel_count {
-                        core::ptr::write_volatile(fb_ptr.add(offset), 0xFF0000FF); // Blue
-                    }
-                }
-            }
-            
-            crate::kernel::uart_write_string("Clean graphics initialized - should show RUST + colored squares\r\n");
+            let cmd_ptr = self.cursor_cmd_buffer as *mut VirtioGpuUpdateCursor;
+            write_volatile(cmd_ptr, cmd);
         }
-        
+
+        // Directly write to descriptor 0 of cursor queue (dedicated for cursor moves)
+        let cursorq = self.cursorq.as_mut().ok_or("Cursor queue not initialized")?;
+        unsafe {
+            // Use descriptor 0 exclusively for cursor moves
+            let desc = cursorq.desc_table.add(0);
+            write_volatile(&mut (*desc).addr, self.cursor_cmd_buffer);
+            write_volatile(&mut (*desc).len, core::mem::size_of::<VirtioGpuUpdateCursor>() as u32);
+            write_volatile(&mut (*desc).flags, 0); // No NEXT, no WRITE
+
+            // Add to available ring
+            let avail_idx = read_volatile(&(*cursorq.avail_ring).idx);
+            let ring_idx = (avail_idx % cursorq.queue_size) as usize;
+            write_volatile(&mut (*cursorq.avail_ring).ring[ring_idx], 0); // Always use descriptor 0
+
+            // Memory barrier before updating idx
+            core::arch::asm!("dmb ishst");
+            write_volatile(&mut (*cursorq.avail_ring).idx, avail_idx.wrapping_add(1));
+        }
+
+        // Notify device
+        self.notify_queue(1, self.cursorq_notify_off);
+
         Ok(())
     }
-    
-    fn register_framebuffer_with_display(&self) -> Result<(), &'static str> {
-        crate::kernel::uart_write_string("Graphics framebuffer ready - QEMU display should show output\r\n");
-        
-        // Skip all dangerous memory access attempts
-        // The software framebuffer at 0x44000000 contains our graphics data
-        // QEMU should automatically detect and display it through VirtIO-GPU
-        
-        crate::kernel::uart_write_string("Framebuffer contains:\r\n");
-        crate::kernel::uart_write_string("- Blue background (0xFF000080)\r\n");
-        crate::kernel::uart_write_string("- Red rectangle at (100,100)-(300,200)\r\n");
-        crate::kernel::uart_write_string("- Green triangle at (400,300)-(500,400)\r\n");
-        crate::kernel::uart_write_string("- White 'RUST OS' text at (50,50)\r\n");
-        
-        Ok(())
+
+    pub fn get_framebuffer_info(&self) -> (u64, u32, u32, u32) {
+        (self.framebuffer_addr, self.width, self.height, self.width * 4)
     }
-    
-    fn draw_text(&self, text: &str, start_x: u32, start_y: u32) {
-        // Simple 8x8 bitmap font for basic text rendering
-        let font_patterns = [
-            // 'R' pattern
-            [0b11111000, 0b10000100, 0b10000100, 0b11111000, 0b10010000, 0b10001000, 0b10000100, 0b00000000],
-            // 'U' pattern  
-            [0b10000100, 0b10000100, 0b10000100, 0b10000100, 0b10000100, 0b10000100, 0b01111000, 0b00000000],
-            // 'S' pattern
-            [0b01111100, 0b10000000, 0b10000000, 0b01111000, 0b00000100, 0b00000100, 0b11111000, 0b00000000],
-            // 'T' pattern
-            [0b11111100, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00100000, 0b00000000],
-        ];
-        
+
+    pub fn draw_test_pattern(&mut self) -> Result<(), &'static str> {
+        if self.framebuffer_addr == 0 {
+            return Err("Framebuffer not initialized");
+        }
+
         unsafe {
             let fb_ptr = self.framebuffer_addr as *mut u32;
-            
-            // Draw "RUST" using bitmap patterns
-            for (char_idx, &pattern) in font_patterns.iter().enumerate() {
-                for y in 0..8 {
-                    let row = pattern[y];
-                    for x in 0..8 {
-                        if (row >> (7 - x)) & 1 != 0 {
-                            let pixel_x = start_x + (char_idx as u32 * 12) + x;
-                            let pixel_y = start_y + y as u32;
-                            let offset = (pixel_y * self.width + pixel_x) as usize;
-                            let pixel_count = (self.width * self.height) as usize;
-                            
-                            if offset < pixel_count {
-                                core::ptr::write_volatile(fb_ptr.add(offset), 0xFFFFFFFF); // White text
-                            }
-                        }
-                    }
+
+            // Draw gradient background
+            for y in 0..self.height {
+                for x in 0..self.width {
+                    let r = ((x * 255) / self.width) as u32;
+                    let g = ((y * 255) / self.height) as u32;
+                    let b = 128;
+                    let color = 0xFF000000 | (r << 16) | (g << 8) | b;
+                    write_volatile(fb_ptr.add((y * self.width + x) as usize), color);
                 }
             }
         }
+
+        // Transfer and flush
+        self.transfer_to_host_2d(self.framebuffer_resource_id, 0, 0, self.width, self.height)?;
+        self.flush_resource(self.framebuffer_resource_id, 0, 0, self.width, self.height)?;
+
+        crate::kernel::uart_write_string("VirtIO GPU: Test pattern drawn\r\n");
+        Ok(())
     }
-    
-    // Simple block letter functions for clear display
-    unsafe fn draw_block_letter_r(&self, start_x: u32, start_y: u32, fb_ptr: *mut u32) {
-        let white = 0xFFFFFFFF;
-        let pixel_count = (self.width * self.height) as usize;
-        
-        // Draw "R" as a 50x50 block letter
-        for y in 0..50 {
-            for x in 0..30 {
-                let pixel_x = start_x + x;
-                let pixel_y = start_y + y;
-                let offset = (pixel_y * self.width + pixel_x) as usize;
-                
-                if offset < pixel_count {
-                    // R shape: vertical line + top/middle horizontal + diagonal
-                    if x < 5 || // Left vertical line
-                       (y < 5 && x < 25) || // Top horizontal
-                       (y >= 20 && y < 25 && x < 20) || // Middle horizontal  
-                       (y >= 25 && x >= (y - 20) && x < (y - 15)) // Diagonal
-                    {
-                        core::ptr::write_volatile(fb_ptr.add(offset), white);
-                    }
+
+    pub fn create_default_cursor(&mut self) -> Result<(), &'static str> {
+        let mut cursor_data = [0u32; 64 * 64];
+
+        // Create a simple white triangle cursor pointing to top-left
+        for y in 0..24 {
+            for x in 0..24 {
+                let idx = (y * 64 + x) as usize;
+
+                // Triangle: filled from top-left
+                if x <= y {
+                    cursor_data[idx] = 0xFFFFFFFF; // White with full alpha
+                } else {
+                    cursor_data[idx] = 0x00000000; // Transparent
                 }
             }
         }
+
+        self.create_cursor(&cursor_data)?;
+
+        // Initialize cursor at center of screen
+        let center_x = self.width / 2;
+        let center_y = self.height / 2;
+        self.update_cursor(center_x, center_y, 0, 0)?;
+
+        crate::kernel::uart_write_string("VirtIO GPU: Hardware cursor initialized\r\n");
+        Ok(())
     }
-    
-    unsafe fn draw_block_letter_u(&self, start_x: u32, start_y: u32, fb_ptr: *mut u32) {
-        let white = 0xFFFFFFFF;
-        let pixel_count = (self.width * self.height) as usize;
-        
-        // Draw "U" as a 50x50 block letter
-        for y in 0..50 {
-            for x in 0..30 {
-                let pixel_x = start_x + x;
-                let pixel_y = start_y + y;
-                let offset = (pixel_y * self.width + pixel_x) as usize;
-                
-                if offset < pixel_count {
-                    // U shape: two vertical lines + bottom horizontal
-                    if x < 5 || x >= 25 || // Left and right vertical lines
-                       (y >= 45) // Bottom horizontal
-                    {
-                        core::ptr::write_volatile(fb_ptr.add(offset), white);
-                    }
-                }
-            }
-        }
-    }
-    
-    unsafe fn draw_block_letter_s(&self, start_x: u32, start_y: u32, fb_ptr: *mut u32) {
-        let white = 0xFFFFFFFF;
-        let pixel_count = (self.width * self.height) as usize;
-        
-        // Draw "S" as a 50x50 block letter
-        for y in 0..50 {
-            for x in 0..30 {
-                let pixel_x = start_x + x;
-                let pixel_y = start_y + y;
-                let offset = (pixel_y * self.width + pixel_x) as usize;
-                
-                if offset < pixel_count {
-                    // S shape: top, middle, bottom horizontal + connecting verticals
-                    if (y < 5) || // Top horizontal
-                       (y >= 20 && y < 25) || // Middle horizontal
-                       (y >= 45) || // Bottom horizontal
-                       (x < 5 && y < 25) || // Top left vertical
-                       (x >= 25 && y >= 25) // Bottom right vertical
-                    {
-                        core::ptr::write_volatile(fb_ptr.add(offset), white);
-                    }
-                }
-            }
-        }
-    }
-    
-    unsafe fn draw_block_letter_t(&self, start_x: u32, start_y: u32, fb_ptr: *mut u32) {
-        let white = 0xFFFFFFFF;
-        let pixel_count = (self.width * self.height) as usize;
-        
-        // Draw "T" as a 50x50 block letter  
-        for y in 0..50 {
-            for x in 0..30 {
-                let pixel_x = start_x + x;
-                let pixel_y = start_y + y;
-                let offset = (pixel_y * self.width + pixel_x) as usize;
-                
-                if offset < pixel_count {
-                    // T shape: top horizontal + center vertical
-                    if (y < 5) || // Top horizontal
-                       (x >= 12 && x < 18) // Center vertical
-                    {
-                        core::ptr::write_volatile(fb_ptr.add(offset), white);
-                    }
-                }
-            }
+
+    pub fn handle_mouse_move(&mut self, x_delta: i32, y_delta: i32, screen_width: u32, screen_height: u32, cursor_x: &mut u32, cursor_y: &mut u32) {
+        // Apply direct movement (no damping for now to test)
+        let new_x = (*cursor_x as i32 + x_delta).max(0).min(screen_width as i32 - 1) as u32;
+        let new_y = (*cursor_y as i32 + y_delta).max(0).min(screen_height as i32 - 1) as u32;
+
+        if new_x != *cursor_x || new_y != *cursor_y {
+            *cursor_x = new_x;
+            *cursor_y = new_y;
+
+            // Move hardware cursor (ignore errors during mouse movement)
+            let _ = self.move_cursor(new_x, new_y);
         }
     }
 }

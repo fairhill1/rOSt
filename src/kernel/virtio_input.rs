@@ -932,6 +932,11 @@ pub fn poll_virtio_input() {
         if let Some(ref mut devices) = VIRTIO_INPUT_DEVICES {
             for device in devices.iter_mut() {
                 if let Some(event) = device.poll_events() {
+                    // Handle mouse movement for hardware cursor
+                    if let InputEvent::MouseMove { x_delta, y_delta } = event {
+                        crate::kernel::handle_mouse_movement(x_delta as i32, y_delta as i32);
+                    }
+
                     queue_input_event(event);
                 }
             }
