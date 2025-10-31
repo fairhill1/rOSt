@@ -24,7 +24,38 @@ const HID_SET_REPORT: u8 = 0x09;
 const HID_SET_IDLE: u8 = 0x0A;
 const HID_SET_PROTOCOL: u8 = 0x0B;
 
-// Keyboard scan codes to ASCII mapping
+// Linux evdev key codes to ASCII mapping (for VirtIO keyboard)
+// Based on linux/input-event-codes.h
+const EVDEV_TO_ASCII: [u8; 256] = [
+    // 0-9
+    0, 0, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8',
+    // 10-19
+    b'9', b'0', b'-', b'=', 0, 0, b'q', b'w', b'e', b'r',
+    // 20-29
+    b't', b'y', b'u', b'i', b'o', b'p', b'[', b']', b'\n', 0,
+    // 30-39 (KEY_A = 30)
+    b'a', b's', b'd', b'f', b'g', b'h', b'j', b'k', b'l', b';',
+    // 40-49
+    b'\'', b'`', 0, b'\\', b'z', b'x', b'c', b'v', b'b', b'n',
+    // 50-59
+    b'm', b',', b'.', b'/', 0, 0, 0, b' ', 0, 0,
+    // 60-255 (function keys, etc.)
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, // Add 4 more elements to make exactly 256
+];
+
+// USB HID scan codes to ASCII mapping (for USB keyboards)
 const SCANCODE_TO_ASCII: [u8; 256] = [
     // 0x00-0x0F
     0, 0, 0, 0, b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h', b'i', b'j', b'k', b'l',
@@ -292,6 +323,53 @@ pub fn scancode_to_ascii(scancode: u8, modifiers: u8) -> Option<u8> {
     Some(ascii)
 }
 
+/// Convert Linux evdev key code to ASCII (for VirtIO keyboard)
+pub fn evdev_to_ascii(keycode: u8, modifiers: u8) -> Option<u8> {
+    if keycode == 0 || keycode as usize >= EVDEV_TO_ASCII.len() {
+        return None;
+    }
+
+    let mut ascii = EVDEV_TO_ASCII[keycode as usize];
+    if ascii == 0 {
+        return None;
+    }
+
+    // Handle shift modifier for letters and symbols
+    if (modifiers & (MOD_LEFT_SHIFT | MOD_RIGHT_SHIFT)) != 0 {
+        if ascii >= b'a' && ascii <= b'z' {
+            ascii = ascii - b'a' + b'A'; // Convert to uppercase
+        } else {
+            // Handle shifted symbols (same as scancode_to_ascii)
+            ascii = match ascii {
+                b'1' => b'!',
+                b'2' => b'@',
+                b'3' => b'#',
+                b'4' => b'$',
+                b'5' => b'%',
+                b'6' => b'^',
+                b'7' => b'&',
+                b'8' => b'*',
+                b'9' => b'(',
+                b'0' => b')',
+                b'-' => b'_',
+                b'=' => b'+',
+                b'[' => b'{',
+                b']' => b'}',
+                b'\\' => b'|',
+                b';' => b':',
+                b'\'' => b'"',
+                b'`' => b'~',
+                b',' => b'<',
+                b'.' => b'>',
+                b'/' => b'?',
+                _ => ascii,
+            };
+        }
+    }
+
+    Some(ascii)
+}
+
 /// Simulate keyboard input for testing purposes
 pub fn simulate_keyboard_input() {
     uart_write_string("Simulating keyboard input events...\r\n");
@@ -314,15 +392,14 @@ pub fn test_input_events() -> bool {
     while let Some(event) = get_input_event() {
         match event {
             InputEvent::KeyPressed { key, modifiers } => {
-                uart_write_string("Key pressed: ");
-                if let Some(ascii) = scancode_to_ascii(key, modifiers) {
+                // VirtIO keyboard uses Linux evdev codes
+                if let Some(ascii) = evdev_to_ascii(key, modifiers) {
+                    uart_write_string("Key: ");
                     unsafe {
                         core::ptr::write_volatile(0x09000000 as *mut u8, ascii);
                     }
-                } else {
-                    uart_write_string("(non-printable)");
+                    uart_write_string("\r\n");
                 }
-                uart_write_string("\r\n");
             }
             InputEvent::KeyReleased { key: _, modifiers: _ } => {
                 // uart_write_string("Key released\r\n");
