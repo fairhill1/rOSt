@@ -56,32 +56,7 @@ pub fn uart_write_string(s: &str) {
 
 // Handle mouse movement and update hardware cursor
 pub fn handle_mouse_movement(x_delta: i32, y_delta: i32) {
-    // Debug: print first few mouse movements
-    static mut MOUSE_EVENT_COUNT: u32 = 0;
     unsafe {
-        MOUSE_EVENT_COUNT += 1;
-        if MOUSE_EVENT_COUNT <= 20 {
-            uart_write_string("Mouse delta: x=");
-            if x_delta < 0 {
-                uart_write_string("-");
-                print_hex_simple((-x_delta) as u64);
-            } else {
-                print_hex_simple(x_delta as u64);
-            }
-            uart_write_string(" y=");
-            if y_delta < 0 {
-                uart_write_string("-");
-                print_hex_simple((-y_delta) as u64);
-            } else {
-                print_hex_simple(y_delta as u64);
-            }
-            uart_write_string(" -> cursor: ");
-            print_hex_simple(CURSOR_X as u64);
-            uart_write_string(",");
-            print_hex_simple(CURSOR_Y as u64);
-            uart_write_string("\r\n");
-        }
-
         if let Some(ref mut gpu) = GPU_DRIVER {
             gpu.handle_mouse_move(
                 x_delta,
@@ -91,6 +66,9 @@ pub fn handle_mouse_movement(x_delta: i32, y_delta: i32) {
                 &mut CURSOR_X,
                 &mut CURSOR_Y
             );
+
+            // Sync hardware cursor position to framebuffer for click detection
+            framebuffer::set_cursor_pos(CURSOR_X as i32, CURSOR_Y as i32);
         }
     }
 }
@@ -157,17 +135,8 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                             Ok(()) => {
                                 uart_write_string("Framebuffer created!\r\n");
 
-                                // Step 4: Draw test pattern
-                                match virtio_gpu.draw_test_pattern() {
-                                    Ok(()) => {
-                                        uart_write_string("Test pattern drawn!\r\n");
-                                    }
-                                    Err(e) => {
-                                        uart_write_string("Test pattern failed: ");
-                                        uart_write_string(e);
-                                        uart_write_string("\r\n");
-                                    }
-                                }
+                                // Skip test pattern - let OS UI render instead
+                                // The window manager will clear and draw to the framebuffer
 
                                 // Step 5: Create hardware cursor
                                 match virtio_gpu.create_default_cursor() {
@@ -227,6 +196,9 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                                         CURSOR_Y = height / 2;
                                         GPU_DRIVER = Some(virtio_gpu);
                                     }
+
+                                    // Initialize framebuffer cursor position to match hardware cursor
+                                    framebuffer::set_cursor_pos((width / 2) as i32, (height / 2) as i32);
 
                                     virtio_gpu_driver = None; // Moved to static
                                 }
@@ -764,18 +736,25 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                     editor::render_at(instance_id, cx, cy, ch);
                 }
 
-                framebuffer::draw_cursor();
+                // Hardware cursor is now handled by VirtIO GPU, no need for software cursor
+                // framebuffer::draw_cursor();
 
                 // Swap buffers - copy back buffer to screen in one fast operation
                 // This eliminates ALL flickering!
                 framebuffer::swap_buffers();
 
+                // Flush to VirtIO GPU display
+                unsafe {
+                    if let Some(ref mut gpu) = GPU_DRIVER {
+                        let _ = gpu.flush_display();
+                    }
+                }
+
                 needs_full_render = false;
             } else if needs_cursor_redraw {
-                // Just redraw cursor to back buffer
-                framebuffer::draw_cursor();
-                // Swap to show updated cursor
-                framebuffer::swap_buffers();
+                // Hardware cursor is now handled by VirtIO GPU
+                // No need to redraw software cursor or flush for cursor-only updates
+                // The hardware cursor updates happen in handle_mouse_movement()
             }
         }
 

@@ -1207,4 +1207,11 @@ impl VirtioGpuDriver {
             let _ = self.move_cursor(new_x, new_y);
         }
     }
+
+    // Flush framebuffer to display (transfer + flush)
+    pub fn flush_display(&mut self) -> Result<(), &'static str> {
+        self.transfer_to_host_2d(self.framebuffer_resource_id, 0, 0, self.width, self.height)?;
+        self.flush_resource(self.framebuffer_resource_id, 0, 0, self.width, self.height)?;
+        Ok(())
+    }
 }
