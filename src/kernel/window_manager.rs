@@ -505,7 +505,22 @@ impl WindowManager {
                     return true;
                 }
 
-                // Focus this window (no more dragging)
+                // If it's an editor window and click is in content area, handle cursor movement
+                if self.windows[i].content == WindowContent::Editor {
+                    let (cx, cy, cw, ch) = self.windows[i].get_content_bounds();
+                    if x >= cx && x < cx + cw as i32 && y >= cy && y < cy + ch as i32 {
+                        // Click is inside editor content area - move cursor
+                        let relative_x = x - cx;
+                        let relative_y = y - cy;
+                        let instance_id = self.windows[i].instance_id;
+
+                        if let Some(editor) = crate::kernel::editor::get_editor(instance_id) {
+                            editor.handle_click(relative_x, relative_y);
+                        }
+                    }
+                }
+
+                // Focus this window
                 self.focus_window(i);
                 return true;
             }

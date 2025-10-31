@@ -239,6 +239,26 @@ impl TextEditor {
         self.get_text().len()
     }
 
+    /// Handle mouse click at a position (relative to editor content area)
+    pub fn handle_click(&mut self, click_x: i32, click_y: i32) {
+        // Convert click position to row/column
+        // Add half character width so clicking right side of char positions cursor after it
+        let col = ((click_x + CHAR_WIDTH as i32 / 2) / CHAR_WIDTH as i32).max(0) as usize;
+        let visible_row = ((click_y + LINE_HEIGHT as i32 / 2) / LINE_HEIGHT as i32).max(0) as usize;
+
+        // Calculate actual row accounting for scroll offset
+        let row = self.scroll_offset + visible_row;
+
+        // Clamp row to valid range
+        if row < self.lines.len() {
+            self.cursor_row = row;
+
+            // Clamp column to line length
+            let line_len = self.lines[row].len();
+            self.cursor_col = col.min(line_len);
+        }
+    }
+
     /// Render the editor at a specific offset (for window rendering)
     pub fn render_at(&self, offset_x: i32, offset_y: i32) {
         // Draw visible lines
