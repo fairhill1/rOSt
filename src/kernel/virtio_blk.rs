@@ -234,19 +234,24 @@ impl VirtioBlkDevice {
         // Scan PCI bus
         for device_num in 0..32 {
             if let Some(pci_dev) = PciDevice::new(0, device_num, 0, &config) {
-                // Check if this is a VirtIO block device
+                // Check if this is a MODERN VirtIO block device (skip legacy!)
                 if pci_dev.vendor_id == VIRTIO_VENDOR_ID &&
-                   (pci_dev.device_id == VIRTIO_BLK_DEVICE_ID_MODERN ||
-                    pci_dev.device_id == VIRTIO_BLK_DEVICE_ID_LEGACY) {
+                   pci_dev.device_id == VIRTIO_BLK_DEVICE_ID_MODERN {
 
                     crate::kernel::uart_write_string(&alloc::format!(
-                        "Found VirtIO block device at 0:{}:0 (device_id=0x{:x})\r\n",
+                        "Found modern VirtIO block device at 0:{}:0 (device_id=0x{:x})\r\n",
                         device_num, pci_dev.device_id
                     ));
 
                     if let Some(blk_dev) = unsafe { Self::init_device(pci_dev, mmio_base) } {
                         devices.push(blk_dev);
                     }
+                } else if pci_dev.vendor_id == VIRTIO_VENDOR_ID &&
+                          pci_dev.device_id == VIRTIO_BLK_DEVICE_ID_LEGACY {
+                    crate::kernel::uart_write_string(&alloc::format!(
+                        "Skipping legacy VirtIO device at 0:{}:0 (device_id=0x{:x}) - not supported\r\n",
+                        device_num, pci_dev.device_id
+                    ));
                 }
             }
         }
