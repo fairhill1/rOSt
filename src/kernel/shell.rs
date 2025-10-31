@@ -203,9 +203,13 @@ impl Shell {
 
                         if let Ok(size) = parts[2].parse::<u32>() {
                             match fs.create_file(device, filename, size) {
-                                Ok(()) => self.write_output(&alloc::format!(
-                                    "Created '{}' ({} bytes)\r\n", filename, size
-                                )),
+                                Ok(()) => {
+                                    self.write_output(&alloc::format!(
+                                        "Created '{}' ({} bytes)\r\n", filename, size
+                                    ));
+                                    // Refresh all open file explorers to show the new file
+                                    crate::kernel::file_explorer::refresh_all_explorers();
+                                }
                                 Err(e) => self.write_output(&alloc::format!("Error: {}\r\n", e)),
                             }
                         } else {
@@ -236,7 +240,11 @@ impl Shell {
                         let filename = parts[1];
 
                         match fs.delete_file(device, filename) {
-                            Ok(()) => self.write_output(&alloc::format!("Deleted '{}'\r\n", filename)),
+                            Ok(()) => {
+                                self.write_output(&alloc::format!("Deleted '{}'\r\n", filename));
+                                // Refresh all open file explorers to remove the deleted file
+                                crate::kernel::file_explorer::refresh_all_explorers();
+                            }
                             Err(e) => self.write_output(&alloc::format!("Error: {}\r\n", e)),
                         }
                     } else {
@@ -265,9 +273,13 @@ impl Shell {
                         let new_name = parts[2];
 
                         match fs.rename_file(device, old_name, new_name) {
-                            Ok(()) => self.write_output(&alloc::format!(
-                                "Renamed '{}' to '{}'\r\n", old_name, new_name
-                            )),
+                            Ok(()) => {
+                                self.write_output(&alloc::format!(
+                                    "Renamed '{}' to '{}'\r\n", old_name, new_name
+                                ));
+                                // Refresh all open file explorers to show the renamed file
+                                crate::kernel::file_explorer::refresh_all_explorers();
+                            }
                             Err(e) => self.write_output(&alloc::format!("Error: {}\r\n", e)),
                         }
                     } else {
@@ -296,9 +308,13 @@ impl Shell {
                         let text = parts[2..].join(" ");
 
                         match fs.write_file(device, filename, text.as_bytes()) {
-                            Ok(()) => self.write_output(&alloc::format!(
-                                "Wrote {} bytes to '{}'\r\n", text.len(), filename
-                            )),
+                            Ok(()) => {
+                                self.write_output(&alloc::format!(
+                                    "Wrote {} bytes to '{}'\r\n", text.len(), filename
+                                ));
+                                // Refresh all open file explorers to update file sizes
+                                crate::kernel::file_explorer::refresh_all_explorers();
+                            }
                             Err(e) => self.write_output(&alloc::format!("Error: {}\r\n", e)),
                         }
                     } else {
