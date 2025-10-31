@@ -652,8 +652,8 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 }
 
                 // Render all editors INSIDE their windows
-                for (instance_id, cx, cy, _cw, _ch) in window_manager::get_all_editors() {
-                    editor::render_at(instance_id, cx, cy);
+                for (instance_id, cx, cy, _cw, ch) in window_manager::get_all_editors() {
+                    editor::render_at(instance_id, cx, cy, ch);
                 }
 
                 framebuffer::draw_cursor();
