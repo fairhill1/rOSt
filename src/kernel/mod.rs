@@ -24,6 +24,7 @@ pub mod virtio_blk;
 pub mod filesystem;
 pub mod shell;
 pub mod dtb;
+pub mod console;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]
@@ -208,71 +209,18 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     let fb_info = gpu_framebuffer_info.as_ref().unwrap_or(&boot_info.framebuffer);
     uart_write_string("Initializing framebuffer...\r\n");
     framebuffer::init(fb_info);
-    
-    // Skip conflicting framebuffer operations - VirtIO-GPU already drew graphics
+
     uart_write_string("=== RUST OS KERNEL RUNNING SUCCESSFULLY! ===\r\n");
     uart_write_string("ExitBootServices worked! We're in kernel space!\r\n");
     uart_write_string("VirtIO-GPU driver loaded and initialized!\r\n");
     uart_write_string("This is a major milestone - the core OS is working!\r\n");
-    
+
     if fb_info.base_address != 0 {
-        uart_write_string("Graphics framebuffer is active - drawing HELLO WORLD!\r\n");
-        
-        // Draw directly to the GOP framebuffer
-        unsafe {
-            let fb_ptr = fb_info.base_address as *mut u32;
-            let width = fb_info.width;
-            let height = fb_info.height;
-            let pixels_per_scanline = fb_info.pixels_per_scanline;
-            
-            // Clear screen to black
-            for y in 0..height {
-                for x in 0..width {
-                    let offset = (y * pixels_per_scanline + x) as usize;
-                    core::ptr::write_volatile(fb_ptr.add(offset), 0xFF000000); // Black background
-                }
-            }
-            
-            // Draw "HELLO WORLD" in big white letters
-            draw_hello_world(fb_ptr, width, height, pixels_per_scanline);
-            
-            // Draw some colored rectangles for visibility
-            // Red rectangle
-            for y in 400..450 {
-                for x in 100..200 {
-                    if y < height && x < width {
-                        let offset = (y * pixels_per_scanline + x) as usize;
-                        core::ptr::write_volatile(fb_ptr.add(offset), 0xFFFF0000); // Red
-                    }
-                }
-            }
-            
-            // Green rectangle  
-            for y in 400..450 {
-                for x in 250..350 {
-                    if y < height && x < width {
-                        let offset = (y * pixels_per_scanline + x) as usize;
-                        core::ptr::write_volatile(fb_ptr.add(offset), 0xFF00FF00); // Green
-                    }
-                }
-            }
-            
-            // Blue rectangle
-            for y in 400..450 {
-                for x in 400..500 {
-                    if y < height && x < width {
-                        let offset = (y * pixels_per_scanline + x) as usize;
-                        core::ptr::write_volatile(fb_ptr.add(offset), 0xFF0000FF); // Blue
-                    }
-                }
-            }
-        }
+        uart_write_string("Graphics framebuffer is active - initializing GUI console!\r\n");
 
-        uart_write_string("HELLO WORLD drawn to framebuffer!\r\n");
-
-        // Draw the mouse cursor
-        framebuffer::draw_cursor();
-        uart_write_string("Mouse cursor drawn!\r\n");
+        // Initialize GUI console
+        console::init();
+        uart_write_string("GUI console initialized!\r\n");
     } else {
         uart_write_string("No framebuffer available - running in text mode\r\n");
     }
@@ -675,6 +623,15 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     uart_write_string("Type 'help' for available commands\r\n");
     uart_write_string("\r\n");
 
+    // Write welcome message to GUI console
+    if fb_info.base_address != 0 {
+        console::write_string("================================\r\n");
+        console::write_string("  Rust OS - Interactive Shell  \r\n");
+        console::write_string("================================\r\n");
+        console::write_string("Type 'help' for available commands\r\n");
+        console::write_string("\r\n");
+    }
+
     // Show initial prompt
     unsafe {
         if let Some(ref shell) = usb_hid::SHELL {
@@ -684,20 +641,23 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     uart_write_string("Kernel ready! Type commands in QEMU window.\r\n");
 
-    let mut mouse_moved = true; // Force initial draw
+    let mut needs_render = true; // Force initial console render
+
     loop {
         // Poll VirtIO input devices for real trackpad/keyboard input
         virtio_input::poll_virtio_input();
 
-        // Process queued input events
-        if usb_hid::test_input_events() {
-            mouse_moved = true;
+        // Process queued input events - returns true if screen needs updating
+        let input_processed = usb_hid::test_input_events();
+        if input_processed {
+            needs_render = true; // Re-render console after any input
         }
 
-        // Redraw cursor only if it has moved
-        if mouse_moved && fb_info.base_address != 0 {
-            framebuffer::draw_cursor();
-            mouse_moved = false; // Reset flag after drawing
+        // Render console and cursor
+        if fb_info.base_address != 0 && needs_render {
+            console::render();
+            framebuffer::draw_cursor(); // Always redraw cursor after console
+            needs_render = false;
         }
 
         // Small delay to prevent CPU overload
