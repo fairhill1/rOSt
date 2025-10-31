@@ -97,6 +97,7 @@ impl Shell {
             "create" => self.cmd_create(&parts),
             "rm" => self.cmd_rm(&parts),
             "write" => self.cmd_write(&parts),
+            "edit" => self.cmd_edit(&parts),
             "clear" => self.cmd_clear(),
             _ => {
                 write_output("Unknown command: ");
@@ -113,6 +114,7 @@ impl Shell {
         write_output("  create <name> <size>  - Create a file\r\n");
         write_output("  rm <filename>         - Delete a file\r\n");
         write_output("  write <file> <text>   - Write text to file\r\n");
+        write_output("  edit <filename>       - Open file in editor\r\n");
         write_output("  clear                 - Clear screen\r\n");
         write_output("  help                  - Show this help\r\n");
     }
@@ -263,6 +265,72 @@ impl Shell {
                                 "Wrote {} bytes to '{}'\r\n", text.len(), filename
                             )),
                             Err(e) => write_output(&alloc::format!("Error: {}\r\n", e)),
+                        }
+                    } else {
+                        write_output("Block device not available\r\n");
+                    }
+                } else {
+                    write_output("Block devices not initialized\r\n");
+                }
+            }
+        } else {
+            write_output("Filesystem not mounted\r\n");
+        }
+    }
+
+    fn cmd_edit(&mut self, parts: &[&str]) {
+        if parts.len() < 2 {
+            write_output("Usage: edit <filename>\r\n");
+            return;
+        }
+
+        let filename = parts[1];
+
+        // Check if the editor window already exists
+        if crate::kernel::window_manager::has_focused_editor() {
+            write_output("Editor window is already open\r\n");
+            return;
+        }
+
+        if let (Some(ref fs), Some(idx)) = (&self.filesystem, self.device_index) {
+            unsafe {
+                if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                    if let Some(device) = devices.get_mut(idx) {
+                        // Check if file exists
+                        let files = fs.list_files();
+                        let file = files.iter().find(|f| f.get_name() == filename);
+
+                        if let Some(file) = file {
+                            let size = file.get_size_bytes() as usize;
+                            let mut buffer = alloc::vec![0u8; size];
+
+                            match fs.read_file(device, filename, &mut buffer) {
+                                Ok(bytes_read) => {
+                                    if let Ok(text) = core::str::from_utf8(&buffer[..bytes_read]) {
+                                        // Create editor with file content
+                                        let editor = crate::kernel::editor::TextEditor::with_content(
+                                            filename,
+                                            text
+                                        );
+                                        crate::kernel::editor::set_editor(editor);
+
+                                        // Open editor window
+                                        let window = crate::kernel::window_manager::Window::new(
+                                            0, 0, 640, 480,
+                                            &alloc::format!("Editor - {}", filename),
+                                            crate::kernel::window_manager::WindowContent::Editor
+                                        );
+                                        crate::kernel::window_manager::add_window(window);
+
+                                        write_output(&alloc::format!("Opened '{}' in editor\r\n", filename));
+                                    } else {
+                                        write_output("Cannot edit binary file\r\n");
+                                    }
+                                }
+                                Err(e) => write_output(&alloc::format!("Error: {}\r\n", e)),
+                            }
+                        } else {
+                            write_output("File not found\r\n");
                         }
                     } else {
                         write_output("Block device not available\r\n");
