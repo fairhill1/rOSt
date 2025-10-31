@@ -27,6 +27,7 @@ pub mod window_manager;
 pub mod editor;
 pub mod file_explorer;
 pub mod timer;
+pub mod rtc;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]
@@ -315,6 +316,10 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         window_manager::init();
         uart_write_string("Window manager initialized!\r\n");
         uart_write_string("Click menu bar to open windows\r\n");
+
+        // Initialize RTC
+        rtc::init();
+        uart_write_string("RTC initialized!\r\n");
 
         // Initialize text editor
         editor::init();
@@ -717,8 +722,16 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     uart_write_string("Kernel ready! Open a terminal window from the menu.\r\n");
 
     let mut needs_full_render = true; // Force initial render
+    let mut last_minute = rtc::get_datetime().minute; // Track last rendered minute
 
     loop {
+        // Check if minute has changed - redraw clock every minute
+        let current_minute = rtc::get_datetime().minute;
+        if current_minute != last_minute {
+            last_minute = current_minute;
+            needs_full_render = true;
+        }
+
         // Poll VirtIO input devices for real trackpad/keyboard input
         virtio_input::poll_virtio_input();
 

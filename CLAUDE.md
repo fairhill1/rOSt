@@ -1,6 +1,6 @@
 # rOSt - Rust ARM64 Operating System
 
-**Last Updated:** 2025-10-31
+**Last Updated:** 2025-10-31 (Added RTC support)
 
 ## What Works
 
@@ -36,6 +36,13 @@
 - Hardware-independent microsecond-precision timing
 - Uses ARM Generic Timer (CNTPCT_EL0, CNTFRQ_EL0)
 - Enables consistent double-click detection across different CPU speeds
+
+✅ **Real-Time Clock (RTC)**
+- PL031 RTC driver for reading system time
+- Displays current time (HH:MM) in menu bar (top right)
+- Auto-updates every minute
+- Timezone support (default: CET/UTC+1, configurable in rtc.rs)
+- Unix timestamp conversion to human-readable date/time
 
 ✅ **VirtIO Input**
 - Keyboard and mouse input via VirtIO devices
@@ -129,6 +136,8 @@ clear                   - Clear screen
 
 ### Memory Map
 - **RAM:** 0x40000000+
+- **UART:** 0x09000000
+- **PL031 RTC:** 0x09010000
 - **PCI ECAM:** 0x4010000000
 - **PCI MMIO:** 0x10000000
 - **VirtIO Virtqueues:** 0x50000000+
@@ -167,6 +176,7 @@ clear                   - Clear screen
 
 ### System
 - `src/kernel/timer.rs` - ARM Generic Timer for hardware-independent timing
+- `src/kernel/rtc.rs` - PL031 Real-Time Clock driver
 - `src/kernel/usb_hid.rs` - Input event handling and routing
 - `src/kernel/dtb.rs` - Device Tree parser
 - `src/kernel/pci.rs` - PCI configuration
