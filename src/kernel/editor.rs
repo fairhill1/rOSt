@@ -12,12 +12,16 @@ const CHAR_WIDTH: u32 = 16;
 const CHAR_HEIGHT: u32 = 16;
 const LINE_SPACING: u32 = 4;
 const LINE_HEIGHT: u32 = CHAR_HEIGHT + LINE_SPACING;
+const GUTTER_WIDTH: u32 = 48;  // Width of line number gutter background
+const GUTTER_SPACING: u32 = 8;  // Space after gutter before text starts
 
 // Colors
 const COLOR_TEXT: u32 = 0xFFFFFFFF;        // White text
 const COLOR_CURSOR: u32 = 0xFF00FF00;      // Green cursor
 const COLOR_STATUS: u32 = 0xFFCCCCCC;      // Light gray for status bar
 const COLOR_SELECTION: u32 = 0xFF3366CC;   // Bright blue selection highlight
+const COLOR_GUTTER_BG: u32 = 0xFF2A2A2A;   // Dark gray gutter background
+const COLOR_LINE_NUMBER: u32 = 0xFF888888; // Gray line numbers
 
 /// Snapshot of editor state for undo
 #[derive(Clone)]
@@ -50,6 +54,8 @@ pub struct TextEditor {
     is_selecting: bool,
     /// Undo stack (max 100 snapshots)
     undo_stack: Vec<EditorSnapshot>,
+    /// Redo stack (max 100 snapshots)
+    redo_stack: Vec<EditorSnapshot>,
 }
 
 impl TextEditor {
@@ -66,6 +72,7 @@ impl TextEditor {
             selection_end: None,
             is_selecting: false,
             undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 
@@ -94,6 +101,7 @@ impl TextEditor {
             selection_end: None,
             is_selecting: false,
             undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 
@@ -114,11 +122,24 @@ impl TextEditor {
         if self.undo_stack.len() > MAX_UNDO_STACK {
             self.undo_stack.remove(0);
         }
+
+        // Clear redo stack on new edit (standard undo/redo behavior)
+        self.redo_stack.clear();
     }
 
     /// Undo last edit
     pub fn undo(&mut self) {
         if let Some(snapshot) = self.undo_stack.pop() {
+            // Save current state to redo stack before undoing
+            let current = EditorSnapshot {
+                lines: self.lines.clone(),
+                cursor_row: self.cursor_row,
+                cursor_col: self.cursor_col,
+                scroll_offset: self.scroll_offset,
+            };
+            self.redo_stack.push(current);
+
+            // Restore previous state
             self.lines = snapshot.lines;
             self.cursor_row = snapshot.cursor_row;
             self.cursor_col = snapshot.cursor_col;
@@ -127,6 +148,37 @@ impl TextEditor {
             self.set_status("Undo");
         } else {
             self.set_status("Nothing to undo");
+        }
+    }
+
+    /// Redo last undone edit
+    pub fn redo(&mut self) {
+        const MAX_REDO_STACK: usize = 100;
+
+        if let Some(snapshot) = self.redo_stack.pop() {
+            // Save current state to undo stack before redoing
+            let current = EditorSnapshot {
+                lines: self.lines.clone(),
+                cursor_row: self.cursor_row,
+                cursor_col: self.cursor_col,
+                scroll_offset: self.scroll_offset,
+            };
+            self.undo_stack.push(current);
+
+            // Limit undo stack size
+            if self.undo_stack.len() > MAX_REDO_STACK {
+                self.undo_stack.remove(0);
+            }
+
+            // Restore redo state
+            self.lines = snapshot.lines;
+            self.cursor_row = snapshot.cursor_row;
+            self.cursor_col = snapshot.cursor_col;
+            self.scroll_offset = snapshot.scroll_offset;
+            self.clear_selection();
+            self.set_status("Redo");
+        } else {
+            self.set_status("Nothing to redo");
         }
     }
 
@@ -372,8 +424,11 @@ impl TextEditor {
 
     /// Handle mouse down - start selection
     pub fn handle_mouse_down(&mut self, click_x: i32, click_y: i32) {
+        // Adjust for gutter offset plus spacing
+        let text_x = (click_x - GUTTER_WIDTH as i32 - GUTTER_SPACING as i32).max(0);
+
         // Convert click position to row/column
-        let col = ((click_x + CHAR_WIDTH as i32 / 2) / CHAR_WIDTH as i32).max(0) as usize;
+        let col = ((text_x + CHAR_WIDTH as i32 / 2) / CHAR_WIDTH as i32).max(0) as usize;
         let visible_row = ((click_y + LINE_HEIGHT as i32 / 2) / LINE_HEIGHT as i32).max(0) as usize;
 
         // Calculate actual row accounting for scroll offset
@@ -400,8 +455,11 @@ impl TextEditor {
             return false;
         }
 
+        // Adjust for gutter offset plus spacing
+        let text_x = (click_x - GUTTER_WIDTH as i32 - GUTTER_SPACING as i32).max(0);
+
         // Convert click position to row/column
-        let col = ((click_x + CHAR_WIDTH as i32 / 2) / CHAR_WIDTH as i32).max(0) as usize;
+        let col = ((text_x + CHAR_WIDTH as i32 / 2) / CHAR_WIDTH as i32).max(0) as usize;
         let visible_row = ((click_y + LINE_HEIGHT as i32 / 2) / LINE_HEIGHT as i32).max(0) as usize;
 
         // Calculate actual row accounting for scroll offset
@@ -609,9 +667,29 @@ impl TextEditor {
         // Draw visible lines
         let visible_end = (self.scroll_offset + EDITOR_HEIGHT).min(self.lines.len());
 
+        // Text starts after gutter plus spacing
+        let text_offset_x = offset_x + GUTTER_WIDTH as i32 + GUTTER_SPACING as i32;
+
         for (idx, line_num) in (self.scroll_offset..visible_end).enumerate() {
             let line = &self.lines[line_num];
             let y = offset_y + (idx as i32 * LINE_HEIGHT as i32);
+
+            // Draw gutter background
+            for dy in 0..LINE_HEIGHT {
+                for dx in 0..GUTTER_WIDTH {
+                    let px = offset_x + dx as i32;
+                    let py = y + dy as i32;
+                    if px >= 0 && py >= 0 {
+                        framebuffer::draw_pixel(px as u32, py as u32, COLOR_GUTTER_BG);
+                    }
+                }
+            }
+
+            // Draw line number in gutter (right-aligned with padding)
+            let line_number = line_num + 1; // 1-indexed for display
+            let line_num_str = alloc::format!("{:3}", line_number);
+            let line_num_x = offset_x + 4; // Small left padding
+            framebuffer::draw_string(line_num_x as u32, y as u32, &line_num_str, COLOR_LINE_NUMBER);
 
             // Draw selection background for this line if applicable
             if let Some(((start_row, start_col), (end_row, end_col))) = selection {
@@ -620,9 +698,9 @@ impl TextEditor {
                     let sel_start_col = if line_num == start_row { start_col } else { 0 };
                     let sel_end_col = if line_num == end_row { end_col } else { line.len() };
 
-                    // Draw selection highlight
+                    // Draw selection highlight (offset by gutter width)
                     if sel_start_col < sel_end_col {
-                        let sel_x = offset_x + (sel_start_col as i32 * CHAR_WIDTH as i32);
+                        let sel_x = text_offset_x + (sel_start_col as i32 * CHAR_WIDTH as i32);
                         let sel_width = (sel_end_col - sel_start_col) as u32 * CHAR_WIDTH;
 
                         for dy in 0..CHAR_HEIGHT {
@@ -638,12 +716,12 @@ impl TextEditor {
                 }
             }
 
-            // Draw each character
+            // Draw each character (offset by gutter width)
             for (col, ch) in line.chars().enumerate() {
                 if col >= EDITOR_WIDTH {
                     break; // Don't draw beyond editor width
                 }
-                let x = offset_x + (col as i32 * CHAR_WIDTH as i32);
+                let x = text_offset_x + (col as i32 * CHAR_WIDTH as i32);
 
                 // Draw character
                 let mut buf = [0u8; 4];
@@ -652,11 +730,11 @@ impl TextEditor {
             }
         }
 
-        // Draw cursor (only if visible in current scroll view)
+        // Draw cursor (only if visible in current scroll view, offset by gutter width)
         if self.cursor_row >= self.scroll_offset &&
            self.cursor_row < self.scroll_offset + EDITOR_HEIGHT {
             let visible_row = self.cursor_row - self.scroll_offset;
-            let cursor_x = offset_x + (self.cursor_col as i32 * CHAR_WIDTH as i32);
+            let cursor_x = text_offset_x + (self.cursor_col as i32 * CHAR_WIDTH as i32);
             let cursor_y = offset_y + (visible_row as i32 * LINE_HEIGHT as i32);
 
             // Draw cursor as a vertical bar

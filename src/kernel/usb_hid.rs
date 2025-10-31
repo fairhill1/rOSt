@@ -464,6 +464,12 @@ pub fn test_input_events() -> (bool, bool) {
                                 editor.undo();
                             }
                             needs_full_redraw = true;
+                        } else if is_ctrl && key == 21 { // KEY_Y = 21 in evdev (Ctrl+Y)
+                            // Handle redo
+                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                editor.redo();
+                            }
+                            needs_full_redraw = true;
                         } else {
                             // Arrow keys for editor navigation (Linux evdev codes)
                             match key {
