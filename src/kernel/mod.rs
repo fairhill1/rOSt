@@ -332,16 +332,20 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Main kernel loop - actively poll for input while keeping graphics stable
     uart_write_string("Starting main kernel loop with input polling...\r\n");
 
+    let mut mouse_moved = true; // Force initial draw
     loop {
         // Poll VirtIO input devices for real trackpad/keyboard input
         virtio_input::poll_virtio_input();
 
         // Process queued input events
-        usb_hid::test_input_events();
+        if usb_hid::test_input_events() {
+            mouse_moved = true;
+        }
 
-        // Redraw cursor after processing input (cursor may have moved)
-        if fb_info.base_address != 0 {
+        // Redraw cursor only if it has moved
+        if mouse_moved && fb_info.base_address != 0 {
             framebuffer::draw_cursor();
+            mouse_moved = false; // Reset flag after drawing
         }
 
         // Small delay to prevent CPU overload
