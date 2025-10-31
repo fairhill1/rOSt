@@ -225,8 +225,75 @@ impl WindowManager {
             self.windows[1].y = available_y;
             self.windows[1].width = half_width;
             self.windows[1].height = available_height;
+        } else if num_windows == 3 {
+            // Three windows: split left side vertically
+            // Layout:
+            // +----------+----------+
+            // |    0     |          |
+            // |----------|    1     |
+            // |    2     |          |
+            // +----------+----------+
+            let half_width = self.screen_width / 2;
+            let half_height = available_height / 2;
+
+            // Window 0: top-left
+            self.windows[0].x = 0;
+            self.windows[0].y = available_y;
+            self.windows[0].width = half_width;
+            self.windows[0].height = half_height;
+
+            // Window 1: full right side
+            self.windows[1].x = half_width as i32;
+            self.windows[1].y = available_y;
+            self.windows[1].width = half_width;
+            self.windows[1].height = available_height;
+
+            // Window 2: bottom-left
+            self.windows[2].x = 0;
+            self.windows[2].y = available_y + half_height as i32;
+            self.windows[2].width = half_width;
+            self.windows[2].height = half_height;
+        } else if num_windows >= 4 {
+            // Four windows: 2x2 grid
+            // Layout:
+            // +----------+----------+
+            // |    0     |    1     |
+            // |----------|----------|
+            // |    2     |    3     |
+            // +----------+----------+
+            let half_width = self.screen_width / 2;
+            let half_height = available_height / 2;
+
+            // Window 0: top-left
+            self.windows[0].x = 0;
+            self.windows[0].y = available_y;
+            self.windows[0].width = half_width;
+            self.windows[0].height = half_height;
+
+            // Window 1: top-right
+            self.windows[1].x = half_width as i32;
+            self.windows[1].y = available_y;
+            self.windows[1].width = half_width;
+            self.windows[1].height = half_height;
+
+            // Window 2: bottom-left
+            self.windows[2].x = 0;
+            self.windows[2].y = available_y + half_height as i32;
+            self.windows[2].width = half_width;
+            self.windows[2].height = half_height;
+
+            // Window 3: bottom-right
+            self.windows[3].x = half_width as i32;
+            self.windows[3].y = available_y + half_height as i32;
+            self.windows[3].width = half_width;
+            self.windows[3].height = half_height;
+
+            // If there are more than 4 windows, only show the first 4
+            // (hide the extras)
+            for i in 4..num_windows {
+                self.windows[i].visible = false;
+            }
         }
-        // For 3+ windows, we'll implement later
     }
 
     /// Calculate menu item width based on text length
