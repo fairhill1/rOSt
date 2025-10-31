@@ -31,6 +31,7 @@ pub struct PciDevice {
     pub class_code: u32,
     pub bar0: u32,
     pub device_info: PciDeviceInfo,
+    pub ecam_base: u64,  // PCI ECAM base address for config space access
 }
 
 #[derive(Clone, Debug)]
@@ -56,12 +57,23 @@ impl PciConfig {
         }
     }
 
+    pub fn with_base_addr(base_addr: u64) -> Self {
+        PciConfig {
+            base_addr,
+        }
+    }
+
     fn config_address(&self, bus: u8, device: u8, function: u8, offset: u8) -> u64 {
         self.base_addr + 
         ((bus as u64) << 20) + 
         ((device as u64) << 15) + 
         ((function as u64) << 12) + 
         (offset as u64)
+    }
+
+    pub fn read_u8(&self, bus: u8, device: u8, function: u8, offset: u8) -> u8 {
+        let addr = self.config_address(bus, device, function, offset);
+        unsafe { core::ptr::read_volatile(addr as *const u8) }
     }
 
     pub fn read_u16(&self, bus: u8, device: u8, function: u8, offset: u8) -> u16 {
@@ -118,18 +130,19 @@ impl PciDevice {
             class_code,
             bar0,
             device_info,
+            ecam_base: config.base_addr,
         })
     }
 
     pub fn enable_memory_access(&self) {
-        let config = PciConfig::new();
+        let config = PciConfig::with_base_addr(self.ecam_base);
         let mut command = config.read_u16(self.bus, self.device, self.function, PCI_COMMAND);
         command |= PCI_COMMAND_MEMORY;
         config.write_u16(self.bus, self.device, self.function, PCI_COMMAND, command);
     }
 
     pub fn enable_bus_mastering(&self) {
-        let config = PciConfig::new();
+        let config = PciConfig::with_base_addr(self.ecam_base);
         let mut command = config.read_u16(self.bus, self.device, self.function, PCI_COMMAND);
         command |= PCI_COMMAND_MASTER;
         config.write_u16(self.bus, self.device, self.function, PCI_COMMAND, command);
@@ -140,7 +153,7 @@ impl PciDevice {
             return None;
         }
 
-        let config = PciConfig::new();
+        let config = PciConfig::with_base_addr(self.ecam_base);
         let bar_offset = PCI_BAR0 + (bar_index * 4);
         let bar_value = config.read_u32(self.bus, self.device, self.function, bar_offset);
 
@@ -210,9 +223,9 @@ impl PciDevice {
     }
     
     pub fn read_capability_pointer(&self) -> Option<u8> {
-        let config = PciConfig::new();
+        let config = PciConfig::with_base_addr(self.ecam_base);
         let status = config.read_u16(self.bus, self.device, self.function, PCI_STATUS);
-        
+
         // Check if capabilities list is present (bit 4)
         if (status & (1 << 4)) != 0 {
             // Capabilities pointer is at offset 0x34
@@ -228,18 +241,18 @@ impl PciDevice {
     }
     
     pub fn read_config_u8(&self, offset: u8) -> u8 {
-        let config = PciConfig::new();
+        let config = PciConfig::with_base_addr(self.ecam_base);
         let addr = config.config_address(self.bus, self.device, self.function, offset);
         unsafe { core::ptr::read_volatile(addr as *const u8) }
     }
-    
+
     pub fn read_config_u16(&self, offset: u8) -> u16 {
-        let config = PciConfig::new();
+        let config = PciConfig::with_base_addr(self.ecam_base);
         config.read_u16(self.bus, self.device, self.function, offset)
     }
-    
+
     pub fn read_config_u32(&self, offset: u8) -> u32 {
-        let config = PciConfig::new();
+        let config = PciConfig::with_base_addr(self.ecam_base);
         config.read_u32(self.bus, self.device, self.function, offset)
     }
 }

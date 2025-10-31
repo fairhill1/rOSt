@@ -6,7 +6,10 @@
       "Bash(cp:*)",
       "Bash(grep:*)",
       "Bash(rg:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(qemu-system-aarch64:*)",
+      "Bash(timeout:*)",
+      "Bash(killall:*)"
     ],
     "deny": [],
     "ask": []

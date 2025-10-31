@@ -25,6 +25,15 @@ pub enum PixelFormat {
 
 static mut FRAMEBUFFER: Option<Framebuffer> = None;
 
+// Mouse cursor state
+static mut MOUSE_CURSOR: MouseCursor = MouseCursor { x: 400, y: 300 };
+
+#[derive(Clone, Copy)]
+struct MouseCursor {
+    x: i32,
+    y: i32,
+}
+
 struct Framebuffer {
     base: *mut u32,
     width: u32,
@@ -235,5 +244,91 @@ pub fn draw_string(x: u32, y: u32, text: &str, color: u32) {
         }
         draw_char(cur_x, y, ch, color);
         cur_x += 8; // Move to next character position
+    }
+}
+
+// Mouse cursor arrow bitmap (16x16)
+const CURSOR_ARROW: [[u8; 16]; 16] = [
+    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [1,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [1,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0],
+    [1,2,2,2,1,0,0,0,0,0,0,0,0,0,0,0],
+    [1,2,2,2,2,1,0,0,0,0,0,0,0,0,0,0],
+    [1,2,2,2,2,2,1,0,0,0,0,0,0,0,0,0],
+    [1,2,2,2,2,2,2,1,0,0,0,0,0,0,0,0],
+    [1,2,2,2,2,2,2,2,1,0,0,0,0,0,0,0],
+    [1,2,2,2,2,2,2,2,2,1,0,0,0,0,0,0],
+    [1,2,2,2,2,2,1,1,1,1,1,0,0,0,0,0],
+    [1,2,2,1,2,2,1,0,0,0,0,0,0,0,0,0],
+    [1,2,1,0,1,2,2,1,0,0,0,0,0,0,0,0],
+    [1,1,0,0,1,2,2,1,0,0,0,0,0,0,0,0],
+    [1,0,0,0,0,1,2,2,1,0,0,0,0,0,0,0],
+    [0,0,0,0,0,1,2,2,1,0,0,0,0,0,0,0],
+];
+
+/// Draw the mouse cursor at its current position
+pub fn draw_cursor() {
+    unsafe {
+        if let Some(ref mut fb) = FRAMEBUFFER {
+            let cursor = MOUSE_CURSOR;
+
+            for y in 0..16 {
+                for x in 0..16 {
+                    let screen_x = cursor.x + x as i32;
+                    let screen_y = cursor.y + y as i32;
+
+                    if screen_x >= 0 && screen_x < fb.width as i32 &&
+                       screen_y >= 0 && screen_y < fb.height as i32 {
+                        let color = match CURSOR_ARROW[y][x] {
+                            1 => 0xFF000000, // Black outline
+                            2 => 0xFFFFFFFF, // White fill
+                            _ => continue,   // Transparent
+                        };
+
+                        fb.put_pixel(screen_x as u32, screen_y as u32, color);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Move the mouse cursor by delta values
+pub fn move_cursor(dx: i8, dy: i8) {
+    unsafe {
+        MOUSE_CURSOR.x += dx as i32;
+        MOUSE_CURSOR.y += dy as i32;
+
+        // Clamp to screen bounds
+        if let Some(ref fb) = FRAMEBUFFER {
+            if MOUSE_CURSOR.x < 0 { MOUSE_CURSOR.x = 0; }
+            if MOUSE_CURSOR.y < 0 { MOUSE_CURSOR.y = 0; }
+            if MOUSE_CURSOR.x >= fb.width as i32 { MOUSE_CURSOR.x = fb.width as i32 - 1; }
+            if MOUSE_CURSOR.y >= fb.height as i32 { MOUSE_CURSOR.y = fb.height as i32 - 1; }
+        }
+    }
+}
+
+/// Get the current cursor position
+pub fn get_cursor_pos() -> (i32, i32) {
+    unsafe {
+        (MOUSE_CURSOR.x, MOUSE_CURSOR.y)
+    }
+}
+
+/// Set the cursor position directly
+pub fn set_cursor_pos(x: i32, y: i32) {
+    unsafe {
+        MOUSE_CURSOR.x = x;
+        MOUSE_CURSOR.y = y;
+
+        // Clamp to screen bounds
+        if let Some(ref fb) = FRAMEBUFFER {
+            if MOUSE_CURSOR.x < 0 { MOUSE_CURSOR.x = 0; }
+            if MOUSE_CURSOR.y < 0 { MOUSE_CURSOR.y = 0; }
+            if MOUSE_CURSOR.x >= fb.width as i32 { MOUSE_CURSOR.x = fb.width as i32 - 1; }
+            if MOUSE_CURSOR.y >= fb.height as i32 { MOUSE_CURSOR.y = fb.height as i32 - 1; }
+        }
     }
 }

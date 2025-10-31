@@ -19,6 +19,8 @@ pub mod virtio_gpu;
 pub mod ehci_usb;
 pub mod usb_hid;
 pub mod ps2_keyboard;
+pub mod virtio_input;
+pub mod dtb;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]
@@ -259,8 +261,12 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 }
             }
         }
-        
+
         uart_write_string("HELLO WORLD drawn to framebuffer!\r\n");
+
+        // Draw the mouse cursor
+        framebuffer::draw_cursor();
+        uart_write_string("Mouse cursor drawn!\r\n");
     } else {
         uart_write_string("No framebuffer available - running in text mode\r\n");
     }
@@ -284,36 +290,34 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     interrupts::init_timer();
     uart_write_string("Timer: OK\r\n");
     
-    // Initialize USB input devices using clean EHCI implementation
-    uart_write_string("Initializing USB input devices...\r\n");
+    // Skip EHCI USB for now - focus on VirtIO input
+    uart_write_string("Skipping EHCI USB (hangs on QEMU)...\r\n");
     
-    // Try EHCI USB controller - real hardware communication only
-    let usb_controller = if let Some(controller_addr) = ehci_usb::find_ehci_in_device_tree() {
-        if let Some(ehci) = ehci_usb::EhciController::create_ehci_from_device_tree(controller_addr) {
-            uart_write_string("EHCI controller initialized - scanning for input devices\r\n");
-            
-            // Scan for connected USB devices (keyboards, mice, etc.)
-            ehci.scan_ports();
-            
-            // Initialize interrupt-driven USB HID system for GUI keyboard input
-            usb_hid::init_usb_hid();
-            uart_write_string("GUI keyboard input system ready!\r\n");
-            Some(ehci)
-        } else {
-            uart_write_string("EHCI controller initialization failed\r\n");
-            None
-        }
+    // Parse Device Tree Blob to get correct PCI controller addresses
+    uart_write_string("Parsing Device Tree Blob...\r\n");
+    let pci_info = dtb::parse_dtb();
+
+    if let Some(info) = pci_info {
+        uart_write_string("DTB parsing successful!\r\n");
+        uart_write_string("PCI ECAM base: 0x");
+        print_hex_simple(info.ecam_base);
+        uart_write_string("\r\n");
+
+        // Initialize interrupt-based input system
+        uart_write_string("Initializing interrupt-based input system...\r\n");
+        usb_hid::init_usb_hid();
+        uart_write_string("Input system ready for GUI keyboard events!\r\n");
+
+        // Initialize VirtIO input devices using DTB-provided addresses
+        uart_write_string("Initializing VirtIO input devices with DTB addresses...\r\n");
+        virtio_input::init_virtio_input_with_pci_base(info.ecam_base, info.mmio_base);
+        uart_write_string("VirtIO input devices ready!\r\n");
     } else {
-        uart_write_string("No EHCI controller found in device tree\r\n");
-        uart_write_string("Trying XHCI or interrupt-based input system...\r\n");
-        None
-    };
-    
-    // Initialize interrupt-based input system regardless of USB controller detection
-    uart_write_string("Initializing interrupt-based input system...\r\n");
-    usb_hid::init_usb_hid();
-    uart_write_string("Input system ready for GUI keyboard events!\r\n");
-    
+        uart_write_string("WARNING: DTB parsing failed, using fallback initialization\r\n");
+        usb_hid::init_usb_hid();
+        virtio_input::init_virtio_input();
+    }
+
     uart_write_string("Kernel initialization complete!\r\n");
     
     // Clean stable loop - no framebuffer interference
@@ -325,13 +329,21 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     uart_write_string("- Red, Green, Blue squares\r\n");
     uart_write_string("Check the QEMU display window!\r\n");
     
-    // Main kernel loop - actively poll for USB input while keeping graphics stable
-    uart_write_string("Starting main kernel loop with USB input polling...\r\n");
-    
+    // Main kernel loop - actively poll for input while keeping graphics stable
+    uart_write_string("Starting main kernel loop with input polling...\r\n");
+
     loop {
-        // Poll for USB HID input events from GUI window
+        // Poll VirtIO input devices for real trackpad/keyboard input
+        virtio_input::poll_virtio_input();
+
+        // Process queued input events
         usb_hid::test_input_events();
-        
+
+        // Redraw cursor after processing input (cursor may have moved)
+        if fb_info.base_address != 0 {
+            framebuffer::draw_cursor();
+        }
+
         // Small delay to prevent CPU overload
         for _ in 0..10000 {
             unsafe { core::arch::asm!("nop"); }

@@ -12,7 +12,14 @@ run: build
 	qemu-system-aarch64 \
 		-M virt \
 		-cpu cortex-a72 \
-		-nographic \
+		-m 512M \
+		-serial stdio \
+		-device virtio-gpu-pci \
+		-device virtio-keyboard-pci \
+		-device virtio-mouse-pci \
+		-device usb-ehci,id=ehci \
+		-device usb-kbd,bus=ehci.0 \
+		-device usb-mouse,bus=ehci.0 \
 		-kernel $(KERNEL)
 
 debug: build
