@@ -17,9 +17,10 @@
 - Sector read/write operations
 - Persistent storage using modern VirtIO 1.0
 
-✅ **Graphics & Display**
-- UEFI GOP framebuffer (640x480)
-- Mouse cursor rendering
+✅ **VirtIO GPU with Hardware Cursor**
+- Full VirtIO GPU driver (1280x800 resolution)
+- Hardware-accelerated cursor with dedicated cursor queue
+- Smooth cursor movement with accurate click detection
 
 ## Quick Start
 
@@ -42,7 +43,7 @@ qemu-system-aarch64 \
   -cpu cortex-a57 \
   -m 1G \
   -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
-  -device ramfb \
+  -device virtio-gpu-pci \
   -display cocoa \
   -device virtio-keyboard-pci \
   -device virtio-mouse-pci \
@@ -77,9 +78,10 @@ clear                   - Clear screen
 - **VirtIO Virtqueues:** 0x50000000+
 
 ### VirtIO Device Layout
-- **Keyboard (0:1:0):** BAR=0x10100000, Virtqueue=0x50000000
-- **Mouse (0:2:0):** BAR=0x10200000, Virtqueue=0x50010000
-- **Block (0:3:0):** BAR=0x10300000, Virtqueue=0x50020000
+- **GPU (0:0:0):** BAR=0x10100000, Controlq=0x50000000, Cursorq=0x50010000
+- **Keyboard (0:1:0):** BAR=0x10200000, Virtqueue=0x50020000
+- **Mouse (0:2:0):** BAR=0x10300000, Virtqueue=0x50030000
+- **Block (0:3:0):** BAR=0x10400000, Virtqueue=0x50040000
 
 **Critical:** Each device needs unique BAR and virtqueue addresses to avoid conflicts.
 
@@ -91,6 +93,7 @@ clear                   - Clear screen
 
 ## Core Files
 
+- `src/kernel/virtio_gpu.rs` - VirtIO GPU driver with hardware cursor
 - `src/kernel/virtio_input.rs` - Keyboard/mouse input driver
 - `src/kernel/virtio_blk.rs` - Block device driver
 - `src/kernel/filesystem.rs` - SimpleFS implementation
