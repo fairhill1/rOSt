@@ -25,6 +25,7 @@ pub mod filesystem;
 pub mod shell;
 pub mod dtb;
 pub mod console;
+pub mod window_manager;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]
@@ -216,11 +217,32 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     uart_write_string("This is a major milestone - the core OS is working!\r\n");
 
     if fb_info.base_address != 0 {
-        uart_write_string("Graphics framebuffer is active - initializing GUI console!\r\n");
+        uart_write_string("Graphics framebuffer is active - initializing GUI desktop!\r\n");
 
         // Initialize GUI console
         console::init();
         uart_write_string("GUI console initialized!\r\n");
+
+        // Initialize window manager
+        window_manager::init();
+        uart_write_string("Window manager initialized!\r\n");
+
+        // Create initial windows
+        let terminal_win = window_manager::Window::new(
+            50, 50, 700, 500,
+            "Terminal",
+            window_manager::WindowContent::Terminal
+        );
+        window_manager::add_window(terminal_win);
+
+        let about_win = window_manager::Window::new(
+            200, 200, 300, 150,
+            "About rOSt",
+            window_manager::WindowContent::AboutDialog
+        );
+        window_manager::add_window(about_win);
+
+        uart_write_string("Initial windows created!\r\n");
     } else {
         uart_write_string("No framebuffer available - running in text mode\r\n");
     }
@@ -641,23 +663,38 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     uart_write_string("Kernel ready! Type commands in QEMU window.\r\n");
 
-    let mut needs_render = true; // Force initial console render
+    let mut needs_full_render = true; // Force initial render
 
     loop {
         // Poll VirtIO input devices for real trackpad/keyboard input
         virtio_input::poll_virtio_input();
 
-        // Process queued input events - returns true if screen needs updating
-        let input_processed = usb_hid::test_input_events();
-        if input_processed {
-            needs_render = true; // Re-render console after any input
+        // Process queued input events - returns (needs_full_redraw, needs_cursor_redraw)
+        let (needs_full_redraw, needs_cursor_redraw) = usb_hid::test_input_events();
+        if needs_full_redraw {
+            needs_full_render = true;
         }
 
-        // Render console and cursor
-        if fb_info.base_address != 0 && needs_render {
-            console::render();
-            framebuffer::draw_cursor(); // Always redraw cursor after console
-            needs_render = false;
+        // Render desktop with windows and cursor
+        if fb_info.base_address != 0 {
+            if needs_full_render {
+                // Full redraw to back buffer - clear, render windows, console, cursor
+                framebuffer::clear_screen(0xFF1A1A1A);
+                window_manager::render();
+                console::render();
+                framebuffer::draw_cursor();
+
+                // Swap buffers - copy back buffer to screen in one fast operation
+                // This eliminates ALL flickering!
+                framebuffer::swap_buffers();
+
+                needs_full_render = false;
+            } else if needs_cursor_redraw {
+                // Just redraw cursor to back buffer
+                framebuffer::draw_cursor();
+                // Swap to show updated cursor
+                framebuffer::swap_buffers();
+            }
         }
 
         // Small delay to prevent CPU overload

@@ -24,6 +24,11 @@ pub enum PixelFormat {
 }
 
 static mut FRAMEBUFFER: Option<Framebuffer> = None;
+static mut BACK_BUFFER: Option<*mut u32> = None; // Offscreen buffer for double buffering
+static mut FRONT_BUFFER: *mut u32 = core::ptr::null_mut(); // Actual screen buffer
+static mut SCREEN_WIDTH: u32 = 0;
+static mut SCREEN_HEIGHT: u32 = 0;
+static mut SCREEN_STRIDE: u32 = 0;
 
 // Mouse cursor state
 static mut MOUSE_CURSOR: MouseCursor = MouseCursor { x: 400, y: 300, prev_x: 400, prev_y: 300 };
@@ -97,15 +102,57 @@ pub fn init(info: &FramebufferInfo) {
     if info.base_address == 0 {
         return;
     }
-    
+
     unsafe {
-        FRAMEBUFFER = Some(Framebuffer {
-            base: info.base_address as *mut u32,
-            width: info.width,
-            height: info.height,
-            stride: info.pixels_per_scanline,
-            pixel_format: info.pixel_format,
-        });
+        SCREEN_WIDTH = info.width;
+        SCREEN_HEIGHT = info.height;
+        SCREEN_STRIDE = info.pixels_per_scanline;
+        FRONT_BUFFER = info.base_address as *mut u32;
+
+        // Allocate back buffer for double buffering
+        let buffer_size = (info.height * info.pixels_per_scanline) as usize;
+        let buffer_opt = crate::kernel::memory::allocate_pages(
+            (buffer_size * 4 + 4095) / 4096 // Number of 4KB pages needed
+        );
+
+        if let Some(buffer_addr) = buffer_opt {
+            let buffer_ptr = buffer_addr as *mut u32;
+            BACK_BUFFER = Some(buffer_ptr);
+
+            // All drawing goes to back buffer
+            FRAMEBUFFER = Some(Framebuffer {
+                base: buffer_ptr,
+                width: info.width,
+                height: info.height,
+                stride: info.pixels_per_scanline,
+                pixel_format: info.pixel_format,
+            });
+        } else {
+            // Fallback: draw directly to screen (no double buffering)
+            BACK_BUFFER = None;
+            FRAMEBUFFER = Some(Framebuffer {
+                base: info.base_address as *mut u32,
+                width: info.width,
+                height: info.height,
+                stride: info.pixels_per_scanline,
+                pixel_format: info.pixel_format,
+            });
+        }
+    }
+}
+
+/// Swap buffers - copy back buffer to front buffer (screen)
+/// This is the magic that eliminates flicker!
+pub fn swap_buffers() {
+    unsafe {
+        if let Some(back) = BACK_BUFFER {
+            if !FRONT_BUFFER.is_null() {
+                // Fast copy from back buffer to front buffer
+                let size = (SCREEN_HEIGHT * SCREEN_STRIDE) as usize;
+                core::ptr::copy_nonoverlapping(back, FRONT_BUFFER, size);
+            }
+        }
+        // If no back buffer, we're drawing directly to screen (no swap needed)
     }
 }
 
@@ -282,6 +329,15 @@ fn draw_char(x: u32, y: u32, ch: u8, color: u32) {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Draw a single pixel
+pub fn draw_pixel(x: u32, y: u32, color: u32) {
+    unsafe {
+        if let Some(ref mut fb) = FRAMEBUFFER {
+            fb.put_pixel(x, y, color);
         }
     }
 }
