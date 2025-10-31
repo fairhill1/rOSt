@@ -506,4 +506,95 @@ impl VirtioBlkDevice {
             Ok(())
         }
     }
+
+    /// Write a sector to the block device
+    pub fn write_sector(&mut self, sector: u64, buffer: &[u8; SECTOR_SIZE]) -> Result<(), &'static str> {
+        unsafe {
+            // Allocate memory for request header
+            let header_phys = 0x50100000u64;
+            let header = header_phys as *mut VirtioBlkReqHeader;
+
+            // Allocate memory for status byte
+            let status_phys = 0x50100200u64;
+            let status_ptr = status_phys as *mut u8;
+
+            // Fill in request header (WRITE this time!)
+            ptr::write_volatile(ptr::addr_of_mut!((*header).req_type), VIRTIO_BLK_T_OUT);
+            ptr::write_volatile(ptr::addr_of_mut!((*header).reserved), 0);
+            ptr::write_volatile(ptr::addr_of_mut!((*header).sector), sector);
+
+            // Initialize status to 0xFF (will be overwritten by device)
+            ptr::write_volatile(status_ptr, 0xFF);
+
+            // Build 3-descriptor chain
+            let d1 = self.virtq.alloc_desc(header as u64).ok_or("No descriptors available")?;
+            let d2 = self.virtq.alloc_desc(buffer.as_ptr() as u64).ok_or("No descriptors available")?;
+            let d3 = self.virtq.alloc_desc(status_phys).ok_or("No descriptors available")?;
+
+            // Descriptor 1: Request header (read-only for device)
+            (*self.virtq.desc.add(d1 as usize)).addr = header_phys;
+            (*self.virtq.desc.add(d1 as usize)).len = core::mem::size_of::<VirtioBlkReqHeader>() as u32;
+            (*self.virtq.desc.add(d1 as usize)).flags = VIRTQ_DESC_F_NEXT;
+            (*self.virtq.desc.add(d1 as usize)).next = d2;
+
+            // Descriptor 2: Data buffer (READ-ONLY for device on write - device reads from it!)
+            (*self.virtq.desc.add(d2 as usize)).addr = buffer.as_ptr() as u64;
+            (*self.virtq.desc.add(d2 as usize)).len = SECTOR_SIZE as u32;
+            (*self.virtq.desc.add(d2 as usize)).flags = VIRTQ_DESC_F_NEXT;  // NO WRITE flag!
+            (*self.virtq.desc.add(d2 as usize)).next = d3;
+
+            // Descriptor 3: Status byte (write for device)
+            (*self.virtq.desc.add(d3 as usize)).addr = status_phys;
+            (*self.virtq.desc.add(d3 as usize)).len = 1;
+            (*self.virtq.desc.add(d3 as usize)).flags = VIRTQ_DESC_F_WRITE;
+            (*self.virtq.desc.add(d3 as usize)).next = 0;
+
+            // Add to available ring
+            let avail_idx = ptr::read_volatile(ptr::addr_of!((*self.virtq.avail).idx));
+            ptr::write_volatile(self.virtq.avail_ring.add(avail_idx as usize % QUEUE_SIZE as usize), d1);
+            mb();
+            ptr::write_volatile(ptr::addr_of_mut!((*self.virtq.avail).idx), avail_idx.wrapping_add(1));
+            mb();
+
+            // Notify device
+            let queue_notify_off = ptr::read_volatile(&(*self.common_cfg).queue_notify_off);
+            let notify_addr = self.notify_base + (queue_notify_off as u64 * self.notify_off_multiplier as u64);
+            ptr::write_volatile(notify_addr as *mut u16, 0);
+            mb();
+
+            crate::kernel::uart_write_string("Write request submitted, waiting for completion...\r\n");
+
+            // Poll for completion (busy wait)
+            let start_used_idx = self.virtq.last_seen_used;
+            loop {
+                let used_idx = ptr::read_volatile(ptr::addr_of!((*self.virtq.used).idx));
+                if used_idx != start_used_idx {
+                    break;
+                }
+                // Small delay
+                for _ in 0..1000 {
+                    core::arch::asm!("nop");
+                }
+            }
+
+            // Check status
+            let final_status = ptr::read_volatile(status_ptr);
+            if final_status != VIRTIO_BLK_S_OK {
+                crate::kernel::uart_write_string(&alloc::format!(
+                    "ERROR: Write failed with status {}\r\n", final_status
+                ));
+                return Err("Write failed");
+            }
+
+            // Free descriptors
+            self.virtq.free_desc(d1);
+            self.virtq.free_desc(d2);
+            self.virtq.free_desc(d3);
+
+            self.virtq.last_seen_used = ptr::read_volatile(ptr::addr_of!((*self.virtq.used).idx));
+
+            crate::kernel::uart_write_string("Sector write successfully!\r\n");
+            Ok(())
+        }
+    }
 }

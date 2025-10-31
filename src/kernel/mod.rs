@@ -320,12 +320,75 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         let mut blk_devices = virtio_blk::VirtioBlkDevice::find_and_init(info.ecam_base, info.mmio_base);
 
         if !blk_devices.is_empty() {
-            uart_write_string("VirtIO block device initialized! Testing sector read...\r\n");
+            uart_write_string("VirtIO block device initialized! Running read/write tests...\r\n");
+
+            // Test 1: Write a pattern to sector 1
+            uart_write_string("\nTest 1: Writing pattern to sector 1...\r\n");
+            let mut write_buffer = [0u8; 512];
+            // Fill with a recognizable pattern
+            for i in 0..512 {
+                write_buffer[i] = (i % 256) as u8;
+            }
+
+            match blk_devices[0].write_sector(1, &write_buffer) {
+                Ok(()) => {
+                    uart_write_string("Write successful! Pattern written to sector 1.\r\n");
+                }
+                Err(e) => {
+                    uart_write_string("ERROR: Failed to write sector: ");
+                    uart_write_string(e);
+                    uart_write_string("\r\n");
+                }
+            }
+
+            // Test 2: Read it back and verify
+            uart_write_string("\nTest 2: Reading back sector 1 to verify...\r\n");
+            let mut read_buffer = [0u8; 512];
+            match blk_devices[0].read_sector(1, &mut read_buffer) {
+                Ok(()) => {
+                    uart_write_string("Read successful! Verifying data...\r\n");
+
+                    // Verify the data matches
+                    let mut errors = 0;
+                    for i in 0..512 {
+                        if read_buffer[i] != write_buffer[i] {
+                            errors += 1;
+                        }
+                    }
+
+                    if errors == 0 {
+                        uart_write_string("✓ VERIFICATION SUCCESS! All 512 bytes match!\r\n");
+                        uart_write_string("First 16 bytes: ");
+                        for i in 0..16 {
+                            let byte = read_buffer[i];
+                            let hex_chars = b"0123456789ABCDEF";
+                            unsafe {
+                                core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(byte >> 4) as usize]);
+                                core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(byte & 0x0F) as usize]);
+                                core::ptr::write_volatile(0x09000000 as *mut u8, b' ');
+                            }
+                        }
+                        uart_write_string("\r\n");
+                    } else {
+                        uart_write_string(&alloc::format!(
+                            "✗ VERIFICATION FAILED! {} bytes don't match!\r\n", errors
+                        ));
+                    }
+                }
+                Err(e) => {
+                    uart_write_string("ERROR: Failed to read sector: ");
+                    uart_write_string(e);
+                    uart_write_string("\r\n");
+                }
+            }
+
+            // Test 3: Read sector 0 (boot sector)
+            uart_write_string("\nTest 3: Reading sector 0 (boot sector)...\r\n");
             let mut buffer = [0u8; 512];
             match blk_devices[0].read_sector(0, &mut buffer) {
                 Ok(()) => {
-                    uart_write_string("Sector 0 read successfully! First 32 bytes:\r\n");
-                    for i in 0..32 {
+                    uart_write_string("Sector 0 read successfully! First 16 bytes:\r\n");
+                    for i in 0..16 {
                         let byte = buffer[i];
                         let hex_chars = b"0123456789ABCDEF";
                         unsafe {
@@ -337,11 +400,13 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                     uart_write_string("\r\n");
                 }
                 Err(e) => {
-                    uart_write_string("ERROR: Failed to read sector: ");
+                    uart_write_string("ERROR: Failed to read sector 0: ");
                     uart_write_string(e);
                     uart_write_string("\r\n");
                 }
             }
+
+            uart_write_string("\n=== VirtIO Block Device Tests Complete! ===\r\n");
         } else {
             uart_write_string("No VirtIO block devices found\r\n");
         }
