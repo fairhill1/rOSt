@@ -387,6 +387,104 @@ impl TextEditor {
         }
     }
 
+    /// Move cursor up with selection (Shift+Up)
+    pub fn move_up_select(&mut self) {
+        // Start selection if not already selecting
+        if self.selection_start.is_none() {
+            self.selection_start = Some((self.cursor_row, self.cursor_col));
+        }
+
+        if self.cursor_row > 0 {
+            self.cursor_row -= 1;
+            // Clamp column to line length
+            let line_len = self.lines[self.cursor_row].len();
+            if self.cursor_col > line_len {
+                self.cursor_col = line_len;
+            }
+
+            // Auto-scroll if needed
+            if self.cursor_row < self.scroll_offset {
+                self.scroll_offset = self.cursor_row;
+            }
+        }
+
+        // Update selection end
+        self.selection_end = Some((self.cursor_row, self.cursor_col));
+    }
+
+    /// Move cursor down with selection (Shift+Down)
+    pub fn move_down_select(&mut self) {
+        // Start selection if not already selecting
+        if self.selection_start.is_none() {
+            self.selection_start = Some((self.cursor_row, self.cursor_col));
+        }
+
+        if self.cursor_row < self.lines.len() - 1 {
+            self.cursor_row += 1;
+            // Clamp column to line length
+            let line_len = self.lines[self.cursor_row].len();
+            if self.cursor_col > line_len {
+                self.cursor_col = line_len;
+            }
+
+            // Auto-scroll if needed
+            if self.cursor_row >= self.scroll_offset + EDITOR_HEIGHT {
+                self.scroll_offset = self.cursor_row - EDITOR_HEIGHT + 1;
+            }
+        }
+
+        // Update selection end
+        self.selection_end = Some((self.cursor_row, self.cursor_col));
+    }
+
+    /// Move cursor left with selection (Shift+Left)
+    pub fn move_left_select(&mut self) {
+        // Start selection if not already selecting
+        if self.selection_start.is_none() {
+            self.selection_start = Some((self.cursor_row, self.cursor_col));
+        }
+
+        if self.cursor_col > 0 {
+            self.cursor_col -= 1;
+        } else if self.cursor_row > 0 {
+            // Move to end of previous line
+            self.cursor_row -= 1;
+            self.cursor_col = self.lines[self.cursor_row].len();
+
+            // Auto-scroll if needed
+            if self.cursor_row < self.scroll_offset {
+                self.scroll_offset = self.cursor_row;
+            }
+        }
+
+        // Update selection end
+        self.selection_end = Some((self.cursor_row, self.cursor_col));
+    }
+
+    /// Move cursor right with selection (Shift+Right)
+    pub fn move_right_select(&mut self) {
+        // Start selection if not already selecting
+        if self.selection_start.is_none() {
+            self.selection_start = Some((self.cursor_row, self.cursor_col));
+        }
+
+        if self.cursor_col < self.lines[self.cursor_row].len() {
+            self.cursor_col += 1;
+        } else if self.cursor_row < self.lines.len() - 1 {
+            // Move to start of next line
+            self.cursor_row += 1;
+            self.cursor_col = 0;
+
+            // Auto-scroll if needed
+            if self.cursor_row >= self.scroll_offset + EDITOR_HEIGHT {
+                self.scroll_offset = self.cursor_row - EDITOR_HEIGHT + 1;
+            }
+        }
+
+        // Update selection end
+        self.selection_end = Some((self.cursor_row, self.cursor_col));
+    }
+
     /// Get all text as a single string
     pub fn get_text(&self) -> String {
         self.lines.join("\n")

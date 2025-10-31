@@ -471,29 +471,48 @@ pub fn test_input_events() -> (bool, bool) {
                             }
                             needs_full_redraw = true;
                         } else {
+                            // Check for shift modifier
+                            let is_shift = (modifiers & (MOD_LEFT_SHIFT | MOD_RIGHT_SHIFT)) != 0;
+
                             // Arrow keys for editor navigation (Linux evdev codes)
                             match key {
                                 103 => { // KEY_UP
                                     if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
-                                        editor.move_up();
+                                        if is_shift {
+                                            editor.move_up_select();
+                                        } else {
+                                            editor.move_up();
+                                        }
                                     }
                                     needs_full_redraw = true;
                                 }
                                 108 => { // KEY_DOWN
                                     if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
-                                        editor.move_down();
+                                        if is_shift {
+                                            editor.move_down_select();
+                                        } else {
+                                            editor.move_down();
+                                        }
                                     }
                                     needs_full_redraw = true;
                                 }
                                 105 => { // KEY_LEFT
                                     if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
-                                        editor.move_left();
+                                        if is_shift {
+                                            editor.move_left_select();
+                                        } else {
+                                            editor.move_left();
+                                        }
                                     }
                                     needs_full_redraw = true;
                                 }
                                 106 => { // KEY_RIGHT
                                     if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
-                                        editor.move_right();
+                                        if is_shift {
+                                            editor.move_right_select();
+                                        } else {
+                                            editor.move_right();
+                                        }
                                     }
                                     needs_full_redraw = true;
                                 }
