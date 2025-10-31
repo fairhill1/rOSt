@@ -306,7 +306,12 @@ impl Shell {
 
                             match fs.read_file(device, filename, &mut buffer) {
                                 Ok(bytes_read) => {
-                                    if let Ok(text) = core::str::from_utf8(&buffer[..bytes_read]) {
+                                    // Find the actual content length (stop at first null byte or end)
+                                    let actual_len = buffer[..bytes_read].iter()
+                                        .position(|&b| b == 0)
+                                        .unwrap_or(bytes_read);
+
+                                    if let Ok(text) = core::str::from_utf8(&buffer[..actual_len]) {
                                         // Create editor with file content
                                         let editor = crate::kernel::editor::TextEditor::with_content(
                                             filename,
@@ -317,7 +322,7 @@ impl Shell {
                                         // Open editor window
                                         let window = crate::kernel::window_manager::Window::new(
                                             0, 0, 640, 480,
-                                            &alloc::format!("Editor - {}", filename),
+                                            &alloc::format!("Text Editor - {}", filename),
                                             crate::kernel::window_manager::WindowContent::Editor
                                         );
                                         crate::kernel::window_manager::add_window(window);

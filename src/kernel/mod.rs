@@ -40,7 +40,7 @@ pub struct BootInfo {
 static mut BLOCK_DEVICES: Option<alloc::vec::Vec<virtio_blk::VirtioBlkDevice>> = None;
 
 // Basic UART output for debugging
-fn uart_write_string(s: &str) {
+pub fn uart_write_string(s: &str) {
     const UART_BASE: u64 = 0x09000000; // QEMU ARM virt machine UART address
     for byte in s.bytes() {
         unsafe {

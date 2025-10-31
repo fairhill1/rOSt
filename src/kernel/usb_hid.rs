@@ -470,9 +470,13 @@ pub fn test_input_events() -> (bool, bool) {
                                         if let Some(ascii) = evdev_to_ascii(key, modifiers) {
                                             if let Some(editor) = crate::kernel::editor::get_editor() {
                                                 if ascii == b'\n' {
-                                                    // Clear status message on Enter
-                                                    clear_menu_status();
-                                                    editor.insert_newline();
+                                                    // If there's a status message, clear it and consume the Enter
+                                                    if get_menu_status().is_some() {
+                                                        clear_menu_status();
+                                                    } else {
+                                                        // No status message, insert newline normally
+                                                        editor.insert_newline();
+                                                    }
                                                 } else if ascii == 8 { // Backspace
                                                     editor.delete_char();
                                                 } else if ascii >= 32 && ascii < 127 { // Printable ASCII
@@ -643,20 +647,52 @@ fn save_editor_file_internal(editor: &mut crate::kernel::editor::TextEditor) {
                 if let Some(device_idx) = shell.device_index {
                     if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
                         if let Some(device) = devices.get_mut(device_idx) {
-                            // Check if file exists
+                            // Check if file exists and get its size
                             let files = fs.list_files();
-                            let file_exists = files.iter().any(|f| f.get_name() == filename);
+                            let existing_file = files.iter().find(|f| f.get_name() == filename);
 
-                            if !file_exists {
-                                // Create file with appropriate size
-                                let size = ((content_bytes.len() + 511) / 512) * 512; // Round up to sector
-                                match fs.create_file(device, &filename, size as u32) {
+                            let required_size = ((content_bytes.len() + 511) / 512) * 512; // Round up to sector
+
+                            // If file doesn't exist or is too small, (re)create it
+                            if let Some(file) = existing_file {
+                                let current_size = file.get_size_bytes() as usize;
+                                if content_bytes.len() > current_size {
+                                    // File exists but is too small, delete and recreate
+                                    match fs.delete_file(device, &filename) {
+                                        Ok(()) => {
+                                            uart_write_string(&alloc::format!("Resizing '{}' from {} to {} bytes\r\n",
+                                                filename, current_size, required_size));
+                                        }
+                                        Err(e) => {
+                                            let msg = alloc::format!("Error deleting file for resize: {}", e);
+                                            set_menu_status(&msg);
+                                            uart_write_string(&alloc::format!("{}\r\n", msg));
+                                            return;
+                                        }
+                                    }
+                                    // Create new larger file
+                                    match fs.create_file(device, &filename, required_size as u32) {
+                                        Ok(()) => {
+                                            uart_write_string(&alloc::format!("Created larger file '{}'\r\n", filename));
+                                        }
+                                        Err(e) => {
+                                            let msg = alloc::format!("Error creating resized file: {}", e);
+                                            set_menu_status(&msg);
+                                            uart_write_string(&alloc::format!("{}\r\n", msg));
+                                            return;
+                                        }
+                                    }
+                                }
+                            } else {
+                                // File doesn't exist, create it
+                                match fs.create_file(device, &filename, required_size as u32) {
                                     Ok(()) => {
                                         uart_write_string(&alloc::format!("Created file '{}'\r\n", filename));
                                     }
                                     Err(e) => {
-                                        editor.set_status(&alloc::format!("Error creating file: {}", e));
-                                        uart_write_string(&alloc::format!("Error creating file: {}\r\n", e));
+                                        let msg = alloc::format!("Error creating file: {}", e);
+                                        set_menu_status(&msg);
+                                        uart_write_string(&alloc::format!("{}\r\n", msg));
                                         return;
                                     }
                                 }
@@ -669,6 +705,10 @@ fn save_editor_file_internal(editor: &mut crate::kernel::editor::TextEditor) {
                                     let msg = alloc::format!("Saved {} bytes to '{}'", content_bytes.len(), filename);
                                     set_menu_status(&msg);
                                     uart_write_string(&alloc::format!("{}\r\n", msg));
+
+                                    // Update editor window title to show filename
+                                    let window_title = alloc::format!("Text Editor - {}", filename);
+                                    crate::kernel::window_manager::set_editor_window_title(&window_title);
                                 }
                                 Err(e) => {
                                     let msg = alloc::format!("Error saving: {}", e);

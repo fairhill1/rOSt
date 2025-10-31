@@ -447,6 +447,15 @@ impl WindowManager {
             .last()
             .map(|w| w.get_content_bounds())
     }
+
+    /// Update the editor window title
+    pub fn set_editor_title(&mut self, title: &str) {
+        if let Some(window) = self.windows.iter_mut()
+            .filter(|w| w.content == WindowContent::Editor)
+            .last() {
+            window.title = String::from(title);
+        }
+    }
 }
 
 static mut WINDOW_MANAGER: Option<WindowManager> = None;
@@ -521,6 +530,14 @@ pub fn get_editor_content_bounds() -> Option<(i32, i32, u32, u32)> {
             wm.get_editor_content_bounds()
         } else {
             None
+        }
+    }
+}
+
+pub fn set_editor_window_title(title: &str) {
+    unsafe {
+        if let Some(ref mut wm) = WINDOW_MANAGER {
+            wm.set_editor_title(title);
         }
     }
 }
