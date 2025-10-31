@@ -37,12 +37,60 @@ pub struct BootInfo {
 // Static storage for block devices (needs to outlive local scope for shell access)
 static mut BLOCK_DEVICES: Option<alloc::vec::Vec<virtio_blk::VirtioBlkDevice>> = None;
 
+// Static for GPU driver and cursor position
+static mut GPU_DRIVER: Option<virtio_gpu::VirtioGpuDriver> = None;
+static mut CURSOR_X: u32 = 0;
+static mut CURSOR_Y: u32 = 0;
+static mut SCREEN_WIDTH: u32 = 0;
+static mut SCREEN_HEIGHT: u32 = 0;
+
 // Basic UART output for debugging
 pub fn uart_write_string(s: &str) {
     const UART_BASE: u64 = 0x09000000; // QEMU ARM virt machine UART address
     for byte in s.bytes() {
         unsafe {
             core::ptr::write_volatile(UART_BASE as *mut u8, byte);
+        }
+    }
+}
+
+// Handle mouse movement and update hardware cursor
+pub fn handle_mouse_movement(x_delta: i32, y_delta: i32) {
+    // Debug: print first few mouse movements
+    static mut MOUSE_EVENT_COUNT: u32 = 0;
+    unsafe {
+        MOUSE_EVENT_COUNT += 1;
+        if MOUSE_EVENT_COUNT <= 20 {
+            uart_write_string("Mouse delta: x=");
+            if x_delta < 0 {
+                uart_write_string("-");
+                print_hex_simple((-x_delta) as u64);
+            } else {
+                print_hex_simple(x_delta as u64);
+            }
+            uart_write_string(" y=");
+            if y_delta < 0 {
+                uart_write_string("-");
+                print_hex_simple((-y_delta) as u64);
+            } else {
+                print_hex_simple(y_delta as u64);
+            }
+            uart_write_string(" -> cursor: ");
+            print_hex_simple(CURSOR_X as u64);
+            uart_write_string(",");
+            print_hex_simple(CURSOR_Y as u64);
+            uart_write_string("\r\n");
+        }
+
+        if let Some(ref mut gpu) = GPU_DRIVER {
+            gpu.handle_mouse_move(
+                x_delta,
+                y_delta,
+                SCREEN_WIDTH,
+                SCREEN_HEIGHT,
+                &mut CURSOR_X,
+                &mut CURSOR_Y
+            );
         }
     }
 }
@@ -88,51 +136,113 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Now initialize VirtIO-GPU for graphics
     uart_write_string("Trying to initialize VirtIO-GPU...\r\n");
     let mut gpu_framebuffer_info = None;
-    
+    let mut virtio_gpu_driver: Option<virtio_gpu::VirtioGpuDriver> = None;
+
     // Initialize VirtIO-GPU properly
     if let Some(mut virtio_gpu) = virtio_gpu::VirtioGpuDriver::new() {
         uart_write_string("VirtIO-GPU device found, initializing...\r\n");
-        
+
+        // Step 1: Initialize device
         match virtio_gpu.initialize() {
             Ok(()) => {
-                uart_write_string("VirtIO-GPU initialized successfully!\r\n");
-                let (fb_addr, width, height, stride) = virtio_gpu.get_framebuffer_info();
-                
-                uart_write_string("VirtIO-GPU framebuffer: 0x");
-                let mut addr = fb_addr;
-                for _ in 0..16 {
-                    let digit = (addr >> 60) & 0xF;
-                    let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                    unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                    addr <<= 4;
-                }
-                uart_write_string(" size: ");
-                let mut w = width as u64;
-                for _ in 0..8 {
-                    let digit = (w >> 28) & 0xF;
-                    let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                    unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                    w <<= 4;
-                }
-                uart_write_string("x");
-                let mut h = height as u64;
-                for _ in 0..8 {
-                    let digit = (h >> 28) & 0xF;
-                    let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                    unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                    h <<= 4;
-                }
-                uart_write_string("\r\n");
-                
-                if fb_addr != 0 {
-                    gpu_framebuffer_info = Some(framebuffer::FramebufferInfo {
-                        base_address: fb_addr,
-                        size: (height * stride) as usize,
-                        width,
-                        height,
-                        pixels_per_scanline: stride / 4,
-                        pixel_format: framebuffer::PixelFormat::Rgb,
-                    });
+                uart_write_string("VirtIO-GPU device initialized!\r\n");
+
+                // Step 2: Get display info
+                match virtio_gpu.get_display_info() {
+                    Ok(()) => {
+                        uart_write_string("Display info retrieved\r\n");
+
+                        // Step 3: Create framebuffer
+                        match virtio_gpu.create_framebuffer() {
+                            Ok(()) => {
+                                uart_write_string("Framebuffer created!\r\n");
+
+                                // Step 4: Draw test pattern
+                                match virtio_gpu.draw_test_pattern() {
+                                    Ok(()) => {
+                                        uart_write_string("Test pattern drawn!\r\n");
+                                    }
+                                    Err(e) => {
+                                        uart_write_string("Test pattern failed: ");
+                                        uart_write_string(e);
+                                        uart_write_string("\r\n");
+                                    }
+                                }
+
+                                // Step 5: Create hardware cursor
+                                match virtio_gpu.create_default_cursor() {
+                                    Ok(()) => {
+                                        uart_write_string("Hardware cursor created!\r\n");
+                                    }
+                                    Err(e) => {
+                                        uart_write_string("Cursor creation failed: ");
+                                        uart_write_string(e);
+                                        uart_write_string("\r\n");
+                                    }
+                                }
+
+                                let (fb_addr, width, height, stride) = virtio_gpu.get_framebuffer_info();
+
+                                uart_write_string("VirtIO-GPU framebuffer: 0x");
+                                let mut addr = fb_addr;
+                                for _ in 0..16 {
+                                    let digit = (addr >> 60) & 0xF;
+                                    let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
+                                    unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
+                                    addr <<= 4;
+                                }
+                                uart_write_string(" size: ");
+                                let mut w = width as u64;
+                                for _ in 0..8 {
+                                    let digit = (w >> 28) & 0xF;
+                                    let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
+                                    unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
+                                    w <<= 4;
+                                }
+                                uart_write_string("x");
+                                let mut h = height as u64;
+                                for _ in 0..8 {
+                                    let digit = (h >> 28) & 0xF;
+                                    let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
+                                    unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
+                                    h <<= 4;
+                                }
+                                uart_write_string("\r\n");
+
+                                if fb_addr != 0 {
+                                    gpu_framebuffer_info = Some(framebuffer::FramebufferInfo {
+                                        base_address: fb_addr,
+                                        size: (height * stride) as usize,
+                                        width,
+                                        height,
+                                        pixels_per_scanline: stride / 4,
+                                        pixel_format: framebuffer::PixelFormat::Rgb,
+                                    });
+
+                                    // Store GPU driver and screen info for mouse handling
+                                    unsafe {
+                                        SCREEN_WIDTH = width;
+                                        SCREEN_HEIGHT = height;
+                                        CURSOR_X = width / 2;
+                                        CURSOR_Y = height / 2;
+                                        GPU_DRIVER = Some(virtio_gpu);
+                                    }
+
+                                    virtio_gpu_driver = None; // Moved to static
+                                }
+                            }
+                            Err(e) => {
+                                uart_write_string("Framebuffer creation failed: ");
+                                uart_write_string(e);
+                                uart_write_string("\r\n");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        uart_write_string("Get display info failed: ");
+                        uart_write_string(e);
+                        uart_write_string("\r\n");
+                    }
                 }
             }
             Err(err_msg) => {
