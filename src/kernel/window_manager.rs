@@ -558,3 +558,28 @@ pub fn set_editor_window_title(title: &str) {
         }
     }
 }
+
+/// Get which menu button is being hovered (returns button index or None)
+pub fn get_hovered_menu_button(x: i32, y: i32) -> Option<usize> {
+    // Check if in menu bar area
+    if y < 0 || y >= MENU_BAR_HEIGHT as i32 {
+        return None;
+    }
+
+    let mut current_x = MENU_START_X;
+    for (index, item) in MENU_ITEMS.iter().enumerate() {
+        let item_width = WindowManager::calculate_menu_item_width(item.label);
+        let item_y = MENU_START_Y;
+
+        if x >= current_x as i32 &&
+           x < (current_x + item_width) as i32 &&
+           y >= item_y as i32 &&
+           y < (item_y + MENU_ITEM_HEIGHT) as i32 {
+            return Some(index);
+        }
+
+        current_x += item_width + MENU_ITEM_SPACING;
+    }
+
+    None
+}

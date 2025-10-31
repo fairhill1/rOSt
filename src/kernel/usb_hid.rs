@@ -510,12 +510,23 @@ pub fn test_input_events() -> (bool, bool) {
                 // Move the cursor on screen
                 crate::kernel::framebuffer::move_cursor(x_delta, y_delta);
 
-                // Check if cursor is in menu bar area (needs full redraw for hover effects)
+                // Check which menu button is hovered (if any)
                 let (cx, cy) = crate::kernel::framebuffer::get_cursor_pos();
-                if cy >= 0 && cy < 32 { // Menu bar height is 32
-                    needs_full_redraw = true;
+                let hovered_button = if cy >= 0 && cy < 32 {
+                    // In menu bar, determine which button
+                    crate::kernel::window_manager::get_hovered_menu_button(cx, cy)
                 } else {
-                    needs_cursor_redraw = true;
+                    None
+                };
+
+                unsafe {
+                    // Only trigger full redraw if hover state changed
+                    if hovered_button != LAST_HOVERED_BUTTON {
+                        needs_full_redraw = true;
+                        LAST_HOVERED_BUTTON = hovered_button;
+                    } else {
+                        needs_cursor_redraw = true;
+                    }
                 }
             }
             InputEvent::MouseButton { button, pressed } => {
@@ -538,6 +549,9 @@ static mut FILENAME_PROMPT: Option<String> = None;
 
 /// Status message to show in menu bar
 static mut MENU_STATUS_MESSAGE: Option<String> = None;
+
+/// Track last hovered menu button index (for hover optimization)
+static mut LAST_HOVERED_BUTTON: Option<usize> = None;
 
 /// Check if we're currently prompting for a filename
 pub fn is_prompting_filename() -> bool {
