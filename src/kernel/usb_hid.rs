@@ -401,56 +401,86 @@ pub fn test_input_events() -> (bool, bool) {
             InputEvent::KeyPressed { key, modifiers } => {
                 // Check if editor window is focused
                 if crate::kernel::window_manager::has_focused_editor() {
-                    // Check for Ctrl+S (save)
-                    let is_ctrl = (modifiers & (MOD_LEFT_CTRL | MOD_RIGHT_CTRL)) != 0;
-
-                    if is_ctrl && key == 31 { // KEY_S = 31 in evdev
-                        // Handle save in editor
-                        if let Some(editor) = crate::kernel::editor::get_editor() {
-                            save_editor_file(editor);
+                    // Check if we're prompting for a filename
+                    if is_prompting_filename() {
+                        // Handle filename input
+                        if let Some(ascii) = evdev_to_ascii(key, modifiers) {
+                            if ascii == b'\n' {
+                                // Enter pressed - finish the prompt and save
+                                if let Some(editor) = crate::kernel::editor::get_editor() {
+                                    finish_filename_prompt(editor);
+                                }
+                                needs_full_redraw = true;
+                            } else if ascii == 27 { // ESC
+                                // Cancel the prompt
+                                cancel_filename_prompt();
+                                if let Some(editor) = crate::kernel::editor::get_editor() {
+                                    editor.set_status("Save cancelled");
+                                }
+                                needs_full_redraw = true;
+                            } else if ascii == 8 { // Backspace
+                                backspace_filename_prompt();
+                                needs_full_redraw = true;
+                            } else if ascii >= 32 && ascii < 127 { // Printable ASCII
+                                add_to_filename_prompt(ascii as char);
+                                needs_full_redraw = true;
+                            }
                         }
-                        needs_full_redraw = true;
                     } else {
-                        // Arrow keys for editor navigation (Linux evdev codes)
-                        match key {
-                            103 => { // KEY_UP
-                                if let Some(editor) = crate::kernel::editor::get_editor() {
-                                    editor.move_up();
-                                }
-                                needs_full_redraw = true;
+                        // Normal editor input handling
+                        // Check for Ctrl+S (save)
+                        let is_ctrl = (modifiers & (MOD_LEFT_CTRL | MOD_RIGHT_CTRL)) != 0;
+
+                        if is_ctrl && key == 31 { // KEY_S = 31 in evdev
+                            // Handle save in editor
+                            if let Some(editor) = crate::kernel::editor::get_editor() {
+                                save_editor_file(editor);
                             }
-                            108 => { // KEY_DOWN
-                                if let Some(editor) = crate::kernel::editor::get_editor() {
-                                    editor.move_down();
+                            needs_full_redraw = true;
+                        } else {
+                            // Arrow keys for editor navigation (Linux evdev codes)
+                            match key {
+                                103 => { // KEY_UP
+                                    if let Some(editor) = crate::kernel::editor::get_editor() {
+                                        editor.move_up();
+                                    }
+                                    needs_full_redraw = true;
                                 }
-                                needs_full_redraw = true;
-                            }
-                            105 => { // KEY_LEFT
-                                if let Some(editor) = crate::kernel::editor::get_editor() {
-                                    editor.move_left();
+                                108 => { // KEY_DOWN
+                                    if let Some(editor) = crate::kernel::editor::get_editor() {
+                                        editor.move_down();
+                                    }
+                                    needs_full_redraw = true;
                                 }
-                                needs_full_redraw = true;
-                            }
-                            106 => { // KEY_RIGHT
-                                if let Some(editor) = crate::kernel::editor::get_editor() {
-                                    editor.move_right();
+                                105 => { // KEY_LEFT
+                                    if let Some(editor) = crate::kernel::editor::get_editor() {
+                                        editor.move_left();
+                                    }
+                                    needs_full_redraw = true;
                                 }
-                                needs_full_redraw = true;
-                            }
-                            _ => {
-                                // Regular text input (but not if Ctrl is held)
-                                if !is_ctrl {
-                                    if let Some(ascii) = evdev_to_ascii(key, modifiers) {
-                                        if let Some(editor) = crate::kernel::editor::get_editor() {
-                                            if ascii == b'\n' {
-                                                editor.insert_newline();
-                                            } else if ascii == 8 { // Backspace
-                                                editor.delete_char();
-                                            } else if ascii >= 32 && ascii < 127 { // Printable ASCII
-                                                editor.insert_char(ascii as char);
+                                106 => { // KEY_RIGHT
+                                    if let Some(editor) = crate::kernel::editor::get_editor() {
+                                        editor.move_right();
+                                    }
+                                    needs_full_redraw = true;
+                                }
+                                _ => {
+                                    // Regular text input (but not if Ctrl is held)
+                                    if !is_ctrl {
+                                        if let Some(ascii) = evdev_to_ascii(key, modifiers) {
+                                            if let Some(editor) = crate::kernel::editor::get_editor() {
+                                                if ascii == b'\n' {
+                                                    // Clear status message on Enter
+                                                    clear_menu_status();
+                                                    editor.insert_newline();
+                                                } else if ascii == 8 { // Backspace
+                                                    editor.delete_char();
+                                                } else if ascii >= 32 && ascii < 127 { // Printable ASCII
+                                                    editor.insert_char(ascii as char);
+                                                }
                                             }
+                                            needs_full_redraw = true;
                                         }
-                                        needs_full_redraw = true;
                                     }
                                 }
                             }
@@ -493,18 +523,113 @@ pub fn test_input_events() -> (bool, bool) {
     (needs_full_redraw, needs_cursor_redraw)
 }
 
+/// Prompt state for filename input
+static mut FILENAME_PROMPT: Option<String> = None;
+
+/// Status message to show in menu bar
+static mut MENU_STATUS_MESSAGE: Option<String> = None;
+
+/// Check if we're currently prompting for a filename
+pub fn is_prompting_filename() -> bool {
+    unsafe { FILENAME_PROMPT.is_some() }
+}
+
+/// Set a status message to display in the menu bar
+pub fn set_menu_status(msg: &str) {
+    unsafe {
+        MENU_STATUS_MESSAGE = Some(String::from(msg));
+    }
+}
+
+/// Clear the menu status message
+pub fn clear_menu_status() {
+    unsafe {
+        MENU_STATUS_MESSAGE = None;
+    }
+}
+
+/// Get the current menu status message
+pub fn get_menu_status() -> Option<String> {
+    unsafe {
+        MENU_STATUS_MESSAGE.clone()
+    }
+}
+
+/// Start prompting for a filename
+pub fn start_filename_prompt() {
+    unsafe {
+        FILENAME_PROMPT = Some(String::new());
+    }
+}
+
+/// Add a character to the filename prompt
+pub fn add_to_filename_prompt(ch: char) {
+    unsafe {
+        if let Some(ref mut prompt) = FILENAME_PROMPT {
+            prompt.push(ch);
+        }
+    }
+}
+
+/// Remove the last character from the filename prompt
+pub fn backspace_filename_prompt() {
+    unsafe {
+        if let Some(ref mut prompt) = FILENAME_PROMPT {
+            prompt.pop();
+        }
+    }
+}
+
+/// Get the current filename prompt text
+pub fn get_filename_prompt() -> Option<String> {
+    unsafe { FILENAME_PROMPT.clone() }
+}
+
+/// Finish the filename prompt and save the file
+pub fn finish_filename_prompt(editor: &mut crate::kernel::editor::TextEditor) {
+    unsafe {
+        if let Some(filename) = FILENAME_PROMPT.take() {
+            if !filename.is_empty() {
+                editor.set_filename(&filename);
+                save_editor_file_internal(editor);
+            } else {
+                editor.set_status("Save cancelled - no filename provided");
+            }
+        }
+    }
+}
+
+/// Cancel the filename prompt
+pub fn cancel_filename_prompt() {
+    unsafe {
+        FILENAME_PROMPT = None;
+    }
+}
+
 /// Save the editor file to disk
 fn save_editor_file(editor: &mut crate::kernel::editor::TextEditor) {
     use crate::kernel::filesystem;
 
     // Check if we have a filename
+    if let Some(_name) = editor.get_filename() {
+        // File already has a name, save directly
+        save_editor_file_internal(editor);
+    } else {
+        // Prompt for filename in the status bar
+        start_filename_prompt();
+    }
+}
+
+/// Internal function to save the editor file with a known filename
+fn save_editor_file_internal(editor: &mut crate::kernel::editor::TextEditor) {
+    use crate::kernel::filesystem;
+
+    // Get the filename
     let filename = if let Some(name) = editor.get_filename() {
         name.to_string()
     } else {
-        // For now, use a default name - in future we could prompt the user
-        editor.set_filename("untitled");
-        editor.set_status("Saving as 'untitled'...");
-        String::from("untitled")
+        editor.set_status("Error: No filename set");
+        return;
     };
 
     // Get file content
@@ -541,12 +666,14 @@ fn save_editor_file(editor: &mut crate::kernel::editor::TextEditor) {
                             match fs.write_file(device, &filename, content_bytes) {
                                 Ok(()) => {
                                     editor.mark_saved();
-                                    editor.set_status(&alloc::format!("Saved {} bytes to '{}'", content_bytes.len(), filename));
-                                    uart_write_string(&alloc::format!("Saved {} bytes to '{}'\r\n", content_bytes.len(), filename));
+                                    let msg = alloc::format!("Saved {} bytes to '{}'", content_bytes.len(), filename);
+                                    set_menu_status(&msg);
+                                    uart_write_string(&alloc::format!("{}\r\n", msg));
                                 }
                                 Err(e) => {
-                                    editor.set_status(&alloc::format!("Error saving: {}", e));
-                                    uart_write_string(&alloc::format!("Error saving: {}\r\n", e));
+                                    let msg = alloc::format!("Error saving: {}", e);
+                                    set_menu_status(&msg);
+                                    uart_write_string(&alloc::format!("{}\r\n", msg));
                                 }
                             }
                         } else {
