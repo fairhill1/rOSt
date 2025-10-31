@@ -562,8 +562,6 @@ impl VirtioBlkDevice {
             ptr::write_volatile(notify_addr as *mut u16, 0);
             mb();
 
-            crate::kernel::uart_write_string("Write request submitted, waiting for completion...\r\n");
-
             // Poll for completion (busy wait)
             let start_used_idx = self.virtq.last_seen_used;
             loop {
@@ -593,7 +591,6 @@ impl VirtioBlkDevice {
 
             self.virtq.last_seen_used = ptr::read_volatile(ptr::addr_of!((*self.virtq.used).idx));
 
-            crate::kernel::uart_write_string("Sector write successfully!\r\n");
             Ok(())
         }
     }

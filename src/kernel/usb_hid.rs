@@ -29,8 +29,8 @@ const HID_SET_PROTOCOL: u8 = 0x0B;
 const EVDEV_TO_ASCII: [u8; 256] = [
     // 0-9
     0, 0, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8',
-    // 10-19
-    b'9', b'0', b'-', b'=', 0, 0, b'q', b'w', b'e', b'r',
+    // 10-19 (14 = KEY_BACKSPACE)
+    b'9', b'0', b'-', b'=', 8, 0, b'q', b'w', b'e', b'r',
     // 20-29
     b't', b'y', b'u', b'i', b'o', b'p', b'[', b']', b'\n', 0,
     // 30-39 (KEY_A = 30)
