@@ -102,15 +102,19 @@ impl Console {
 
     /// Render the console to the framebuffer at a specific offset (for window rendering)
     /// Note: Always renders, ignoring dirty flag, because caller controls when to redraw
-    pub fn render_at(&mut self, offset_x: i32, offset_y: i32) {
+    pub fn render_at(&mut self, offset_x: i32, offset_y: i32, max_width: u32, max_height: u32) {
         // Always render when called - the caller (main loop) decides when to redraw
         // The dirty flag is only used for the legacy render() function
 
+        // Calculate max characters that fit in the window
+        let max_chars_x = (max_width / CHAR_WIDTH) as usize;
+        let max_chars_y = (max_height / LINE_HEIGHT) as usize;
+
         // Don't clear screen - the window manager handles that now
 
-        // Draw all characters with offset
-        for y in 0..CONSOLE_HEIGHT {
-            for x in 0..CONSOLE_WIDTH {
+        // Draw all characters with offset, but only those that fit in the window
+        for y in 0..CONSOLE_HEIGHT.min(max_chars_y) {
+            for x in 0..CONSOLE_WIDTH.min(max_chars_x) {
                 let ch = self.buffer[y][x];
                 if ch != b' ' {
                     // Draw character directly instead of using draw_string
@@ -163,7 +167,8 @@ impl Console {
     pub fn render(&mut self) {
         // Only render if dirty (optimization for legacy code path)
         if self.dirty {
-            self.render_at(0, 0);
+            // Use full screen dimensions for legacy render
+            self.render_at(0, 0, 1024, 768);
         }
     }
 
@@ -217,10 +222,10 @@ pub fn render() {
 }
 
 /// Render the console at a specific offset (for window rendering)
-pub fn render_at(offset_x: i32, offset_y: i32) {
+pub fn render_at(offset_x: i32, offset_y: i32, max_width: u32, max_height: u32) {
     unsafe {
         if let Some(ref mut console) = CONSOLE {
-            console.render_at(offset_x, offset_y);
+            console.render_at(offset_x, offset_y, max_width, max_height);
         }
     }
 }
