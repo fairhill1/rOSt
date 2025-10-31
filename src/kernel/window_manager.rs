@@ -10,6 +10,15 @@ const TITLE_BAR_HEIGHT: u32 = 24;
 const BORDER_WIDTH: u32 = 2;
 const CLOSE_BUTTON_SIZE: u32 = 16;
 
+// Menu bar
+const MENU_BAR_HEIGHT: u32 = 32;
+const MENU_ITEM_HEIGHT: u32 = 24;
+const MENU_ITEM_SPACING: u32 = 8;
+const MENU_ITEM_PADDING_X: u32 = 16; // Horizontal padding inside button
+const MENU_START_X: u32 = 8;
+const MENU_START_Y: u32 = 4;
+const CHAR_WIDTH: u32 = 16; // Width of each character (from font)
+
 // Colors
 const COLOR_TITLE_BAR: u32 = 0xFF2D5C88;      // Blue title bar
 const COLOR_TITLE_BAR_INACTIVE: u32 = 0xFF666666; // Gray when not focused
@@ -17,6 +26,9 @@ const COLOR_BORDER: u32 = 0xFF1A1A1A;         // Dark border
 const COLOR_WINDOW_BG: u32 = 0xFF000000;      // Black window background
 const COLOR_TEXT: u32 = 0xFFFFFFFF;           // White text
 const COLOR_CLOSE_BTN: u32 = 0xFFCC3333;      // Red close button
+const COLOR_MENU_BAR: u32 = 0xFF2B2B2B;       // Lighter gray menu bar
+const COLOR_MENU_ITEM: u32 = 0xFF3D3D3D;      // Menu item background
+const COLOR_MENU_ITEM_BORDER: u32 = 0xFF555555; // Menu item border
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WindowContent {
@@ -33,11 +45,6 @@ pub struct Window {
     pub content: WindowContent,
     pub is_focused: bool,
     pub visible: bool,
-
-    // For dragging
-    pub is_dragging: bool,
-    pub drag_offset_x: i32,
-    pub drag_offset_y: i32,
 }
 
 impl Window {
@@ -51,9 +58,6 @@ impl Window {
             content,
             is_focused: false,
             visible: true,
-            is_dragging: false,
-            drag_offset_x: 0,
-            drag_offset_y: 0,
         }
     }
 
@@ -118,8 +122,8 @@ impl Window {
         let btn_y = self.y + 4;
         self.draw_rect(btn_x, btn_y, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE, COLOR_CLOSE_BTN);
 
-        // Draw X in close button
-        framebuffer::draw_string((btn_x + 4) as u32, (btn_y + 0) as u32, "X", COLOR_TEXT);
+        // Draw X in close button (centered - X is 16px wide, button is 16px, so start at btn_x)
+        framebuffer::draw_string(btn_x as u32, btn_y as u32, "X", COLOR_TEXT);
 
         // Draw content area background
         let (cx, cy, cw, ch) = self.get_content_bounds();
@@ -132,9 +136,8 @@ impl Window {
     fn render_content(&self, x: i32, y: i32, width: u32, height: u32) {
         match self.content {
             WindowContent::Terminal => {
-                // Terminal content will be rendered by the console system
-                // This is just a placeholder
-                framebuffer::draw_string((x + 4) as u32, (y + 4) as u32, "Terminal", COLOR_TEXT);
+                // Terminal content is rendered by the console system directly
+                // (see main rendering loop which calls console::render_at())
             }
             WindowContent::AboutDialog => {
                 framebuffer::draw_string((x + 8) as u32, (y + 8) as u32, "rOSt - Rust OS", COLOR_TEXT);
@@ -157,17 +160,150 @@ impl Window {
     }
 }
 
+struct MenuItem {
+    label: &'static str,
+    window_type: WindowContent,
+}
+
+const MENU_ITEMS: &[MenuItem] = &[
+    MenuItem { label: "Terminal", window_type: WindowContent::Terminal },
+    MenuItem { label: "About", window_type: WindowContent::AboutDialog },
+];
+
 pub struct WindowManager {
     windows: Vec<Window>,
     next_id: usize,
+    screen_width: u32,
+    screen_height: u32,
 }
 
 impl WindowManager {
     pub fn new() -> Self {
+        // Get screen dimensions from framebuffer
+        let (width, height) = framebuffer::get_screen_dimensions();
         WindowManager {
             windows: Vec::new(),
             next_id: 0,
+            screen_width: width,
+            screen_height: height,
         }
+    }
+
+    /// Calculate tiling layout for all windows
+    fn calculate_layout(&mut self) {
+        let num_windows = self.windows.len();
+        if num_windows == 0 {
+            return;
+        }
+
+        let available_y = MENU_BAR_HEIGHT as i32;
+        let available_height = self.screen_height - MENU_BAR_HEIGHT;
+
+        if num_windows == 1 {
+            // Single window: full screen below menu bar
+            self.windows[0].x = 0;
+            self.windows[0].y = available_y;
+            self.windows[0].width = self.screen_width;
+            self.windows[0].height = available_height;
+        } else if num_windows == 2 {
+            // Two windows: 50/50 horizontal split
+            let half_width = self.screen_width / 2;
+
+            self.windows[0].x = 0;
+            self.windows[0].y = available_y;
+            self.windows[0].width = half_width;
+            self.windows[0].height = available_height;
+
+            self.windows[1].x = half_width as i32;
+            self.windows[1].y = available_y;
+            self.windows[1].width = half_width;
+            self.windows[1].height = available_height;
+        }
+        // For 3+ windows, we'll implement later
+    }
+
+    /// Calculate menu item width based on text length
+    fn calculate_menu_item_width(label: &str) -> u32 {
+        let text_width = label.len() as u32 * CHAR_WIDTH;
+        text_width + MENU_ITEM_PADDING_X * 2 // Add padding on both sides
+    }
+
+    /// Render the menu bar
+    fn render_menu_bar(&self) {
+        // Draw menu bar background
+        for y in 0..MENU_BAR_HEIGHT {
+            for x in 0..self.screen_width {
+                framebuffer::draw_pixel(x, y, COLOR_MENU_BAR);
+            }
+        }
+
+        // Draw menu items with borders and backgrounds
+        let mut current_x = MENU_START_X;
+        for item in MENU_ITEMS.iter() {
+            let item_width = Self::calculate_menu_item_width(item.label);
+            let item_y = MENU_START_Y;
+
+            // Draw menu item border
+            self.draw_menu_rect(current_x, item_y, item_width, MENU_ITEM_HEIGHT, COLOR_MENU_ITEM_BORDER);
+
+            // Draw menu item background (inset by 1 pixel for border)
+            self.draw_menu_rect(current_x + 1, item_y + 1,
+                               item_width - 2, MENU_ITEM_HEIGHT - 2,
+                               COLOR_MENU_ITEM);
+
+            // Draw menu item text (centered with padding)
+            let text_x = current_x + MENU_ITEM_PADDING_X;
+            let text_y = item_y + 4;
+            framebuffer::draw_string(text_x, text_y, item.label, COLOR_TEXT);
+
+            // Move to next position
+            current_x += item_width + MENU_ITEM_SPACING;
+        }
+    }
+
+    /// Helper to draw rectangles for menu items
+    fn draw_menu_rect(&self, x: u32, y: u32, width: u32, height: u32, color: u32) {
+        for dy in 0..height {
+            for dx in 0..width {
+                let px = x + dx;
+                let py = y + dy;
+                if px < self.screen_width && py < MENU_BAR_HEIGHT {
+                    framebuffer::draw_pixel(px, py, color);
+                }
+            }
+        }
+    }
+
+    /// Check if menu bar was clicked, return window type to create
+    fn check_menu_click(&self, x: i32, y: i32) -> Option<WindowContent> {
+        // Check if click is in menu bar area
+        if y < 0 || y >= MENU_BAR_HEIGHT as i32 {
+            return None;
+        }
+
+        // Check each menu item
+        let mut current_x = MENU_START_X;
+        for item in MENU_ITEMS.iter() {
+            let item_width = Self::calculate_menu_item_width(item.label);
+            let item_y = MENU_START_Y;
+            let item_end_x = current_x + item_width;
+            let item_end_y = item_y + MENU_ITEM_HEIGHT;
+
+            if x >= current_x as i32 && x < item_end_x as i32 &&
+               y >= item_y as i32 && y < item_end_y as i32 {
+                // Check if window of this type already exists
+                let already_exists = self.windows.iter()
+                    .any(|w| w.content == item.window_type);
+
+                if !already_exists {
+                    return Some(item.window_type);
+                }
+            }
+
+            // Move to next position
+            current_x += item_width + MENU_ITEM_SPACING;
+        }
+        None
     }
 
     /// Add a new window
@@ -179,6 +315,12 @@ impl WindowManager {
         // Focus the new window
         self.focus_window(self.windows.len() - 1);
 
+        // Recalculate tiling layout
+        self.calculate_layout();
+
+        // Mark console as dirty so it redraws at new position
+        crate::kernel::console::mark_dirty();
+
         id
     }
 
@@ -186,6 +328,10 @@ impl WindowManager {
     pub fn remove_window(&mut self, index: usize) {
         if index < self.windows.len() {
             self.windows.remove(index);
+            // Recalculate tiling layout
+            self.calculate_layout();
+            // Mark console as dirty so it redraws at new position
+            crate::kernel::console::mark_dirty();
         }
     }
 
@@ -203,11 +349,26 @@ impl WindowManager {
             // Move to end (top of z-order)
             let window = self.windows.remove(index);
             self.windows.push(window);
+
+            // Mark console as dirty so it redraws
+            crate::kernel::console::mark_dirty();
         }
     }
 
     /// Handle mouse click
     pub fn handle_click(&mut self, x: i32, y: i32) -> bool {
+        // First check if menu bar was clicked
+        if let Some(window_type) = self.check_menu_click(x, y) {
+            // Create the requested window
+            let title = match window_type {
+                WindowContent::Terminal => "Terminal",
+                WindowContent::AboutDialog => "About rOSt",
+            };
+            let window = Window::new(0, 0, 640, 480, title, window_type);
+            self.add_window(window);
+            return true;
+        }
+
         // Check windows in reverse order (top to bottom)
         for i in (0..self.windows.len()).rev() {
             if self.windows[i].contains_point(x, y) {
@@ -217,14 +378,7 @@ impl WindowManager {
                     return true;
                 }
 
-                // Check if clicking title bar to start drag
-                if self.windows[i].is_in_title_bar(x, y) {
-                    self.windows[i].is_dragging = true;
-                    self.windows[i].drag_offset_x = x - self.windows[i].x;
-                    self.windows[i].drag_offset_y = y - self.windows[i].y;
-                }
-
-                // Focus this window
+                // Focus this window (no more dragging)
                 self.focus_window(i);
                 return true;
             }
@@ -232,29 +386,11 @@ impl WindowManager {
         false
     }
 
-    /// Handle mouse release
-    pub fn handle_release(&mut self) {
-        for win in &mut self.windows {
-            win.is_dragging = false;
-        }
-    }
-
-    /// Handle mouse move (for dragging)
-    /// Returns true if any window was moved (needs redraw)
-    pub fn handle_move(&mut self, x: i32, y: i32) -> bool {
-        let mut moved = false;
-        for win in &mut self.windows {
-            if win.is_dragging {
-                win.x = x - win.drag_offset_x;
-                win.y = y - win.drag_offset_y;
-                moved = true;
-            }
-        }
-        moved
-    }
-
-    /// Render all windows
+    /// Render all windows and menu bar
     pub fn render(&self) {
+        // Draw menu bar first
+        self.render_menu_bar();
+
         // Draw windows in order (bottom to top)
         for window in &self.windows {
             window.render();
@@ -266,6 +402,14 @@ impl WindowManager {
         self.windows.iter()
             .filter(|w| w.content == WindowContent::Terminal && w.is_focused)
             .last()
+    }
+
+    /// Get terminal window content bounds (for rendering console inside)
+    pub fn get_terminal_content_bounds(&self) -> Option<(i32, i32, u32, u32)> {
+        self.windows.iter()
+            .filter(|w| w.content == WindowContent::Terminal && w.visible)
+            .last()
+            .map(|w| w.get_content_bounds())
     }
 }
 
@@ -297,24 +441,6 @@ pub fn handle_mouse_click(x: i32, y: i32) -> bool {
     }
 }
 
-pub fn handle_mouse_release() {
-    unsafe {
-        if let Some(ref mut wm) = WINDOW_MANAGER {
-            wm.handle_release();
-        }
-    }
-}
-
-pub fn handle_mouse_move(x: i32, y: i32) -> bool {
-    unsafe {
-        if let Some(ref mut wm) = WINDOW_MANAGER {
-            wm.handle_move(x, y)
-        } else {
-            false
-        }
-    }
-}
-
 pub fn render() {
     unsafe {
         if let Some(ref wm) = WINDOW_MANAGER {
@@ -329,6 +455,16 @@ pub fn has_focused_terminal() -> bool {
             wm.get_focused_terminal().is_some()
         } else {
             false
+        }
+    }
+}
+
+pub fn get_terminal_content_bounds() -> Option<(i32, i32, u32, u32)> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_terminal_content_bounds()
+        } else {
+            None
         }
     }
 }

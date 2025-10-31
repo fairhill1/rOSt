@@ -226,23 +226,7 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize window manager
         window_manager::init();
         uart_write_string("Window manager initialized!\r\n");
-
-        // Create initial windows
-        let terminal_win = window_manager::Window::new(
-            50, 50, 700, 500,
-            "Terminal",
-            window_manager::WindowContent::Terminal
-        );
-        window_manager::add_window(terminal_win);
-
-        let about_win = window_manager::Window::new(
-            200, 200, 300, 150,
-            "About rOSt",
-            window_manager::WindowContent::AboutDialog
-        );
-        window_manager::add_window(about_win);
-
-        uart_write_string("Initial windows created!\r\n");
+        uart_write_string("Click menu bar to open windows\r\n");
     } else {
         uart_write_string("No framebuffer available - running in text mode\r\n");
     }
@@ -681,7 +665,12 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 // Full redraw to back buffer - clear, render windows, console, cursor
                 framebuffer::clear_screen(0xFF1A1A1A);
                 window_manager::render();
-                console::render();
+
+                // Render console INSIDE the terminal window (not over everything)
+                if let Some((cx, cy, _cw, _ch)) = window_manager::get_terminal_content_bounds() {
+                    console::render_at(cx, cy);
+                }
+
                 framebuffer::draw_cursor();
 
                 // Swap buffers - copy back buffer to screen in one fast operation
