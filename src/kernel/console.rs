@@ -129,18 +129,30 @@ impl Console {
             }
         }
 
-        // Draw cursor (blinking underscore)
+        // Draw cursor (solid block)
         if self.cursor_x < CONSOLE_WIDTH && self.cursor_y < CONSOLE_HEIGHT {
             let cursor_x = offset_x + ((self.cursor_x as i32) * CHAR_WIDTH as i32);
             let cursor_y = offset_y + ((self.cursor_y as i32) * LINE_HEIGHT as i32);
 
             if cursor_x >= 0 && cursor_y >= 0 {
-                framebuffer::draw_string(
-                    cursor_x as u32,
-                    cursor_y as u32,
-                    "_",
-                    self.fg_color,
-                );
+                // Draw a solid block cursor with bright green color
+                for dy in 0..CHAR_HEIGHT {
+                    for dx in 0..CHAR_WIDTH {
+                        let px = cursor_x as u32 + dx as u32;
+                        let py = cursor_y as u32 + dy as u32;
+                        framebuffer::draw_pixel(px, py, 0xFF00FF00); // Bright green
+                    }
+                }
+
+                // Draw the character at cursor position in black so it's visible on green
+                let ch = self.buffer[self.cursor_y][self.cursor_x];
+                if ch != b' ' {
+                    let mut buf = [0u8; 1];
+                    buf[0] = ch;
+                    if let Ok(s) = core::str::from_utf8(&buf) {
+                        framebuffer::draw_string(cursor_x as u32, cursor_y as u32, s, 0xFF000000);
+                    }
+                }
             }
         }
 
