@@ -333,8 +333,14 @@ impl WindowManager {
         let time_y = MENU_START_Y + 4;
         framebuffer::draw_string(time_x, time_y, &time_str, COLOR_TEXT);
 
-        // Check if we're prompting for a filename
-        if crate::kernel::usb_hid::is_prompting_filename() {
+        // Check if we're in delete confirmation mode
+        if crate::kernel::usb_hid::is_confirming_delete() {
+            // Show delete confirmation prompt
+            if let Some(filename) = crate::kernel::usb_hid::get_delete_confirm_filename() {
+                let prompt_text = alloc::format!("Delete '{}'? (y/n)", filename);
+                framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &prompt_text, COLOR_TEXT);
+            }
+        } else if crate::kernel::usb_hid::is_prompting_filename() {
             // Show filename prompt instead of menu items
             let is_rename = crate::kernel::usb_hid::is_renaming();
             let prompt_label = if is_rename { "Rename to: " } else { "Enter filename: " };
@@ -621,8 +627,11 @@ impl WindowManager {
                                 crate::kernel::file_explorer::refresh(instance_id);
                             },
                             FileExplorerAction::DeleteFile => {
-                                if crate::kernel::file_explorer::delete_selected(instance_id) {
-                                    crate::kernel::file_explorer::refresh(instance_id);
+                                // Get selected filename and start delete confirmation
+                                if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(instance_id) {
+                                    if let Some(filename) = explorer.get_selected_filename() {
+                                        crate::kernel::usb_hid::start_delete_confirm(&filename);
+                                    }
                                 }
                             },
                             FileExplorerAction::NewFile => {
