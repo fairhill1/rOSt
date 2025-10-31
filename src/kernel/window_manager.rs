@@ -47,10 +47,11 @@ pub struct Window {
     pub content: WindowContent,
     pub is_focused: bool,
     pub visible: bool,
+    pub instance_id: usize, // ID for the console/editor instance
 }
 
 impl Window {
-    pub fn new(x: i32, y: i32, width: u32, height: u32, title: &str, content: WindowContent) -> Self {
+    pub fn new(x: i32, y: i32, width: u32, height: u32, title: &str, content: WindowContent, instance_id: usize) -> Self {
         Window {
             x,
             y,
@@ -60,6 +61,7 @@ impl Window {
             content,
             is_focused: false,
             visible: true,
+            instance_id,
         }
     }
 
@@ -395,13 +397,15 @@ impl WindowManager {
 
             if x >= current_x as i32 && x < item_end_x as i32 &&
                y >= item_y as i32 && y < item_end_y as i32 {
-                // Check if window of this type already exists
-                let already_exists = self.windows.iter()
-                    .any(|w| w.content == item.window_type);
-
-                if !already_exists {
-                    return Some(item.window_type);
+                // Only prevent duplicates for AboutDialog
+                if item.window_type == WindowContent::AboutDialog {
+                    let already_exists = self.windows.iter()
+                        .any(|w| w.content == WindowContent::AboutDialog);
+                    if already_exists {
+                        return None;
+                    }
                 }
+                return Some(item.window_type);
             }
 
             // Move to next position
@@ -422,20 +426,31 @@ impl WindowManager {
         // Recalculate tiling layout
         self.calculate_layout();
 
-        // Mark console as dirty so it redraws at new position
-        crate::kernel::console::mark_dirty();
-
         id
     }
 
     /// Remove a window by index
     pub fn remove_window(&mut self, index: usize) {
         if index < self.windows.len() {
+            let window = &self.windows[index];
+
+            // Delete the associated console/editor instance
+            match window.content {
+                WindowContent::Terminal => {
+                    crate::kernel::shell::remove_shell(window.instance_id);
+                    crate::kernel::console::remove_console(window.instance_id);
+                },
+                WindowContent::Editor => {
+                    crate::kernel::editor::remove_editor(window.instance_id);
+                },
+                WindowContent::AboutDialog => {
+                    // No instance to remove
+                },
+            }
+
             self.windows.remove(index);
             // Recalculate tiling layout
             self.calculate_layout();
-            // Mark console as dirty so it redraws at new position
-            crate::kernel::console::mark_dirty();
         }
     }
 
@@ -453,9 +468,6 @@ impl WindowManager {
             // Move to end (top of z-order)
             let window = self.windows.remove(index);
             self.windows.push(window);
-
-            // Mark console as dirty so it redraws
-            crate::kernel::console::mark_dirty();
         }
     }
 
@@ -464,12 +476,22 @@ impl WindowManager {
         // First check if menu bar was clicked
         if let Some(window_type) = self.check_menu_click(x, y) {
             // Create the requested window
-            let title = match window_type {
-                WindowContent::Terminal => "Terminal",
-                WindowContent::AboutDialog => "About rOSt",
-                WindowContent::Editor => "Text Editor",
+            let (title, instance_id) = match window_type {
+                WindowContent::Terminal => {
+                    let id = crate::kernel::console::create_console();
+                    // Initialize shell for this terminal
+                    crate::kernel::shell::create_shell(id);
+                    ("Terminal", id)
+                },
+                WindowContent::Editor => {
+                    let id = crate::kernel::editor::create_editor();
+                    ("Text Editor", id)
+                },
+                WindowContent::AboutDialog => {
+                    ("About rOSt", 0) // AboutDialog doesn't need an instance
+                },
             };
-            let window = Window::new(0, 0, 640, 480, title, window_type);
+            let window = Window::new(0, 0, 640, 480, title, window_type, instance_id);
             self.add_window(window);
             return true;
         }
@@ -502,34 +524,42 @@ impl WindowManager {
         }
     }
 
-    /// Get the focused terminal window (if any)
-    pub fn get_focused_terminal(&self) -> Option<&Window> {
+    /// Get the focused terminal window instance ID
+    pub fn get_focused_terminal_id(&self) -> Option<usize> {
         self.windows.iter()
             .filter(|w| w.content == WindowContent::Terminal && w.is_focused)
             .last()
+            .map(|w| w.instance_id)
     }
 
-    /// Get terminal window content bounds (for rendering console inside)
-    pub fn get_terminal_content_bounds(&self) -> Option<(i32, i32, u32, u32)> {
+    /// Get all terminal windows with their instance IDs and content bounds
+    pub fn get_all_terminals(&self) -> Vec<(usize, i32, i32, u32, u32)> {
         self.windows.iter()
             .filter(|w| w.content == WindowContent::Terminal && w.visible)
-            .last()
-            .map(|w| w.get_content_bounds())
+            .map(|w| {
+                let (x, y, width, height) = w.get_content_bounds();
+                (w.instance_id, x, y, width, height)
+            })
+            .collect()
     }
 
-    /// Get the focused editor window (if any)
-    pub fn get_focused_editor(&self) -> Option<&Window> {
+    /// Get the focused editor window instance ID
+    pub fn get_focused_editor_id(&self) -> Option<usize> {
         self.windows.iter()
             .filter(|w| w.content == WindowContent::Editor && w.is_focused)
             .last()
+            .map(|w| w.instance_id)
     }
 
-    /// Get editor window content bounds (for rendering editor inside)
-    pub fn get_editor_content_bounds(&self) -> Option<(i32, i32, u32, u32)> {
+    /// Get all editor windows with their instance IDs and content bounds
+    pub fn get_all_editors(&self) -> Vec<(usize, i32, i32, u32, u32)> {
         self.windows.iter()
             .filter(|w| w.content == WindowContent::Editor && w.visible)
-            .last()
-            .map(|w| w.get_content_bounds())
+            .map(|w| {
+                let (x, y, width, height) = w.get_content_bounds();
+                (w.instance_id, x, y, width, height)
+            })
+            .collect()
     }
 
     /// Update the editor window title
@@ -581,19 +611,29 @@ pub fn render() {
 pub fn has_focused_terminal() -> bool {
     unsafe {
         if let Some(ref wm) = WINDOW_MANAGER {
-            wm.get_focused_terminal().is_some()
+            wm.get_focused_terminal_id().is_some()
         } else {
             false
         }
     }
 }
 
-pub fn get_terminal_content_bounds() -> Option<(i32, i32, u32, u32)> {
+pub fn get_focused_terminal_id() -> Option<usize> {
     unsafe {
         if let Some(ref wm) = WINDOW_MANAGER {
-            wm.get_terminal_content_bounds()
+            wm.get_focused_terminal_id()
         } else {
             None
+        }
+    }
+}
+
+pub fn get_all_terminals() -> Vec<(usize, i32, i32, u32, u32)> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_all_terminals()
+        } else {
+            Vec::new()
         }
     }
 }
@@ -601,19 +641,29 @@ pub fn get_terminal_content_bounds() -> Option<(i32, i32, u32, u32)> {
 pub fn has_focused_editor() -> bool {
     unsafe {
         if let Some(ref wm) = WINDOW_MANAGER {
-            wm.get_focused_editor().is_some()
+            wm.get_focused_editor_id().is_some()
         } else {
             false
         }
     }
 }
 
-pub fn get_editor_content_bounds() -> Option<(i32, i32, u32, u32)> {
+pub fn get_focused_editor_id() -> Option<usize> {
     unsafe {
         if let Some(ref wm) = WINDOW_MANAGER {
-            wm.get_editor_content_bounds()
+            wm.get_focused_editor_id()
         } else {
             None
+        }
+    }
+}
+
+pub fn get_all_editors() -> Vec<(usize, i32, i32, u32, u32)> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_all_editors()
+        } else {
+            Vec::new()
         }
     }
 }

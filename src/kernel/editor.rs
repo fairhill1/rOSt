@@ -283,29 +283,47 @@ impl TextEditor {
     }
 }
 
-/// Global editor instance
-static mut EDITOR: Option<TextEditor> = None;
+/// Global editor instances
+static mut EDITORS: Vec<TextEditor> = Vec::new();
 
 pub fn init() {
+    // Nothing to do - editors are created on demand
+}
+
+/// Create a new editor instance and return its ID
+pub fn create_editor() -> usize {
     unsafe {
-        EDITOR = Some(TextEditor::new());
+        EDITORS.push(TextEditor::new());
+        EDITORS.len() - 1
     }
 }
 
-pub fn get_editor() -> Option<&'static mut TextEditor> {
-    unsafe { EDITOR.as_mut() }
-}
-
-pub fn set_editor(editor: TextEditor) {
+/// Create a new editor with content and return its ID
+pub fn create_editor_with_content(filename: &str, content: &str) -> usize {
     unsafe {
-        EDITOR = Some(editor);
+        EDITORS.push(TextEditor::with_content(filename, content));
+        EDITORS.len() - 1
     }
 }
 
-pub fn render_at(offset_x: i32, offset_y: i32) {
+/// Remove an editor instance by ID
+pub fn remove_editor(id: usize) {
     unsafe {
-        if let Some(ref editor) = EDITOR {
-            editor.render_at(offset_x, offset_y);
+        if id < EDITORS.len() {
+            EDITORS.remove(id);
         }
+    }
+}
+
+/// Get an editor instance by ID
+pub fn get_editor(id: usize) -> Option<&'static mut TextEditor> {
+    unsafe {
+        EDITORS.get_mut(id)
+    }
+}
+
+pub fn render_at(id: usize, offset_x: i32, offset_y: i32) {
+    if let Some(editor) = get_editor(id) {
+        editor.render_at(offset_x, offset_y);
     }
 }

@@ -7,27 +7,29 @@ extern crate alloc;
 
 const MAX_COMMAND_LEN: usize = 128;
 
-// Helper function to write to both UART and GUI console
-fn write_output(s: &str) {
-    uart_write_string(s); // Keep UART for debugging
-    console::write_string(s); // Display in GUI
-}
-
 pub struct Shell {
     command_buffer: [u8; MAX_COMMAND_LEN],
     cursor_pos: usize,
     pub filesystem: Option<SimpleFilesystem>,
     pub device_index: Option<usize>,
+    console_id: usize, // ID of the console instance for this shell
 }
 
 impl Shell {
-    pub fn new() -> Self {
+    pub fn new(console_id: usize) -> Self {
         Shell {
             command_buffer: [0; MAX_COMMAND_LEN],
             cursor_pos: 0,
             filesystem: None,
             device_index: None,
+            console_id,
         }
+    }
+
+    // Helper function to write to both UART and GUI console
+    fn write_output(&self, s: &str) {
+        uart_write_string(s); // Keep UART for debugging
+        console::write_string(self.console_id, s); // Display in GUI
     }
 
     pub fn set_filesystem(&mut self, fs: SimpleFilesystem, device_idx: usize) {
@@ -36,14 +38,14 @@ impl Shell {
     }
 
     pub fn show_prompt(&self) {
-        write_output("> ");
+        self.write_output("> ");
     }
 
     pub fn handle_char(&mut self, ch: u8) {
         match ch {
             b'\n' | b'\r' => {
                 // Execute command
-                write_output("\r\n");
+                self.write_output("\r\n");
                 self.execute_command();
                 self.cursor_pos = 0;
                 self.command_buffer = [0; MAX_COMMAND_LEN];
@@ -54,7 +56,7 @@ impl Shell {
                 if self.cursor_pos > 0 {
                     self.cursor_pos -= 1;
                     self.command_buffer[self.cursor_pos] = 0;
-                    write_output("\x08 \x08"); // Backspace, space, backspace
+                    self.write_output("\x08 \x08"); // Backspace, space, backspace
                 }
             }
             _ => {
@@ -66,7 +68,7 @@ impl Shell {
                     unsafe {
                         core::ptr::write_volatile(0x09000000 as *mut u8, ch);
                     }
-                    console::write_char(ch);
+                    console::write_char(self.console_id, ch);
                 }
             }
         }
@@ -100,34 +102,34 @@ impl Shell {
             "edit" => self.cmd_edit(&parts),
             "clear" => self.cmd_clear(),
             _ => {
-                write_output("Unknown command: ");
-                write_output(parts[0]);
-                write_output("\r\nType 'help' for available commands\r\n");
+                self.write_output("Unknown command: ");
+                self.write_output(parts[0]);
+                self.write_output("\r\nType 'help' for available commands\r\n");
             }
         }
     }
 
     fn cmd_help(&self) {
-        write_output("Available commands:\r\n");
-        write_output("  ls                    - List files\r\n");
-        write_output("  cat <filename>        - Show file contents\r\n");
-        write_output("  create <name> <size>  - Create a file\r\n");
-        write_output("  rm <filename>         - Delete a file\r\n");
-        write_output("  write <file> <text>   - Write text to file\r\n");
-        write_output("  edit <filename>       - Open file in editor\r\n");
-        write_output("  clear                 - Clear screen\r\n");
-        write_output("  help                  - Show this help\r\n");
+        self.write_output("Available commands:\r\n");
+        self.write_output("  ls                    - List files\r\n");
+        self.write_output("  cat <filename>        - Show file contents\r\n");
+        self.write_output("  create <name> <size>  - Create a file\r\n");
+        self.write_output("  rm <filename>         - Delete a file\r\n");
+        self.write_output("  write <file> <text>   - Write text to file\r\n");
+        self.write_output("  edit <filename>       - Open file in editor\r\n");
+        self.write_output("  clear                 - Clear screen\r\n");
+        self.write_output("  help                  - Show this help\r\n");
     }
 
     fn cmd_ls(&mut self) {
         if let Some(ref fs) = self.filesystem {
             let files = fs.list_files();
             if files.is_empty() {
-                write_output("No files\r\n");
+                self.write_output("No files\r\n");
             } else {
-                write_output(&alloc::format!("{} file(s):\r\n", files.len()));
+                self.write_output(&alloc::format!("{} file(s):\r\n", files.len()));
                 for file in files {
-                    write_output(&alloc::format!(
+                    self.write_output(&alloc::format!(
                         "  {} - {} bytes\r\n",
                         file.get_name(),
                         file.get_size_bytes()
@@ -135,13 +137,13 @@ impl Shell {
                 }
             }
         } else {
-            write_output("Filesystem not mounted\r\n");
+            self.write_output("Filesystem not mounted\r\n");
         }
     }
 
     fn cmd_cat(&mut self, parts: &[&str]) {
         if parts.len() < 2 {
-            write_output("Usage: cat <filename>\r\n");
+            self.write_output("Usage: cat <filename>\r\n");
             return;
         }
 
@@ -162,32 +164,32 @@ impl Shell {
                             match fs.read_file(device, filename, &mut buffer) {
                                 Ok(bytes_read) => {
                                     if let Ok(text) = core::str::from_utf8(&buffer[..bytes_read]) {
-                                        write_output(text);
-                                        write_output("\r\n");
+                                        self.write_output(text);
+                                        self.write_output("\r\n");
                                     } else {
-                                        write_output("(binary file)\r\n");
+                                        self.write_output("(binary file)\r\n");
                                     }
                                 }
-                                Err(e) => write_output(&alloc::format!("Error: {}\r\n", e)),
+                                Err(e) => self.write_output(&alloc::format!("Error: {}\r\n", e)),
                             }
                         } else {
-                            write_output("File not found\r\n");
+                            self.write_output("File not found\r\n");
                         }
                     } else {
-                        write_output("Block device not available\r\n");
+                        self.write_output("Block device not available\r\n");
                     }
                 } else {
-                    write_output("Block devices not initialized\r\n");
+                    self.write_output("Block devices not initialized\r\n");
                 }
             }
         } else {
-            write_output("Filesystem not mounted\r\n");
+            self.write_output("Filesystem not mounted\r\n");
         }
     }
 
     fn cmd_create(&mut self, parts: &[&str]) {
         if parts.len() < 3 {
-            write_output("Usage: create <filename> <size>\r\n");
+            self.write_output("Usage: create <filename> <size>\r\n");
             return;
         }
 
@@ -199,29 +201,29 @@ impl Shell {
 
                         if let Ok(size) = parts[2].parse::<u32>() {
                             match fs.create_file(device, filename, size) {
-                                Ok(()) => write_output(&alloc::format!(
+                                Ok(()) => self.write_output(&alloc::format!(
                                     "Created '{}' ({} bytes)\r\n", filename, size
                                 )),
-                                Err(e) => write_output(&alloc::format!("Error: {}\r\n", e)),
+                                Err(e) => self.write_output(&alloc::format!("Error: {}\r\n", e)),
                             }
                         } else {
-                            write_output("Invalid size\r\n");
+                            self.write_output("Invalid size\r\n");
                         }
                     } else {
-                        write_output("Block device not available\r\n");
+                        self.write_output("Block device not available\r\n");
                     }
                 } else {
-                    write_output("Block devices not initialized\r\n");
+                    self.write_output("Block devices not initialized\r\n");
                 }
             }
         } else {
-            write_output("Filesystem not mounted\r\n");
+            self.write_output("Filesystem not mounted\r\n");
         }
     }
 
     fn cmd_rm(&mut self, parts: &[&str]) {
         if parts.len() < 2 {
-            write_output("Usage: rm <filename>\r\n");
+            self.write_output("Usage: rm <filename>\r\n");
             return;
         }
 
@@ -232,24 +234,24 @@ impl Shell {
                         let filename = parts[1];
 
                         match fs.delete_file(device, filename) {
-                            Ok(()) => write_output(&alloc::format!("Deleted '{}'\r\n", filename)),
-                            Err(e) => write_output(&alloc::format!("Error: {}\r\n", e)),
+                            Ok(()) => self.write_output(&alloc::format!("Deleted '{}'\r\n", filename)),
+                            Err(e) => self.write_output(&alloc::format!("Error: {}\r\n", e)),
                         }
                     } else {
-                        write_output("Block device not available\r\n");
+                        self.write_output("Block device not available\r\n");
                     }
                 } else {
-                    write_output("Block devices not initialized\r\n");
+                    self.write_output("Block devices not initialized\r\n");
                 }
             }
         } else {
-            write_output("Filesystem not mounted\r\n");
+            self.write_output("Filesystem not mounted\r\n");
         }
     }
 
     fn cmd_write(&mut self, parts: &[&str]) {
         if parts.len() < 3 {
-            write_output("Usage: write <filename> <text...>\r\n");
+            self.write_output("Usage: write <filename> <text...>\r\n");
             return;
         }
 
@@ -261,26 +263,26 @@ impl Shell {
                         let text = parts[2..].join(" ");
 
                         match fs.write_file(device, filename, text.as_bytes()) {
-                            Ok(()) => write_output(&alloc::format!(
+                            Ok(()) => self.write_output(&alloc::format!(
                                 "Wrote {} bytes to '{}'\r\n", text.len(), filename
                             )),
-                            Err(e) => write_output(&alloc::format!("Error: {}\r\n", e)),
+                            Err(e) => self.write_output(&alloc::format!("Error: {}\r\n", e)),
                         }
                     } else {
-                        write_output("Block device not available\r\n");
+                        self.write_output("Block device not available\r\n");
                     }
                 } else {
-                    write_output("Block devices not initialized\r\n");
+                    self.write_output("Block devices not initialized\r\n");
                 }
             }
         } else {
-            write_output("Filesystem not mounted\r\n");
+            self.write_output("Filesystem not mounted\r\n");
         }
     }
 
     fn cmd_edit(&mut self, parts: &[&str]) {
         if parts.len() < 2 {
-            write_output("Usage: edit <filename>\r\n");
+            self.write_output("Usage: edit <filename>\r\n");
             return;
         }
 
@@ -288,7 +290,7 @@ impl Shell {
 
         // Check if the editor window already exists
         if crate::kernel::window_manager::has_focused_editor() {
-            write_output("Editor window is already open\r\n");
+            self.write_output("Editor window is already open\r\n");
             return;
         }
 
@@ -312,40 +314,40 @@ impl Shell {
                                         .unwrap_or(bytes_read);
 
                                     if let Ok(text) = core::str::from_utf8(&buffer[..actual_len]) {
-                                        // Create editor with file content
-                                        let editor = crate::kernel::editor::TextEditor::with_content(
+                                        // Create editor instance with file content
+                                        let editor_id = crate::kernel::editor::create_editor_with_content(
                                             filename,
                                             text
                                         );
-                                        crate::kernel::editor::set_editor(editor);
 
                                         // Open editor window
                                         let window = crate::kernel::window_manager::Window::new(
                                             0, 0, 640, 480,
                                             &alloc::format!("Text Editor - {}", filename),
-                                            crate::kernel::window_manager::WindowContent::Editor
+                                            crate::kernel::window_manager::WindowContent::Editor,
+                                            editor_id
                                         );
                                         crate::kernel::window_manager::add_window(window);
 
-                                        write_output(&alloc::format!("Opened '{}' in editor\r\n", filename));
+                                        self.write_output(&alloc::format!("Opened '{}' in editor\r\n", filename));
                                     } else {
-                                        write_output("Cannot edit binary file\r\n");
+                                        self.write_output("Cannot edit binary file\r\n");
                                     }
                                 }
-                                Err(e) => write_output(&alloc::format!("Error: {}\r\n", e)),
+                                Err(e) => self.write_output(&alloc::format!("Error: {}\r\n", e)),
                             }
                         } else {
-                            write_output("File not found\r\n");
+                            self.write_output("File not found\r\n");
                         }
                     } else {
-                        write_output("Block device not available\r\n");
+                        self.write_output("Block device not available\r\n");
                     }
                 } else {
-                    write_output("Block devices not initialized\r\n");
+                    self.write_output("Block devices not initialized\r\n");
                 }
             }
         } else {
-            write_output("Filesystem not mounted\r\n");
+            self.write_output("Filesystem not mounted\r\n");
         }
     }
 
@@ -353,6 +355,53 @@ impl Shell {
         // Clear UART terminal with ANSI escape sequence
         uart_write_string("\x1b[2J\x1b[H");
         // Clear GUI console
-        console::clear();
+        console::clear(self.console_id);
+    }
+}
+
+// Global shell instances
+static mut SHELLS: alloc::vec::Vec<Shell> = alloc::vec::Vec::new();
+
+/// Create a new shell instance for a console
+pub fn create_shell(console_id: usize) {
+    unsafe {
+        let mut shell = Shell::new(console_id);
+
+        // Initialize filesystem if block device is available
+        if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+            if !devices.is_empty() {
+                let device_idx = 0;
+                if let Some(device) = devices.get_mut(device_idx) {
+                    match crate::kernel::filesystem::SimpleFilesystem::mount(device) {
+                        Ok(fs) => {
+                            shell.set_filesystem(fs, device_idx);
+                            shell.write_output("Filesystem mounted\r\n");
+                        }
+                        Err(e) => {
+                            shell.write_output(&alloc::format!("Failed to mount: {}\r\n", e));
+                        }
+                    }
+                }
+            }
+        }
+
+        shell.show_prompt();
+        SHELLS.push(shell);
+    }
+}
+
+/// Remove a shell instance
+pub fn remove_shell(id: usize) {
+    unsafe {
+        if id < SHELLS.len() {
+            SHELLS.remove(id);
+        }
+    }
+}
+
+/// Get a shell instance by ID
+pub fn get_shell(id: usize) -> Option<&'static mut Shell> {
+    unsafe {
+        SHELLS.get_mut(id)
     }
 }

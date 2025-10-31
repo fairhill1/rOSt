@@ -140,9 +140,6 @@ pub enum InputEvent {
 // Global input event queue for XHCI/USB HID events
 static mut INPUT_EVENT_QUEUE: Option<VecDeque<InputEvent>> = None;
 
-// Global shell instance
-pub static mut SHELL: Option<crate::kernel::shell::Shell> = None;
-
 // USB HID Device representation
 pub struct UsbHidDevice {
     device_type: HidDeviceType,
@@ -400,21 +397,21 @@ pub fn test_input_events() -> (bool, bool) {
         match event {
             InputEvent::KeyPressed { key, modifiers } => {
                 // Check if editor window is focused
-                if crate::kernel::window_manager::has_focused_editor() {
+                if let Some(editor_id) = crate::kernel::window_manager::get_focused_editor_id() {
                     // Check if we're prompting for a filename
                     if is_prompting_filename() {
                         // Handle filename input
                         if let Some(ascii) = evdev_to_ascii(key, modifiers) {
                             if ascii == b'\n' {
                                 // Enter pressed - finish the prompt and save
-                                if let Some(editor) = crate::kernel::editor::get_editor() {
+                                if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
                                     finish_filename_prompt(editor);
                                 }
                                 needs_full_redraw = true;
                             } else if ascii == 27 { // ESC
                                 // Cancel the prompt
                                 cancel_filename_prompt();
-                                if let Some(editor) = crate::kernel::editor::get_editor() {
+                                if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
                                     editor.set_status("Save cancelled");
                                 }
                                 needs_full_redraw = true;
@@ -433,7 +430,7 @@ pub fn test_input_events() -> (bool, bool) {
 
                         if is_ctrl && key == 31 { // KEY_S = 31 in evdev
                             // Handle save in editor
-                            if let Some(editor) = crate::kernel::editor::get_editor() {
+                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
                                 save_editor_file(editor);
                             }
                             needs_full_redraw = true;
@@ -441,25 +438,25 @@ pub fn test_input_events() -> (bool, bool) {
                             // Arrow keys for editor navigation (Linux evdev codes)
                             match key {
                                 103 => { // KEY_UP
-                                    if let Some(editor) = crate::kernel::editor::get_editor() {
+                                    if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
                                         editor.move_up();
                                     }
                                     needs_full_redraw = true;
                                 }
                                 108 => { // KEY_DOWN
-                                    if let Some(editor) = crate::kernel::editor::get_editor() {
+                                    if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
                                         editor.move_down();
                                     }
                                     needs_full_redraw = true;
                                 }
                                 105 => { // KEY_LEFT
-                                    if let Some(editor) = crate::kernel::editor::get_editor() {
+                                    if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
                                         editor.move_left();
                                     }
                                     needs_full_redraw = true;
                                 }
                                 106 => { // KEY_RIGHT
-                                    if let Some(editor) = crate::kernel::editor::get_editor() {
+                                    if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
                                         editor.move_right();
                                     }
                                     needs_full_redraw = true;
@@ -468,7 +465,7 @@ pub fn test_input_events() -> (bool, bool) {
                                     // Regular text input (but not if Ctrl is held)
                                     if !is_ctrl {
                                         if let Some(ascii) = evdev_to_ascii(key, modifiers) {
-                                            if let Some(editor) = crate::kernel::editor::get_editor() {
+                                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
                                                 if ascii == b'\n' {
                                                     // If there's a status message, clear it and consume the Enter
                                                     if get_menu_status().is_some() {
@@ -490,14 +487,12 @@ pub fn test_input_events() -> (bool, bool) {
                             }
                         }
                     }
-                } else if crate::kernel::window_manager::has_focused_terminal() {
+                } else if let Some(terminal_id) = crate::kernel::window_manager::get_focused_terminal_id() {
                     // VirtIO keyboard uses Linux evdev codes
                     if let Some(ascii) = evdev_to_ascii(key, modifiers) {
-                        // Only pass to shell if terminal window is focused
-                        unsafe {
-                            if let Some(ref mut shell) = SHELL {
-                                shell.handle_char(ascii);
-                            }
+                        // Pass input to the focused terminal's shell
+                        if let Some(shell) = crate::kernel::shell::get_shell(terminal_id) {
+                            shell.handle_char(ascii);
                         }
                         needs_full_redraw = true; // Keyboard input requires full redraw
                     }
@@ -660,11 +655,11 @@ fn save_editor_file_internal(editor: &mut crate::kernel::editor::TextEditor) {
     let content = editor.get_text();
     let content_bytes = content.as_bytes();
 
-    // Access the filesystem through the shell's device
-    unsafe {
-        if let Some(ref mut shell) = SHELL {
-            if let Some(ref mut fs) = shell.filesystem {
-                if let Some(device_idx) = shell.device_index {
+    // Access the filesystem through the first shell's device (all shells share the same filesystem)
+    if let Some(shell) = crate::kernel::shell::get_shell(0) {
+        if let Some(ref mut fs) = shell.filesystem {
+            if let Some(device_idx) = shell.device_index {
+                unsafe {
                     if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
                         if let Some(device) = devices.get_mut(device_idx) {
                             // Check if file exists and get its size
@@ -739,18 +734,16 @@ fn save_editor_file_internal(editor: &mut crate::kernel::editor::TextEditor) {
                         } else {
                             editor.set_status("Block device not available");
                         }
-                    } else {
-                        editor.set_status("Block devices not initialized");
                     }
-                } else {
-                    editor.set_status("No device index");
                 }
             } else {
-                editor.set_status("Filesystem not mounted");
+                editor.set_status("No device index");
             }
         } else {
-            editor.set_status("Shell not initialized");
+            editor.set_status("Filesystem not mounted");
         }
+    } else {
+        editor.set_status("Shell not initialized");
     }
 }
 

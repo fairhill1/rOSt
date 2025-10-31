@@ -598,18 +598,9 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                         } // End of is_empty check
                     } // End of fresh filesystem tests / else block for file_count check
 
-                    // Initialize shell with filesystem and device
-                    uart_write_string("\n=== Initializing Shell ===\r\n");
-
-                    // Create shell and give it the filesystem (pass device index)
-                    unsafe {
-                        usb_hid::SHELL = Some(shell::Shell::new());
-                        if let Some(ref mut shell) = usb_hid::SHELL {
-                            shell.set_filesystem(fs, fs_device_idx);
-                        }
-                    }
-
-                    uart_write_string("Shell ready!\r\n");
+                    // Filesystem mounted successfully
+                    // Shells will be created when terminal windows are opened
+                    uart_write_string("Filesystem ready!\r\n");
                 }
                 Err(e) => {
                     uart_write_string("✗ Mount failed: ");
@@ -634,23 +625,7 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     uart_write_string("Type 'help' for available commands\r\n");
     uart_write_string("\r\n");
 
-    // Write welcome message to GUI console
-    if fb_info.base_address != 0 {
-        console::write_string("================================\r\n");
-        console::write_string("  Rust OS - Interactive Shell  \r\n");
-        console::write_string("================================\r\n");
-        console::write_string("Type 'help' for available commands\r\n");
-        console::write_string("\r\n");
-    }
-
-    // Show initial prompt
-    unsafe {
-        if let Some(ref shell) = usb_hid::SHELL {
-            shell.show_prompt();
-        }
-    }
-
-    uart_write_string("Kernel ready! Type commands in QEMU window.\r\n");
+    uart_write_string("Kernel ready! Open a terminal window from the menu.\r\n");
 
     let mut needs_full_render = true; // Force initial render
 
@@ -671,14 +646,14 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 framebuffer::clear_screen(0xFF1A1A1A);
                 window_manager::render();
 
-                // Render console INSIDE the terminal window (not over everything)
-                if let Some((cx, cy, cw, ch)) = window_manager::get_terminal_content_bounds() {
-                    console::render_at(cx, cy, cw, ch);
+                // Render all terminals INSIDE their windows
+                for (instance_id, cx, cy, cw, ch) in window_manager::get_all_terminals() {
+                    console::render_at(instance_id, cx, cy, cw, ch);
                 }
 
-                // Render editor INSIDE the editor window
-                if let Some((cx, cy, _cw, _ch)) = window_manager::get_editor_content_bounds() {
-                    editor::render_at(cx, cy);
+                // Render all editors INSIDE their windows
+                for (instance_id, cx, cy, _cw, _ch) in window_manager::get_all_editors() {
+                    editor::render_at(instance_id, cx, cy);
                 }
 
                 framebuffer::draw_cursor();
