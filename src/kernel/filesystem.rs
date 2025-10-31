@@ -323,12 +323,6 @@ impl SimpleFilesystem {
         }
         device.write_sector(1, unsafe { &CREATE_BUFFER })?;
 
-        let start_sec = unsafe { ptr::read_volatile(ptr::addr_of!(new_entry.start_sector)) };
-        crate::kernel::uart_write_string(&alloc::format!(
-            "Created file '{}' ({} bytes, {} sectors, starting at sector {})\r\n",
-            name, size_bytes, size_sectors, start_sec
-        ));
-
         Ok(())
     }
 
@@ -442,10 +436,6 @@ impl SimpleFilesystem {
                 break;
             }
         }
-
-        crate::kernel::uart_write_string(&alloc::format!(
-            "Wrote {} bytes to file '{}'\r\n", bytes_written, name
-        ));
 
         Ok(())
     }
