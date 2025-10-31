@@ -267,11 +267,18 @@ fn draw_char(x: u32, y: u32, ch: u8, color: u32) {
             } else {
                 FONT_8X8[0] // Use null character for unknown
             };
-            
+
+            // Scale 2x - each pixel in the 8x8 font becomes a 2x2 block
             for (row, &byte) in char_data.iter().enumerate() {
                 for col in 0..8 {
                     if byte & (1 << (7 - col)) != 0 {
-                        fb.put_pixel(x + col, y + row as u32, color);
+                        // Draw 2x2 pixel block
+                        let px = x + col * 2;
+                        let py = y + row as u32 * 2;
+                        fb.put_pixel(px, py, color);
+                        fb.put_pixel(px + 1, py, color);
+                        fb.put_pixel(px, py + 1, color);
+                        fb.put_pixel(px + 1, py + 1, color);
                     }
                 }
             }
@@ -288,7 +295,7 @@ pub fn draw_string(x: u32, y: u32, text: &str, color: u32) {
             return; // For simplicity, just stop at newline
         }
         draw_char(cur_x, y, ch, color);
-        cur_x += 8; // Move to next character position
+        cur_x += 16; // Move to next character position (scaled 2x: 8*2=16)
     }
 }
 

@@ -277,7 +277,9 @@ impl Shell {
     }
 
     fn cmd_clear(&self) {
-        // ANSI escape sequence to clear screen
-        write_output("\x1b[2J\x1b[H");
+        // Clear UART terminal with ANSI escape sequence
+        uart_write_string("\x1b[2J\x1b[H");
+        // Clear GUI console
+        console::clear();
     }
 }

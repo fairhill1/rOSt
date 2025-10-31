@@ -2,10 +2,12 @@
 
 use crate::kernel::framebuffer;
 
-const CONSOLE_WIDTH: usize = 80;  // 640 pixels / 8 = 80 chars
-const CONSOLE_HEIGHT: usize = 60; // 480 pixels / 8 = 60 lines
-const CHAR_WIDTH: u32 = 8;
-const CHAR_HEIGHT: u32 = 8;
+const CONSOLE_WIDTH: usize = 64;  // 1024 pixels / 16 = 64 chars
+const CONSOLE_HEIGHT: usize = 38; // 768 pixels / 20 = 38 lines (with spacing)
+const CHAR_WIDTH: u32 = 16;  // Scaled 2x from 8
+const CHAR_HEIGHT: u32 = 16; // Scaled 2x from 8
+const LINE_SPACING: u32 = 4; // Extra pixels between lines
+const LINE_HEIGHT: u32 = CHAR_HEIGHT + LINE_SPACING; // Total height per line
 
 pub struct Console {
     buffer: [[u8; CONSOLE_WIDTH]; CONSOLE_HEIGHT],
@@ -116,7 +118,7 @@ impl Console {
                 if ch != b' ' {
                     // Draw character directly instead of using draw_string
                     let char_x = (x as u32) * CHAR_WIDTH;
-                    let char_y = (y as u32) * CHAR_HEIGHT;
+                    let char_y = (y as u32) * LINE_HEIGHT; // Use LINE_HEIGHT for spacing
 
                     // Use a temporary buffer to create a string from the char
                     let mut buf = [0u8; 1];
@@ -132,7 +134,7 @@ impl Console {
         if self.cursor_x < CONSOLE_WIDTH && self.cursor_y < CONSOLE_HEIGHT {
             framebuffer::draw_string(
                 (self.cursor_x as u32) * CHAR_WIDTH,
-                (self.cursor_y as u32) * CHAR_HEIGHT,
+                (self.cursor_y as u32) * LINE_HEIGHT, // Use LINE_HEIGHT for spacing
                 "_",
                 self.fg_color,
             );
