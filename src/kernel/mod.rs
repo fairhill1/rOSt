@@ -20,6 +20,7 @@ pub mod ehci_usb;
 pub mod usb_hid;
 pub mod ps2_keyboard;
 pub mod virtio_input;
+pub mod virtio_blk;
 pub mod dtb;
 
 /// Information passed from UEFI bootloader to kernel
@@ -29,6 +30,7 @@ pub struct BootInfo {
     pub framebuffer: framebuffer::FramebufferInfo,
     pub acpi_rsdp: Option<u64>,
 }
+
 
 // Basic UART output for debugging
 fn uart_write_string(s: &str) {
@@ -312,6 +314,38 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         uart_write_string("Initializing VirtIO input devices with DTB addresses...\r\n");
         virtio_input::init_virtio_input_with_pci_base(info.ecam_base, info.mmio_base);
         uart_write_string("VirtIO input devices ready!\r\n");
+
+        // Initialize VirtIO block devices
+        uart_write_string("Initializing VirtIO block devices...\r\n");
+        let mut blk_devices = virtio_blk::VirtioBlkDevice::find_and_init(info.ecam_base, info.mmio_base);
+
+        if !blk_devices.is_empty() {
+            uart_write_string("VirtIO block device initialized! Testing sector read...\r\n");
+            let mut buffer = [0u8; 512];
+            match blk_devices[0].read_sector(0, &mut buffer) {
+                Ok(()) => {
+                    uart_write_string("Sector 0 read successfully! First 32 bytes:\r\n");
+                    for i in 0..32 {
+                        let byte = buffer[i];
+                        let hex_chars = b"0123456789ABCDEF";
+                        unsafe {
+                            core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(byte >> 4) as usize]);
+                            core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(byte & 0x0F) as usize]);
+                            core::ptr::write_volatile(0x09000000 as *mut u8, b' ');
+                        }
+                    }
+                    uart_write_string("\r\n");
+                }
+                Err(e) => {
+                    uart_write_string("ERROR: Failed to read sector: ");
+                    uart_write_string(e);
+                    uart_write_string("\r\n");
+                }
+            }
+        } else {
+            uart_write_string("No VirtIO block devices found\r\n");
+        }
+
     } else {
         uart_write_string("WARNING: DTB parsing failed, using fallback initialization\r\n");
         usb_hid::init_usb_hid();
