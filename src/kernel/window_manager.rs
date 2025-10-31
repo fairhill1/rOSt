@@ -37,6 +37,7 @@ pub enum WindowContent {
     AboutDialog,
     Editor,
     FileExplorer,
+    Snake,
 }
 
 pub struct Window {
@@ -157,6 +158,10 @@ impl Window {
                 // File explorer content is rendered by the file_explorer system directly
                 // (see main rendering loop which calls file_explorer::render_at())
             }
+            WindowContent::Snake => {
+                // Snake game content is rendered by the snake system directly
+                // (see main rendering loop which calls snake::render_at())
+            }
         }
     }
 
@@ -182,6 +187,7 @@ const MENU_ITEMS: &[MenuItem] = &[
     MenuItem { label: "Terminal", window_type: WindowContent::Terminal },
     MenuItem { label: "Editor", window_type: WindowContent::Editor },
     MenuItem { label: "Files", window_type: WindowContent::FileExplorer },
+    MenuItem { label: "Snake", window_type: WindowContent::Snake },
     MenuItem { label: "About", window_type: WindowContent::AboutDialog },
 ];
 
@@ -464,6 +470,9 @@ impl WindowManager {
                 WindowContent::FileExplorer => {
                     crate::kernel::file_explorer::remove_file_explorer(window.instance_id);
                 },
+                WindowContent::Snake => {
+                    crate::kernel::snake::remove_snake_game(window.instance_id);
+                },
                 WindowContent::AboutDialog => {
                     // No instance to remove
                 },
@@ -511,6 +520,10 @@ impl WindowManager {
                 WindowContent::FileExplorer => {
                     let id = crate::kernel::file_explorer::create_file_explorer();
                     ("Files", id)
+                },
+                WindowContent::Snake => {
+                    let id = crate::kernel::snake::create_snake_game();
+                    ("Snake", id)
                 },
                 WindowContent::AboutDialog => {
                     ("About rOSt", 0) // AboutDialog doesn't need an instance
@@ -750,6 +763,25 @@ impl WindowManager {
             })
             .collect()
     }
+
+    /// Get the focused snake game window instance ID
+    pub fn get_focused_snake_id(&self) -> Option<usize> {
+        self.windows.iter()
+            .filter(|w| w.content == WindowContent::Snake && w.is_focused)
+            .last()
+            .map(|w| w.instance_id)
+    }
+
+    /// Get all snake game windows with their instance IDs and content bounds
+    pub fn get_all_snakes(&self) -> Vec<(usize, i32, i32, u32, u32)> {
+        self.windows.iter()
+            .filter(|w| w.content == WindowContent::Snake && w.visible)
+            .map(|w| {
+                let (x, y, width, height) = w.get_content_bounds();
+                (w.instance_id, x, y, width, height)
+            })
+            .collect()
+    }
 }
 
 static mut WINDOW_MANAGER: Option<WindowManager> = None;
@@ -927,4 +959,34 @@ pub fn get_hovered_menu_button(x: i32, y: i32) -> Option<usize> {
     }
 
     None
+}
+
+pub fn has_focused_snake() -> bool {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_focused_snake_id().is_some()
+        } else {
+            false
+        }
+    }
+}
+
+pub fn get_focused_snake_id() -> Option<usize> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_focused_snake_id()
+        } else {
+            None
+        }
+    }
+}
+
+pub fn get_all_snakes() -> Vec<(usize, i32, i32, u32, u32)> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_all_snakes()
+        } else {
+            Vec::new()
+        }
+    }
 }

@@ -28,6 +28,7 @@ pub mod editor;
 pub mod file_explorer;
 pub mod timer;
 pub mod rtc;
+pub mod snake;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]
@@ -328,6 +329,10 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize file explorer
         file_explorer::init();
         uart_write_string("File explorer initialized!\r\n");
+
+        // Initialize snake game
+        snake::init();
+        uart_write_string("Snake game initialized!\r\n");
     } else {
         uart_write_string("No framebuffer available - running in text mode\r\n");
     }
@@ -741,6 +746,13 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
             needs_full_render = true;
         }
 
+        // Update snake games and only render if any game changed state
+        if !window_manager::get_all_snakes().is_empty() {
+            if snake::update_all_games() {
+                needs_full_render = true;
+            }
+        }
+
         // Render desktop with windows and cursor
         if fb_info.base_address != 0 {
             if needs_full_render {
@@ -761,6 +773,22 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 // Render all file explorers INSIDE their windows
                 for (instance_id, cx, cy, cw, ch) in window_manager::get_all_file_explorers() {
                     file_explorer::render_at(instance_id, cx, cy, cw, ch);
+                }
+
+                // Render all snake games INSIDE their windows (already updated above)
+                for (instance_id, cx, cy, cw, ch) in window_manager::get_all_snakes() {
+                    if let Some(game) = snake::get_snake_game(instance_id) {
+                        let fb = framebuffer::get_back_buffer();
+                        let (screen_width, _) = framebuffer::get_screen_dimensions();
+
+                        // Center the game in the window
+                        let game_width = game.width() as i32;
+                        let game_height = game.height() as i32;
+                        let centered_x = cx + ((cw as i32 - game_width) / 2).max(0);
+                        let centered_y = cy + ((ch as i32 - game_height) / 2).max(0);
+
+                        game.render(fb, screen_width as usize, ch as usize, centered_x as usize, centered_y as usize);
+                    }
                 }
 
                 // Hardware cursor is now handled by VirtIO GPU, no need for software cursor
