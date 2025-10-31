@@ -6,7 +6,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::vec;
 
-const EDITOR_WIDTH: usize = 200;  // Characters per line (allow longer lines)
+const EDITOR_WIDTH: usize = 1024;  // Characters per line (allow longer lines)
 const EDITOR_HEIGHT: usize = 35; // Lines visible
 const CHAR_WIDTH: u32 = 16;
 const CHAR_HEIGHT: u32 = 16;
