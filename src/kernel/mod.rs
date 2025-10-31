@@ -19,6 +19,8 @@ pub mod virtio_gpu;
 pub mod usb_hid;
 pub mod virtio_input;
 pub mod virtio_blk;
+pub mod virtio_net;
+pub mod network;
 pub mod filesystem;
 pub mod shell;
 pub mod dtb;
@@ -40,6 +42,16 @@ pub struct BootInfo {
 
 // Static storage for block devices (needs to outlive local scope for shell access)
 static mut BLOCK_DEVICES: Option<alloc::vec::Vec<virtio_blk::VirtioBlkDevice>> = None;
+
+// Static storage for network devices
+static mut NET_DEVICES: Option<alloc::vec::Vec<virtio_net::VirtioNetDevice>> = None;
+
+// Static storage for ARP cache
+static mut ARP_CACHE: Option<network::ArpCache> = None;
+
+// Static network configuration
+static mut OUR_IP: [u8; 4] = [10, 0, 2, 15];  // Default QEMU user network IP
+static mut GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];  // Default QEMU gateway
 
 // Static for GPU driver and cursor position
 static mut GPU_DRIVER: Option<virtio_gpu::VirtioGpuDriver> = None;
@@ -476,6 +488,43 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
             }
 
             uart_write_string("\n=== VirtIO Block Device Tests Complete! ===\r\n");
+
+            // Initialize VirtIO network devices
+            uart_write_string("\n=== Initializing VirtIO Network Devices ===\r\n");
+            unsafe {
+                NET_DEVICES = Some(virtio_net::VirtioNetDevice::find_and_init(info.ecam_base, info.mmio_base));
+            }
+
+            let net_devices = unsafe { NET_DEVICES.as_mut().unwrap() };
+            if !net_devices.is_empty() {
+                uart_write_string(&alloc::format!(
+                    "Found {} network device(s)\r\n", net_devices.len()
+                ));
+
+                // Initialize ARP cache
+                unsafe {
+                    ARP_CACHE = Some(network::ArpCache::new());
+                }
+
+                // Add receive buffers to the first network device
+                if let Err(e) = net_devices[0].add_receive_buffers(16) {
+                    uart_write_string(&alloc::format!(
+                        "Failed to add receive buffers: {}\r\n", e
+                    ));
+                } else {
+                    uart_write_string("Added 16 receive buffers to network device\r\n");
+                }
+
+                uart_write_string(&alloc::format!(
+                    "Network configuration: IP={}.{}.{}.{} Gateway={}.{}.{}.{}\r\n",
+                    unsafe { OUR_IP[0] }, unsafe { OUR_IP[1] }, unsafe { OUR_IP[2] }, unsafe { OUR_IP[3] },
+                    unsafe { GATEWAY_IP[0] }, unsafe { GATEWAY_IP[1] }, unsafe { GATEWAY_IP[2] }, unsafe { GATEWAY_IP[3] }
+                ));
+
+                uart_write_string("Network device ready!\r\n");
+            } else {
+                uart_write_string("No network devices found\r\n");
+            }
 
             // Test filesystem
             uart_write_string("\n=== Testing SimpleFS Filesystem ===\r\n");

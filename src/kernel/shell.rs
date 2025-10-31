@@ -102,6 +102,9 @@ impl Shell {
             "write" => self.cmd_write(&parts),
             "edit" => self.cmd_edit(&parts),
             "clear" => self.cmd_clear(),
+            "ifconfig" => self.cmd_ifconfig(),
+            "ping" => self.cmd_ping(&parts),
+            "arp" => self.cmd_arp(),
             _ => {
                 self.write_output("Unknown command: ");
                 self.write_output(parts[0]);
@@ -120,6 +123,10 @@ impl Shell {
         self.write_output("  write <file> <text>   - Write text to file\r\n");
         self.write_output("  edit <filename>       - Open file in editor\r\n");
         self.write_output("  clear                 - Clear screen\r\n");
+        self.write_output("\r\nNetwork commands:\r\n");
+        self.write_output("  ifconfig              - Show network configuration\r\n");
+        self.write_output("  ping <ip>             - Ping a host (e.g. ping 8.8.8.8)\r\n");
+        self.write_output("  arp                   - Show ARP cache\r\n");
         self.write_output("  help                  - Show this help\r\n");
     }
 
@@ -405,6 +412,224 @@ impl Shell {
         uart_write_string("\x1b[2J\x1b[H");
         // Clear GUI console
         console::clear(self.console_id);
+    }
+
+    fn cmd_ifconfig(&self) {
+        unsafe {
+            if let Some(ref devices) = crate::kernel::NET_DEVICES {
+                if devices.is_empty() {
+                    self.write_output("No network devices found\r\n");
+                    return;
+                }
+
+                let mac = devices[0].mac_address();
+                let ip = crate::kernel::OUR_IP;
+                let gateway = crate::kernel::GATEWAY_IP;
+
+                self.write_output("eth0:\r\n");
+                self.write_output(&alloc::format!("  MAC: {}\r\n",
+                    crate::kernel::network::format_mac(mac)));
+                self.write_output(&alloc::format!("  IP: {}\r\n",
+                    crate::kernel::network::format_ip(ip)));
+                self.write_output(&alloc::format!("  Gateway: {}\r\n",
+                    crate::kernel::network::format_ip(gateway)));
+            } else {
+                self.write_output("Network not initialized\r\n");
+            }
+        }
+    }
+
+    fn cmd_arp(&self) {
+        unsafe {
+            if let Some(ref cache) = crate::kernel::ARP_CACHE {
+                self.write_output("ARP Cache:\r\n");
+                // This is a simple implementation - in a real OS we'd iterate the cache
+                self.write_output("  (ARP cache display not yet implemented)\r\n");
+            } else {
+                self.write_output("ARP cache not initialized\r\n");
+            }
+        }
+    }
+
+    fn cmd_ping(&mut self, parts: &[&str]) {
+        if parts.len() < 2 {
+            self.write_output("Usage: ping <ip address>\r\n");
+            self.write_output("Example: ping 8.8.8.8\r\n");
+            return;
+        }
+
+        let target_ip_str = parts[1];
+        let target_ip = match crate::kernel::network::parse_ip(target_ip_str) {
+            Some(ip) => ip,
+            None => {
+                self.write_output("Invalid IP address\r\n");
+                return;
+            }
+        };
+
+        self.write_output(&alloc::format!("PING {} ...\r\n", target_ip_str));
+
+        unsafe {
+            if let (Some(ref mut devices), Some(ref mut cache)) =
+                (crate::kernel::NET_DEVICES.as_mut(), crate::kernel::ARP_CACHE.as_mut()) {
+
+                if devices.is_empty() {
+                    self.write_output("No network device available\r\n");
+                    return;
+                }
+
+                let our_mac = devices[0].mac_address();
+                let our_ip = crate::kernel::OUR_IP;
+                let gateway_ip = crate::kernel::GATEWAY_IP;
+
+                // Determine target MAC (use gateway for non-local addresses)
+                let use_gateway = target_ip[0] != 10; // Simple check - not same /8
+                let arp_target = if use_gateway { gateway_ip } else { target_ip };
+
+                // QEMU user networking doesn't respond to ARP, so hardcode gateway MAC
+                // QEMU uses MAC format: 52:55:0a:00:02:02 for IP 10.0.2.2
+                let target_mac = if arp_target == gateway_ip {
+                    // Hardcoded QEMU user-mode gateway MAC
+                    self.write_output("Using QEMU gateway MAC (user-mode networking doesn't do ARP)\r\n");
+                    [0x52, 0x55, 0x0a, 0x00, 0x02, 0x02]
+                } else {
+                    // For non-gateway addresses, try ARP
+                    if let Some(mac) = cache.lookup(arp_target) {
+                        mac
+                    } else {
+                        // Send ARP request
+                        self.write_output(&alloc::format!("Resolving {} via ARP...\r\n",
+                            crate::kernel::network::format_ip(arp_target)));
+
+                        let arp_request = crate::kernel::network::build_arp_request(
+                            our_mac, our_ip, arp_target);
+
+                        if let Err(e) = devices[0].transmit(&arp_request) {
+                            self.write_output(&alloc::format!("Failed to send ARP: {}\r\n", e));
+                            return;
+                        }
+
+                        // Wait for ARP reply (simple polling with timeout)
+                        let mut found_mac = None;
+                        for _ in 0..1000 {
+                            let mut rx_buffer = [0u8; 1526];
+                            if let Ok(len) = devices[0].receive(&mut rx_buffer) {
+                                if let Some((frame, payload)) = crate::kernel::network::parse_ethernet(&rx_buffer[..len]) {
+                                    if crate::kernel::network::be16_to_cpu(frame.ethertype) == crate::kernel::network::ETHERTYPE_ARP {
+                                        if let Some(arp) = crate::kernel::network::parse_arp(payload) {
+                                            if crate::kernel::network::be16_to_cpu(arp.operation) == crate::kernel::network::ARP_REPLY {
+                                                if arp.sender_ip == arp_target {
+                                                    cache.add(arp.sender_ip, arp.sender_mac);
+                                                    found_mac = Some(arp.sender_mac);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // Small delay
+                            for _ in 0..10000 {
+                                core::arch::asm!("nop");
+                            }
+                        }
+
+                        match found_mac {
+                            Some(mac) => mac,
+                            None => {
+                                self.write_output("ARP timeout - no response\r\n");
+                                return;
+                            }
+                        }
+                    }
+                };
+
+                // Now send ICMP echo request
+                let icmp_payload = b"rOSt ping!";
+                let icmp_packet = crate::kernel::network::build_icmp_echo_request(
+                    1234, 1, icmp_payload);
+                let ip_packet = crate::kernel::network::build_ipv4(
+                    our_ip, target_ip, crate::kernel::network::IP_PROTO_ICMP, &icmp_packet, 1);
+                let eth_frame = crate::kernel::network::build_ethernet(
+                    target_mac, our_mac, crate::kernel::network::ETHERTYPE_IPV4, &ip_packet);
+
+                self.write_output(&alloc::format!(
+                    "Sending to MAC {} IP {}\r\n",
+                    crate::kernel::network::format_mac(target_mac),
+                    crate::kernel::network::format_ip(target_ip)
+                ));
+
+                if let Err(e) = devices[0].transmit(&eth_frame) {
+                    self.write_output(&alloc::format!("Failed to send ping: {}\r\n", e));
+                    return;
+                }
+
+                self.write_output("Ping sent, waiting for reply...\r\n");
+
+                // Replenish receive buffers before waiting for reply
+                if let Err(e) = devices[0].add_receive_buffers(16) {
+                    self.write_output(&alloc::format!("Warning: Failed to add more RX buffers: {}\r\n", e));
+                }
+
+                // Wait for ICMP echo reply
+                for _ in 0..2000 {
+
+                    let mut rx_buffer = [0u8; 1526];
+                    if let Ok(len) = devices[0].receive(&mut rx_buffer) {
+                        if let Some((frame, payload)) = crate::kernel::network::parse_ethernet(&rx_buffer[..len]) {
+                            let ethertype = crate::kernel::network::be16_to_cpu(frame.ethertype);
+
+                            // Handle ARP requests
+                            if ethertype == crate::kernel::network::ETHERTYPE_ARP {
+                                if let Some(arp) = crate::kernel::network::parse_arp(payload) {
+                                    let arp_op = crate::kernel::network::be16_to_cpu(arp.operation);
+                                    if arp_op == crate::kernel::network::ARP_REQUEST {
+                                        // Is this ARP request for us?
+                                        if arp.target_ip == our_ip {
+                                            self.write_output(&alloc::format!(
+                                                "[ARP] Got request from {} - sending reply\r\n",
+                                                crate::kernel::network::format_ip(arp.sender_ip)
+                                            ));
+
+                                            // Send ARP reply
+                                            let arp_reply = crate::kernel::network::build_arp_reply(
+                                                our_mac, our_ip, arp.sender_mac, arp.sender_ip
+                                            );
+                                            let _ = devices[0].transmit(&arp_reply);
+                                        }
+                                    }
+                                }
+                            }
+                            // Handle IPv4 packets
+                            else if ethertype == crate::kernel::network::ETHERTYPE_IPV4 {
+                                if let Some((ip_hdr, ip_payload)) = crate::kernel::network::parse_ipv4(payload) {
+                                    if ip_hdr.protocol == crate::kernel::network::IP_PROTO_ICMP {
+                                        if let Some((icmp_hdr, _)) = crate::kernel::network::parse_icmp(ip_payload) {
+                                            if icmp_hdr.icmp_type == crate::kernel::network::ICMP_ECHO_REPLY {
+                                                self.write_output(&alloc::format!(
+                                                    "Reply from {}: seq={}\r\n",
+                                                    crate::kernel::network::format_ip(ip_hdr.src_ip),
+                                                    crate::kernel::network::be16_to_cpu(icmp_hdr.sequence)
+                                                ));
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Small delay
+                    for _ in 0..10000 {
+                        core::arch::asm!("nop");
+                    }
+                }
+
+                self.write_output("Request timeout - no reply\r\n");
+            } else {
+                self.write_output("Network not initialized\r\n");
+            }
+        }
     }
 }
 

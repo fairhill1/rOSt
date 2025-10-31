@@ -1,6 +1,6 @@
 # rOSt - Rust ARM64 Operating System
 
-**Last Updated:** 2025-10-31 (Added RTC support)
+**Last Updated:** 2025-11-01 (Added full networking support with VirtIO-Net!)
 
 ## What Works
 
@@ -44,6 +44,15 @@
 - Timezone support (default: CET/UTC+1, configurable in rtc.rs)
 - Unix timestamp conversion to human-readable date/time
 
+✅ **Networking (VirtIO-Net)**
+- Full VirtIO 1.0 network device driver with modern virtio features
+- Complete network protocol stack: Ethernet, ARP, IPv4, ICMP
+- Ping support - test connectivity to external hosts (e.g., `ping 8.8.8.8`)
+- ARP request/reply handling for MAC address resolution
+- Packet transmission and reception working via QEMU user-mode networking
+- Network commands: `ping <ip>`, `ifconfig`, `arp`
+- Configuration: IP 10.0.2.15, Gateway 10.0.2.2, MAC 52:54:00:12:34:56
+
 ✅ **VirtIO Input**
 - Keyboard and mouse input via VirtIO devices
 - Events flow from QEMU window to OS
@@ -83,6 +92,8 @@ qemu-system-aarch64 \
   -display cocoa \
   -device virtio-keyboard-pci \
   -device virtio-mouse-pci \
+  -netdev user,id=net0 \
+  -device virtio-net-pci,netdev=net0,disable-legacy=on,disable-modern=off \
   -drive file=test_disk.img,if=none,format=raw,id=hd0 \
   -device virtio-blk-pci,drive=hd0,disable-legacy=on,disable-modern=off \
   -drive format=raw,file=fat:rw:uefi_disk \
@@ -131,6 +142,9 @@ write <file> <text>     - Write text to file
 rm <filename>           - Delete a file
 rename <old> <new>      - Rename a file (or use 'mv')
 clear                   - Clear screen
+ping <ip>               - Ping an IP address (e.g., ping 8.8.8.8)
+ifconfig                - Show network configuration
+arp                     - Show ARP cache
 ```
 
 ## Architecture Overview
@@ -148,6 +162,7 @@ clear                   - Clear screen
 - **Keyboard (0:1:0):** BAR=0x10200000, Virtqueue=0x50020000
 - **Mouse (0:2:0):** BAR=0x10300000, Virtqueue=0x50030000
 - **Block (0:3:0):** BAR=0x10400000, Virtqueue=0x50040000
+- **Network (0:4:0):** BAR=0x10500000, Receiveq=0x50050000, Transmitq=0x50060000
 
 **Critical:** Each device needs unique BAR and virtqueue addresses to avoid conflicts.
 
@@ -170,6 +185,10 @@ clear                   - Clear screen
 - `src/kernel/virtio_gpu.rs` - VirtIO GPU driver with hardware cursor
 - `src/kernel/virtio_input.rs` - Keyboard/mouse input driver (evdev codes)
 - `src/kernel/virtio_blk.rs` - Block device driver
+- `src/kernel/virtio_net.rs` - VirtIO network device driver (modern VirtIO 1.0)
+
+### Networking
+- `src/kernel/network.rs` - Network protocol stack (Ethernet, ARP, IPv4, ICMP)
 
 ### Filesystem & Storage
 - `src/kernel/filesystem.rs` - SimpleFS implementation
