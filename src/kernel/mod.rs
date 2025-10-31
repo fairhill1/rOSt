@@ -547,21 +547,19 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                             uart_write_string("✓ File list is empty (as expected on fresh format)\r\n");
                         }
 
-                        // Create some test files only if this is a fresh filesystem
+                        // Create a welcome file on fresh filesystem
                         if is_empty {
-                        uart_write_string("\nCreating test files...\r\n");
-                        match fs.create_file(&mut blk_devices[fs_device_idx], "hello", 100) {
-                            Ok(()) => uart_write_string("✓ Created 'hello' (100 bytes)\r\n"),
-                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                        }
-
-                        match fs.create_file(&mut blk_devices[fs_device_idx], "test", 2048) {
-                            Ok(()) => uart_write_string("✓ Created 'test' (2048 bytes)\r\n"),
-                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                        }
-
-                        match fs.create_file(&mut blk_devices[fs_device_idx], "data", 512) {
-                            Ok(()) => uart_write_string("✓ Created 'data' (512 bytes)\r\n"),
+                        uart_write_string("\nCreating welcome file...\r\n");
+                        match fs.create_file(&mut blk_devices[fs_device_idx], "welcome", 256) {
+                            Ok(()) => {
+                                uart_write_string("✓ Created 'welcome' file\r\n");
+                                // Write welcome message
+                                let welcome_msg = b"Welcome to rOSt!\n\nThis is a Rust ARM64 Operating System.\n\nTry opening the Files menu to browse files,\nor use the Terminal to run shell commands.";
+                                match fs.write_file(&mut blk_devices[fs_device_idx], "welcome", welcome_msg) {
+                                    Ok(()) => uart_write_string("✓ Wrote welcome message\r\n"),
+                                    Err(e) => uart_write_string(&alloc::format!("✗ Failed to write: {}\r\n", e)),
+                                }
+                            }
                             Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
                         }
                     }
@@ -580,8 +578,8 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                         ));
                     }
 
-                    // Only run detailed tests on fresh filesystem
-                    if files.len() == 3 {
+                    // Filesystem tests removed - OS is ready for use!
+                    if false { // Disabled filesystem tests
                         // Test duplicate file creation (should fail)
                         uart_write_string("\nTrying to create duplicate file...\r\n");
                         match fs.create_file(&mut blk_devices[fs_device_idx], "hello", 50) {

@@ -396,10 +396,29 @@ pub fn test_input_events() -> (bool, bool) {
     while let Some(event) = get_input_event() {
         match event {
             InputEvent::KeyPressed { key, modifiers } => {
-                // Check if editor window is focused
-                if let Some(editor_id) = crate::kernel::window_manager::get_focused_editor_id() {
-                    // Check if we're prompting for a filename
-                    if is_prompting_filename() {
+                // Check if we're prompting for a filename (global state, works from any window)
+                if is_prompting_filename() {
+                    // Handle filename input
+                    if let Some(ascii) = evdev_to_ascii(key, modifiers) {
+                        if ascii == b'\n' {
+                            // Enter pressed - create the file
+                            finish_filename_prompt_for_file_explorer();
+                            needs_full_redraw = true;
+                        } else if ascii == 27 { // ESC
+                            // Cancel the prompt
+                            cancel_filename_prompt();
+                            needs_full_redraw = true;
+                        } else if ascii == 8 { // Backspace
+                            backspace_filename_prompt();
+                            needs_full_redraw = true;
+                        } else if ascii >= 32 && ascii < 127 { // Printable ASCII
+                            add_to_filename_prompt(ascii as char);
+                            needs_full_redraw = true;
+                        }
+                    }
+                } else if let Some(editor_id) = crate::kernel::window_manager::get_focused_editor_id() {
+                    // Check if we're prompting for a filename (old editor-specific code)
+                    if false { // This branch is now dead code since we handle prompts globally above
                         // Handle filename input
                         if let Some(ascii) = evdev_to_ascii(key, modifiers) {
                             if ascii == b'\n' {
@@ -679,6 +698,12 @@ pub fn test_input_events() -> (bool, bool) {
             }
         }
     }
+
+    // Check if status message should be auto-hidden after 3 seconds
+    if check_status_timeout() {
+        needs_full_redraw = true; // Redraw to remove the status message
+    }
+
     (needs_full_redraw, needs_cursor_redraw)
 }
 
@@ -687,6 +712,9 @@ static mut FILENAME_PROMPT: Option<String> = None;
 
 /// Status message to show in menu bar
 static mut MENU_STATUS_MESSAGE: Option<String> = None;
+
+/// Timestamp when status message was set (milliseconds)
+static mut MENU_STATUS_TIMESTAMP: u64 = 0;
 
 /// Track last hovered menu button index (for hover optimization)
 static mut LAST_HOVERED_BUTTON: Option<usize> = None;
@@ -713,6 +741,7 @@ pub fn is_prompting_filename() -> bool {
 pub fn set_menu_status(msg: &str) {
     unsafe {
         MENU_STATUS_MESSAGE = Some(String::from(msg));
+        MENU_STATUS_TIMESTAMP = crate::kernel::get_time_ms();
     }
 }
 
@@ -727,6 +756,21 @@ pub fn clear_menu_status() {
 pub fn get_menu_status() -> Option<String> {
     unsafe {
         MENU_STATUS_MESSAGE.clone()
+    }
+}
+
+/// Check if status message should be auto-hidden (after 3 seconds)
+pub fn check_status_timeout() -> bool {
+    unsafe {
+        if MENU_STATUS_MESSAGE.is_some() {
+            let current_time = crate::kernel::get_time_ms();
+            let elapsed = current_time - MENU_STATUS_TIMESTAMP;
+            if elapsed >= 3000 { // 3 seconds
+                clear_menu_status();
+                return true; // Status was cleared
+            }
+        }
+        false
     }
 }
 
@@ -781,6 +825,41 @@ pub fn cancel_filename_prompt() {
     }
 }
 
+/// Finish the filename prompt and create a new file in file explorer
+pub fn finish_filename_prompt_for_file_explorer() {
+    unsafe {
+        if let Some(filename) = FILENAME_PROMPT.take() {
+            if !filename.is_empty() {
+                // Get the focused file explorer
+                if let Some(explorer_id) = crate::kernel::window_manager::get_focused_file_explorer_id() {
+                    if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(explorer_id) {
+                        if let (Some(ref mut fs), Some(device_idx)) = (&mut explorer.filesystem, explorer.device_index) {
+                            if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                                if let Some(device) = devices.get_mut(device_idx) {
+                                    // Create the file (1KB default size)
+                                    match fs.create_file(device, &filename, 1024) {
+                                        Ok(()) => {
+                                            // Write some initial content
+                                            let initial_content = b"";
+                                            let _ = fs.write_file(device, &filename, initial_content);
+
+                                            // Refresh the file list
+                                            crate::kernel::file_explorer::refresh(explorer_id);
+                                        }
+                                        Err(_e) => {
+                                            // File creation failed (maybe duplicate name)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Save the editor file to disk
 fn save_editor_file(editor: &mut crate::kernel::editor::TextEditor) {
     use crate::kernel::filesystem;
@@ -811,10 +890,33 @@ fn save_editor_file_internal(editor: &mut crate::kernel::editor::TextEditor) {
     let content = editor.get_text();
     let content_bytes = content.as_bytes();
 
-    // Access the filesystem through the first shell's device (all shells share the same filesystem)
-    if let Some(shell) = crate::kernel::shell::get_shell(0) {
-        if let Some(ref mut fs) = shell.filesystem {
-            if let Some(device_idx) = shell.device_index {
+    // Try to access filesystem through shell first, then file explorer as fallback
+    let fs_access = if let Some(shell) = crate::kernel::shell::get_shell(0) {
+        shell.filesystem.as_mut().zip(shell.device_index)
+    } else {
+        // No shell, try file explorer
+        if let Some(explorer_id) = crate::kernel::window_manager::get_focused_file_explorer_id() {
+            if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(explorer_id) {
+                explorer.filesystem.as_mut().zip(explorer.device_index)
+            } else {
+                None
+            }
+        } else {
+            // Try any file explorer
+            let explorers = crate::kernel::file_explorer::get_all_file_explorers();
+            if !explorers.is_empty() {
+                if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(explorers[0]) {
+                    explorer.filesystem.as_mut().zip(explorer.device_index)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    };
+
+    if let Some((fs, device_idx)) = fs_access {
                 unsafe {
                     if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
                         if let Some(device) = devices.get_mut(device_idx) {
@@ -892,14 +994,8 @@ fn save_editor_file_internal(editor: &mut crate::kernel::editor::TextEditor) {
                         }
                     }
                 }
-            } else {
-                editor.set_status("No device index");
-            }
-        } else {
-            editor.set_status("Filesystem not mounted");
-        }
     } else {
-        editor.set_status("Shell not initialized");
+        editor.set_status("Filesystem not available - open a terminal or file explorer first");
     }
 }
 

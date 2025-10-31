@@ -487,6 +487,13 @@ pub fn get_file_explorer(id: usize) -> Option<&'static mut FileExplorer> {
     }
 }
 
+/// Get all file explorer instance IDs
+pub fn get_all_file_explorers() -> Vec<usize> {
+    unsafe {
+        (0..FILE_EXPLORERS.len()).collect()
+    }
+}
+
 /// Render a file explorer instance
 pub fn render_at(id: usize, offset_x: i32, offset_y: i32, width: u32, height: u32) {
     let (cursor_x, cursor_y) = framebuffer::get_cursor_pos();
