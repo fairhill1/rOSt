@@ -139,6 +139,9 @@ pub enum InputEvent {
 // Global input event queue for XHCI/USB HID events
 static mut INPUT_EVENT_QUEUE: Option<VecDeque<InputEvent>> = None;
 
+// Global shell instance
+pub static mut SHELL: Option<crate::kernel::shell::Shell> = None;
+
 // USB HID Device representation
 pub struct UsbHidDevice {
     device_type: HidDeviceType,
@@ -394,11 +397,12 @@ pub fn test_input_events() -> bool {
             InputEvent::KeyPressed { key, modifiers } => {
                 // VirtIO keyboard uses Linux evdev codes
                 if let Some(ascii) = evdev_to_ascii(key, modifiers) {
-                    uart_write_string("Key: ");
+                    // Pass to shell if it exists
                     unsafe {
-                        core::ptr::write_volatile(0x09000000 as *mut u8, ascii);
+                        if let Some(ref mut shell) = SHELL {
+                            shell.handle_char(ascii);
+                        }
                     }
-                    uart_write_string("\r\n");
                 }
             }
             InputEvent::KeyReleased { key: _, modifiers: _ } => {
@@ -408,34 +412,11 @@ pub fn test_input_events() -> bool {
                 // Move the cursor on screen
                 crate::kernel::framebuffer::move_cursor(x_delta, y_delta);
                 mouse_moved = true;
-
-                uart_write_string("Mouse moved: ");
-                // Simple hex output for deltas
-                unsafe {
-                    core::ptr::write_volatile(0x09000000 as *mut u8, (x_delta as u8));
-                    core::ptr::write_volatile(0x09000000 as *mut u8, b',');
-                    core::ptr::write_volatile(0x09000000 as *mut u8, (y_delta as u8));
-                }
-                uart_write_string("\r\n");
             }
-            InputEvent::MouseButton { button, pressed } => {
+            InputEvent::MouseButton { .. } => {
                 mouse_moved = true; // Clicks should also trigger a redraw
-                uart_write_string("Mouse button ");
-                unsafe {
-                    core::ptr::write_volatile(0x09000000 as *mut u8, button + b'0');
-                }
-                if pressed {
-                    uart_write_string(" pressed\r\n");
-                } else {
-                    uart_write_string(" released\r\n");
-                }
             }
-            InputEvent::MouseWheel { delta } => {
-                uart_write_string("Mouse wheel: ");
-                unsafe {
-                    core::ptr::write_volatile(0x09000000 as *mut u8, (delta as u8));
-                }
-                uart_write_string("\r\n");
+            InputEvent::MouseWheel { .. } => {
             }
         }
     }

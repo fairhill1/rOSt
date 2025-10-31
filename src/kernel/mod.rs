@@ -22,6 +22,7 @@ pub mod ps2_keyboard;
 pub mod virtio_input;
 pub mod virtio_blk;
 pub mod filesystem;
+pub mod shell;
 pub mod dtb;
 
 /// Information passed from UEFI bootloader to kernel
@@ -589,6 +590,19 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                         }
                         Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
                     }
+
+                    // Initialize shell with filesystem and device
+                    uart_write_string("\n=== Initializing Shell ===\r\n");
+
+                    // Create shell and give it the filesystem
+                    unsafe {
+                        usb_hid::SHELL = Some(shell::Shell::new());
+                        if let Some(ref mut shell) = usb_hid::SHELL {
+                            shell.set_filesystem(fs, &mut blk_devices[0]);
+                        }
+                    }
+
+                    uart_write_string("Shell ready!\r\n");
                 }
                 Err(e) => {
                     uart_write_string("✗ Mount failed: ");
@@ -596,8 +610,6 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                     uart_write_string("\r\n");
                 }
             }
-
-            uart_write_string("\n=== Filesystem Tests Complete! ===\r\n");
         } else {
             uart_write_string("No VirtIO block devices found\r\n");
         }
@@ -608,19 +620,21 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         virtio_input::init_virtio_input();
     }
 
-    uart_write_string("Kernel initialization complete!\r\n");
-    
-    // Clean stable loop - no framebuffer interference
-    uart_write_string("Kernel main loop running! OS is stable!\r\n");
-    uart_write_string("🎉 SUCCESS: Rust OS with UEFI boot working! 🎉\r\n");
-    uart_write_string("Display should show clean VirtIO-GPU graphics:\r\n");
-    uart_write_string("- Black background\r\n");
-    uart_write_string("- White RUST letters\r\n");
-    uart_write_string("- Red, Green, Blue squares\r\n");
-    uart_write_string("Check the QEMU display window!\r\n");
-    
-    // Main kernel loop - actively poll for input while keeping graphics stable
-    uart_write_string("Starting main kernel loop with input polling...\r\n");
+    uart_write_string("\r\n");
+    uart_write_string("================================\r\n");
+    uart_write_string("  Rust OS - Interactive Shell  \r\n");
+    uart_write_string("================================\r\n");
+    uart_write_string("Type 'help' for available commands\r\n");
+    uart_write_string("\r\n");
+
+    // Show initial prompt
+    unsafe {
+        if let Some(ref shell) = usb_hid::SHELL {
+            shell.show_prompt();
+        }
+    }
+
+    uart_write_string("Kernel ready! Type commands in QEMU window.\r\n");
 
     let mut mouse_moved = true; // Force initial draw
     loop {
