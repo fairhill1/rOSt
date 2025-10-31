@@ -1,6 +1,6 @@
 # rOSt - Rust ARM64 Operating System
 
-**Last Updated:** 2025-11-01 (Added full networking support with VirtIO-Net!)
+**Last Updated:** 2025-11-01 (Added DNS resolver with UDP support!)
 
 ## What Works
 
@@ -46,11 +46,13 @@
 
 ✅ **Networking (VirtIO-Net)**
 - Full VirtIO 1.0 network device driver with modern virtio features
-- Complete network protocol stack: Ethernet, ARP, IPv4, ICMP
+- Complete network protocol stack: Ethernet, ARP, IPv4, ICMP, UDP
 - Ping support - test connectivity to external hosts (e.g., `ping 8.8.8.8`)
+- DNS resolver - resolve domain names to IP addresses (e.g., `nslookup google.com`)
 - ARP request/reply handling for MAC address resolution
 - Packet transmission and reception working via QEMU user-mode networking
-- Network commands: `ping <ip>`, `ifconfig`, `arp`
+- Network commands: `ping <ip>`, `nslookup <domain>`, `ifconfig`, `arp`
+- Uses Google DNS (8.8.8.8) for domain resolution
 - Configuration: IP 10.0.2.15, Gateway 10.0.2.2, MAC 52:54:00:12:34:56
 
 ✅ **VirtIO Input**
@@ -143,6 +145,7 @@ rm <filename>           - Delete a file
 rename <old> <new>      - Rename a file (or use 'mv')
 clear                   - Clear screen
 ping <ip>               - Ping an IP address (e.g., ping 8.8.8.8)
+nslookup <domain>       - Resolve domain to IP (e.g., nslookup google.com)
 ifconfig                - Show network configuration
 arp                     - Show ARP cache
 ```
@@ -188,7 +191,8 @@ arp                     - Show ARP cache
 - `src/kernel/virtio_net.rs` - VirtIO network device driver (modern VirtIO 1.0)
 
 ### Networking
-- `src/kernel/network.rs` - Network protocol stack (Ethernet, ARP, IPv4, ICMP)
+- `src/kernel/network.rs` - Network protocol stack (Ethernet, ARP, IPv4, ICMP, UDP)
+- `src/kernel/dns.rs` - DNS resolver (A record queries, domain name encoding/decoding)
 
 ### Filesystem & Storage
 - `src/kernel/filesystem.rs` - SimpleFS implementation
