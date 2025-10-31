@@ -23,13 +23,13 @@
 - Visual file browser with icons and file sizes
 - Single-click to select, double-click to open in editor
 - Keyboard navigation: Arrow keys to navigate, Enter to open
-- Toolbar buttons: Refresh, New File, Delete
+- Toolbar buttons: Refresh, New File, Delete, Rename
 - Scrolling support for large file lists
 - Hardware-independent double-click detection (500ms)
 
 ✅ **Full Persistent Filesystem with Interactive Shell**
-- Create, read, write, delete files that survive reboots
-- Interactive shell: `ls`, `cat`, `create`, `rm`, `write`, `clear`, `help`
+- Create, read, write, delete, rename files that survive reboots
+- Interactive shell: `ls`, `cat`, `create`, `rm`, `rename/mv`, `write`, `clear`, `help`
 - Custom SimpleFS filesystem (32 files max, up to 10MB disk)
 
 ✅ **ARM Generic Timer**
@@ -110,7 +110,7 @@ qemu-system-aarch64 \
 - Click file to select (blue highlight)
 - Double-click file to open in editor
 - Arrow keys to navigate, Enter to open
-- Toolbar buttons: Refresh, New File, Delete
+- Toolbar buttons: Refresh, New File, Delete, Rename (when file selected)
 
 **Text Editor:**
 - Click and drag to select text
@@ -129,6 +129,7 @@ cat <filename>          - Show file contents
 create <name> <size>    - Create a file (size in bytes)
 write <file> <text>     - Write text to file
 rm <filename>           - Delete a file
+rename <old> <new>      - Rename a file (or use 'mv')
 clear                   - Clear screen
 ```
 

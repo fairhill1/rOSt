@@ -330,11 +330,15 @@ impl WindowManager {
         // Check if we're prompting for a filename
         if crate::kernel::usb_hid::is_prompting_filename() {
             // Show filename prompt instead of menu items
+            let is_rename = crate::kernel::usb_hid::is_renaming();
+            let prompt_label = if is_rename { "Rename to: " } else { "Enter filename: " };
+
             if let Some(filename) = crate::kernel::usb_hid::get_filename_prompt() {
-                let prompt_text = alloc::format!("Enter filename: {}_", filename);
+                let prompt_text = alloc::format!("{}{}_", prompt_label, filename);
                 framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &prompt_text, COLOR_TEXT);
             } else {
-                framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, "Enter filename: _", COLOR_TEXT);
+                let prompt_text = alloc::format!("{}_", prompt_label);
+                framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &prompt_text, COLOR_TEXT);
             }
         } else if let Some(status_msg) = crate::kernel::usb_hid::get_menu_status() {
             // Show status message instead of menu items
@@ -611,6 +615,14 @@ impl WindowManager {
                             FileExplorerAction::NewFile => {
                                 // Request filename from user via menu bar prompt
                                 crate::kernel::usb_hid::start_filename_prompt();
+                            },
+                            FileExplorerAction::RenameFile => {
+                                // Get selected filename and start rename prompt
+                                if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(instance_id) {
+                                    if let Some(filename) = explorer.get_selected_filename() {
+                                        crate::kernel::usb_hid::start_rename_prompt(&filename);
+                                    }
+                                }
                             },
                             FileExplorerAction::Redraw => {
                                 // Just need to redraw

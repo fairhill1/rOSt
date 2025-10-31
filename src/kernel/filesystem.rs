@@ -350,6 +350,78 @@ impl SimpleFilesystem {
         Ok(())
     }
 
+    /// Rename a file in the filesystem
+    pub fn rename_file(
+        &mut self,
+        device: &mut VirtioBlkDevice,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<(), &'static str> {
+        // Validate new name length
+        if new_name.len() > 8 {
+            return Err("New filename too long (max 8 chars)");
+        }
+        if new_name.is_empty() {
+            return Err("New filename cannot be empty");
+        }
+
+        // Check if new name already exists
+        for entry in self.file_table.iter() {
+            if entry.is_used() && entry.get_name() == new_name {
+                return Err("File with new name already exists");
+            }
+        }
+
+        // Find the file to rename
+        let mut entry_index = None;
+        for (i, entry) in self.file_table.iter().enumerate() {
+            if entry.is_used() && entry.get_name() == old_name {
+                entry_index = Some(i);
+                break;
+            }
+        }
+
+        let entry_index = entry_index.ok_or("File not found")?;
+
+        // Update the name in the file entry
+        let mut new_name_bytes = [0u8; 8];
+        let name_bytes = new_name.as_bytes();
+        new_name_bytes[..name_bytes.len()].copy_from_slice(name_bytes);
+
+        unsafe {
+            ptr::copy_nonoverlapping(
+                new_name_bytes.as_ptr(),
+                ptr::addr_of_mut!(self.file_table[entry_index].name) as *mut u8,
+                8,
+            );
+        }
+
+        // Write updated file table to disk (sectors 1-2)
+        static mut RENAME_BUFFER: [u8; 512] = [0; 512];
+        let entry_size = core::mem::size_of::<FileEntry>();
+        let entries_per_sector = SECTOR_SIZE / entry_size;
+
+        for sector in 0..FILE_TABLE_SECTORS {
+            unsafe {
+                RENAME_BUFFER.fill(0);
+                let start_entry = (sector * entries_per_sector as u64) as usize;
+                let end_entry = core::cmp::min(start_entry + entries_per_sector, MAX_FILES);
+
+                for i in start_entry..end_entry {
+                    let offset = (i - start_entry) * entry_size;
+                    ptr::copy_nonoverlapping(
+                        &self.file_table[i] as *const FileEntry as *const u8,
+                        RENAME_BUFFER.as_mut_ptr().add(offset),
+                        entry_size,
+                    );
+                }
+            }
+            device.write_sector(1 + sector, unsafe { &RENAME_BUFFER })?;
+        }
+
+        Ok(())
+    }
+
     /// Delete a file from the filesystem
     pub fn delete_file(
         &mut self,

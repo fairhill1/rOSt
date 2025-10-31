@@ -175,6 +175,13 @@ impl FileExplorer {
             if x >= current_x as i32 && x < (current_x + delete_width) as i32 {
                 return FileExplorerAction::DeleteFile;
             }
+            current_x += delete_width + BUTTON_SPACING;
+
+            // Rename button (only if file selected)
+            let rename_width = 6 * CHAR_WIDTH + 16; // "Rename" + padding
+            if x >= current_x as i32 && x < (current_x + rename_width) as i32 {
+                return FileExplorerAction::RenameFile;
+            }
         }
 
         FileExplorerAction::None
@@ -394,6 +401,19 @@ impl FileExplorer {
                 cursor_x,
                 cursor_y
             );
+            current_x += delete_width + BUTTON_SPACING;
+
+            // Rename button (only if file selected)
+            let rename_width = 6 * CHAR_WIDTH + 16; // "Rename" + padding
+            self.draw_button(
+                offset_x + current_x as i32,
+                offset_y + BUTTON_SPACING as i32,
+                rename_width,
+                BUTTON_HEIGHT,
+                "Rename",
+                cursor_x,
+                cursor_y
+            );
         }
     }
 
@@ -442,6 +462,7 @@ pub enum FileExplorerAction {
     Refresh,
     NewFile,
     DeleteFile,
+    RenameFile,
     OpenFile(String),
 }
 
@@ -554,5 +575,25 @@ pub fn open_selected(id: usize) -> FileExplorerAction {
         explorer.open_selected()
     } else {
         FileExplorerAction::None
+    }
+}
+
+/// Select a file by name (used after rename to keep selection)
+pub fn select_file_by_name(id: usize, filename: &str) {
+    if let Some(explorer) = get_file_explorer(id) {
+        // Find the file in the list
+        for (idx, file) in explorer.files.iter().enumerate() {
+            if file.name == filename {
+                explorer.selected_index = Some(idx);
+
+                // Scroll to make sure the file is visible
+                if idx < explorer.scroll_offset {
+                    explorer.scroll_offset = idx;
+                } else if idx >= explorer.scroll_offset + explorer.visible_height {
+                    explorer.scroll_offset = idx.saturating_sub(explorer.visible_height - 1);
+                }
+                break;
+            }
+        }
     }
 }
