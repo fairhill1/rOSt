@@ -21,6 +21,7 @@ pub mod usb_hid;
 pub mod ps2_keyboard;
 pub mod virtio_input;
 pub mod virtio_blk;
+pub mod filesystem;
 pub mod dtb;
 
 /// Information passed from UEFI bootloader to kernel
@@ -407,6 +408,124 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
             }
 
             uart_write_string("\n=== VirtIO Block Device Tests Complete! ===\r\n");
+
+            // Test filesystem
+            uart_write_string("\n=== Testing SimpleFS Filesystem ===\r\n");
+
+            // Format the disk
+            uart_write_string("\nFormatting disk...\r\n");
+            match filesystem::SimpleFilesystem::format(&mut blk_devices[0], 20480) {
+                Ok(()) => {
+                    uart_write_string("✓ Disk formatted successfully!\r\n");
+                }
+                Err(e) => {
+                    uart_write_string("✗ Format failed: ");
+                    uart_write_string(e);
+                    uart_write_string("\r\n");
+                }
+            }
+
+            // Mount the filesystem
+            uart_write_string("\nMounting filesystem...\r\n");
+            match filesystem::SimpleFilesystem::mount(&mut blk_devices[0]) {
+                Ok(mut fs) => {
+                    uart_write_string(&alloc::format!(
+                        "✓ Filesystem mounted! {} files found\r\n",
+                        fs.file_count()
+                    ));
+
+                    // List files (should be empty)
+                    let files = fs.list_files();
+                    if files.is_empty() {
+                        uart_write_string("✓ File list is empty (as expected on fresh format)\r\n");
+                    } else {
+                        uart_write_string(&alloc::format!(
+                            "Found {} files:\r\n", files.len()
+                        ));
+                        for file in files {
+                            uart_write_string(&alloc::format!(
+                                "  - {} ({} bytes)\r\n",
+                                file.get_name(),
+                                file.get_size_bytes()
+                            ));
+                        }
+                    }
+
+                    // Test file operations
+                    uart_write_string("\n--- Testing File Operations ---\r\n");
+
+                    // Create some test files
+                    uart_write_string("\nCreating test files...\r\n");
+                    match fs.create_file(&mut blk_devices[0], "hello", 100) {
+                        Ok(()) => uart_write_string("✓ Created 'hello' (100 bytes)\r\n"),
+                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                    }
+
+                    match fs.create_file(&mut blk_devices[0], "test", 2048) {
+                        Ok(()) => uart_write_string("✓ Created 'test' (2048 bytes)\r\n"),
+                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                    }
+
+                    match fs.create_file(&mut blk_devices[0], "data", 512) {
+                        Ok(()) => uart_write_string("✓ Created 'data' (512 bytes)\r\n"),
+                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                    }
+
+                    // List files
+                    uart_write_string("\nListing files...\r\n");
+                    let files = fs.list_files();
+                    uart_write_string(&alloc::format!("✓ Found {} file(s):\r\n", files.len()));
+                    for file in &files {
+                        uart_write_string(&alloc::format!(
+                            "  - '{}': {} bytes ({} sectors) at sector {}\r\n",
+                            file.get_name(),
+                            file.get_size_bytes(),
+                            file.get_size_sectors(),
+                            file.get_start_sector()
+                        ));
+                    }
+
+                    // Test duplicate file creation (should fail)
+                    uart_write_string("\nTrying to create duplicate file...\r\n");
+                    match fs.create_file(&mut blk_devices[0], "hello", 50) {
+                        Ok(()) => uart_write_string("✗ Should have failed!\r\n"),
+                        Err(e) => uart_write_string(&alloc::format!("✓ Correctly rejected: {}\r\n", e)),
+                    }
+
+                    // Delete a file
+                    uart_write_string("\nDeleting 'test' file...\r\n");
+                    match fs.delete_file(&mut blk_devices[0], "test") {
+                        Ok(()) => uart_write_string("✓ File deleted\r\n"),
+                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                    }
+
+                    // List files again
+                    uart_write_string("\nListing files after deletion...\r\n");
+                    let files = fs.list_files();
+                    uart_write_string(&alloc::format!("✓ Found {} file(s):\r\n", files.len()));
+                    for file in &files {
+                        uart_write_string(&alloc::format!(
+                            "  - '{}': {} bytes\r\n",
+                            file.get_name(),
+                            file.get_size_bytes()
+                        ));
+                    }
+
+                    // Try to delete non-existent file
+                    uart_write_string("\nTrying to delete non-existent file...\r\n");
+                    match fs.delete_file(&mut blk_devices[0], "missing") {
+                        Ok(()) => uart_write_string("✗ Should have failed!\r\n"),
+                        Err(e) => uart_write_string(&alloc::format!("✓ Correctly rejected: {}\r\n", e)),
+                    }
+                }
+                Err(e) => {
+                    uart_write_string("✗ Mount failed: ");
+                    uart_write_string(e);
+                    uart_write_string("\r\n");
+                }
+            }
+
+            uart_write_string("\n=== Filesystem Tests Complete! ===\r\n");
         } else {
             uart_write_string("No VirtIO block devices found\r\n");
         }
