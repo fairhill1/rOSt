@@ -61,11 +61,23 @@ Build interactive shell for file operations
 
 ### Memory Map
 - **RAM starts at:** 0x40000000 on ARM virt
-- **Virtqueues at:** 0x50000000 (in RAM, DMA accessible)
 - **PCI ECAM base:** 0x4010000000 (from DTB)
 - **PCI MMIO base:** 0x10000000 (from DTB)
-- **Device 0:2:0 Common Config:** 0x10004000 (MMIO + BAR offset 0x4000)
-- **Device 0:2:0 Notify:** 0x10007000 (MMIO + BAR offset 0x7000)
+
+**CRITICAL: VirtIO Device Memory Allocation**
+To avoid conflicts, devices MUST use non-overlapping addresses:
+
+**BAR Addresses (MMIO space starting at 0x10000000):**
+- VirtIO Keyboard (0:1:0): **0x10100000** (MMIO base + 0x100000)
+- VirtIO Mouse (0:2:0): **0x10200000** (MMIO base + 0x200000)
+- VirtIO Block (0:3:0): **0x10300000** (MMIO base + 0x300000) ← MUST NOT use 0x100000!
+
+**Virtqueue Memory (DMA-accessible RAM starting at 0x50000000):**
+- VirtIO Keyboard: **0x50000000** (size ~0x10000)
+- VirtIO Mouse: **0x50010000** (size ~0x10000)
+- VirtIO Block: **0x50020000** (size ~varies) ← MUST NOT use 0x50000000!
+
+**Why This Matters:** Each device needs its own BAR and virtqueue memory. Reusing addresses causes one device to overwrite another's configuration, breaking functionality. The keyboard stopped working when the block device was added because it initially used the same addresses.
 
 ### VirtIO Input Devices Found (Both Working!)
 1. **PCI 0:1:0** - ✅ Keyboard - Working!
