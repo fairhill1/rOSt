@@ -56,6 +56,8 @@ pub struct TextEditor {
     undo_stack: Vec<EditorSnapshot>,
     /// Redo stack (max 100 snapshots)
     redo_stack: Vec<EditorSnapshot>,
+    /// Actual visible height in lines (updated during rendering)
+    visible_height: usize,
 }
 
 impl TextEditor {
@@ -73,6 +75,7 @@ impl TextEditor {
             is_selecting: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            visible_height: EDITOR_HEIGHT, // Default to full height
         }
     }
 
@@ -102,6 +105,7 @@ impl TextEditor {
             is_selecting: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            visible_height: EDITOR_HEIGHT, // Default to full height
         }
     }
 
@@ -282,8 +286,8 @@ impl TextEditor {
         self.modified = true;
 
         // Auto-scroll if cursor moved below visible area
-        if self.cursor_row >= self.scroll_offset + EDITOR_HEIGHT {
-            self.scroll_offset = self.cursor_row - EDITOR_HEIGHT + 1;
+        if self.cursor_row >= self.scroll_offset + self.visible_height {
+            self.scroll_offset = self.cursor_row - self.visible_height + 1;
         }
     }
 
@@ -347,8 +351,8 @@ impl TextEditor {
             }
 
             // Auto-scroll if needed
-            if self.cursor_row >= self.scroll_offset + EDITOR_HEIGHT {
-                self.scroll_offset = self.cursor_row - EDITOR_HEIGHT + 1;
+            if self.cursor_row >= self.scroll_offset + self.visible_height {
+                self.scroll_offset = self.cursor_row - self.visible_height + 1;
             }
         }
     }
@@ -381,8 +385,8 @@ impl TextEditor {
             self.cursor_col = 0;
 
             // Auto-scroll if needed
-            if self.cursor_row >= self.scroll_offset + EDITOR_HEIGHT {
-                self.scroll_offset = self.cursor_row - EDITOR_HEIGHT + 1;
+            if self.cursor_row >= self.scroll_offset + self.visible_height {
+                self.scroll_offset = self.cursor_row - self.visible_height + 1;
             }
         }
     }
@@ -428,8 +432,8 @@ impl TextEditor {
             }
 
             // Auto-scroll if needed
-            if self.cursor_row >= self.scroll_offset + EDITOR_HEIGHT {
-                self.scroll_offset = self.cursor_row - EDITOR_HEIGHT + 1;
+            if self.cursor_row >= self.scroll_offset + self.visible_height {
+                self.scroll_offset = self.cursor_row - self.visible_height + 1;
             }
         }
 
@@ -476,8 +480,8 @@ impl TextEditor {
             self.cursor_col = 0;
 
             // Auto-scroll if needed
-            if self.cursor_row >= self.scroll_offset + EDITOR_HEIGHT {
-                self.scroll_offset = self.cursor_row - EDITOR_HEIGHT + 1;
+            if self.cursor_row >= self.scroll_offset + self.visible_height {
+                self.scroll_offset = self.cursor_row - self.visible_height + 1;
             }
         }
 
@@ -727,8 +731,8 @@ impl TextEditor {
                     self.cursor_col = 0;
                     self.modified = true;
 
-                    if self.cursor_row >= self.scroll_offset + EDITOR_HEIGHT {
-                        self.scroll_offset = self.cursor_row - EDITOR_HEIGHT + 1;
+                    if self.cursor_row >= self.scroll_offset + self.visible_height {
+                        self.scroll_offset = self.cursor_row - self.visible_height + 1;
                     }
                 } else {
                     // Insert char without snapshot
@@ -750,7 +754,12 @@ impl TextEditor {
     }
 
     /// Render the editor at a specific offset (for window rendering)
-    pub fn render_at(&self, offset_x: i32, offset_y: i32) {
+    pub fn render_at(&mut self, offset_x: i32, offset_y: i32, height: u32) {
+        // Calculate how many lines can fit in the given height
+        self.visible_height = (height / LINE_HEIGHT) as usize;
+        if self.visible_height == 0 {
+            self.visible_height = 1; // Always show at least one line
+        }
         // Normalize selection (start should be before end)
         let selection = if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
             if start <= end {
@@ -763,7 +772,7 @@ impl TextEditor {
         };
 
         // Draw visible lines
-        let visible_end = (self.scroll_offset + EDITOR_HEIGHT).min(self.lines.len());
+        let visible_end = (self.scroll_offset + self.visible_height).min(self.lines.len());
 
         // Text starts after gutter plus spacing
         let text_offset_x = offset_x + GUTTER_WIDTH as i32 + GUTTER_SPACING as i32;
@@ -830,7 +839,7 @@ impl TextEditor {
 
         // Draw cursor (only if visible in current scroll view, offset by gutter width)
         if self.cursor_row >= self.scroll_offset &&
-           self.cursor_row < self.scroll_offset + EDITOR_HEIGHT {
+           self.cursor_row < self.scroll_offset + self.visible_height {
             let visible_row = self.cursor_row - self.scroll_offset;
             let cursor_x = text_offset_x + (self.cursor_col as i32 * CHAR_WIDTH as i32);
             let cursor_y = offset_y + (visible_row as i32 * LINE_HEIGHT as i32);
@@ -891,8 +900,8 @@ pub fn get_editor(id: usize) -> Option<&'static mut TextEditor> {
     }
 }
 
-pub fn render_at(id: usize, offset_x: i32, offset_y: i32) {
+pub fn render_at(id: usize, offset_x: i32, offset_y: i32, height: u32) {
     if let Some(editor) = get_editor(id) {
-        editor.render_at(offset_x, offset_y);
+        editor.render_at(offset_x, offset_y, height);
     }
 }
