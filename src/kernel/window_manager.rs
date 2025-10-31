@@ -34,6 +34,7 @@ const COLOR_MENU_ITEM_BORDER: u32 = 0xFF555555; // Menu item border
 pub enum WindowContent {
     Terminal,
     AboutDialog,
+    Editor,
 }
 
 pub struct Window {
@@ -144,6 +145,10 @@ impl Window {
                 framebuffer::draw_string((x + 8) as u32, (y + 28) as u32, "v0.1.0", COLOR_TEXT);
                 framebuffer::draw_string((x + 8) as u32, (y + 48) as u32, "A Rust ARM64 OS", COLOR_TEXT);
             }
+            WindowContent::Editor => {
+                // Editor content is rendered by the editor system directly
+                // (see main rendering loop which calls editor::render_at())
+            }
         }
     }
 
@@ -167,6 +172,7 @@ struct MenuItem {
 
 const MENU_ITEMS: &[MenuItem] = &[
     MenuItem { label: "Terminal", window_type: WindowContent::Terminal },
+    MenuItem { label: "Editor", window_type: WindowContent::Editor },
     MenuItem { label: "About", window_type: WindowContent::AboutDialog },
 ];
 
@@ -363,6 +369,7 @@ impl WindowManager {
             let title = match window_type {
                 WindowContent::Terminal => "Terminal",
                 WindowContent::AboutDialog => "About rOSt",
+                WindowContent::Editor => "Text Editor",
             };
             let window = Window::new(0, 0, 640, 480, title, window_type);
             self.add_window(window);
@@ -408,6 +415,21 @@ impl WindowManager {
     pub fn get_terminal_content_bounds(&self) -> Option<(i32, i32, u32, u32)> {
         self.windows.iter()
             .filter(|w| w.content == WindowContent::Terminal && w.visible)
+            .last()
+            .map(|w| w.get_content_bounds())
+    }
+
+    /// Get the focused editor window (if any)
+    pub fn get_focused_editor(&self) -> Option<&Window> {
+        self.windows.iter()
+            .filter(|w| w.content == WindowContent::Editor && w.is_focused)
+            .last()
+    }
+
+    /// Get editor window content bounds (for rendering editor inside)
+    pub fn get_editor_content_bounds(&self) -> Option<(i32, i32, u32, u32)> {
+        self.windows.iter()
+            .filter(|w| w.content == WindowContent::Editor && w.visible)
             .last()
             .map(|w| w.get_content_bounds())
     }
@@ -463,6 +485,26 @@ pub fn get_terminal_content_bounds() -> Option<(i32, i32, u32, u32)> {
     unsafe {
         if let Some(ref wm) = WINDOW_MANAGER {
             wm.get_terminal_content_bounds()
+        } else {
+            None
+        }
+    }
+}
+
+pub fn has_focused_editor() -> bool {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_focused_editor().is_some()
+        } else {
+            false
+        }
+    }
+}
+
+pub fn get_editor_content_bounds() -> Option<(i32, i32, u32, u32)> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_editor_content_bounds()
         } else {
             None
         }

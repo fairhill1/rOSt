@@ -26,6 +26,7 @@ pub mod shell;
 pub mod dtb;
 pub mod console;
 pub mod window_manager;
+pub mod editor;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]
@@ -227,6 +228,10 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         window_manager::init();
         uart_write_string("Window manager initialized!\r\n");
         uart_write_string("Click menu bar to open windows\r\n");
+
+        // Initialize text editor
+        editor::init();
+        uart_write_string("Text editor initialized!\r\n");
     } else {
         uart_write_string("No framebuffer available - running in text mode\r\n");
     }
@@ -669,6 +674,11 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 // Render console INSIDE the terminal window (not over everything)
                 if let Some((cx, cy, _cw, _ch)) = window_manager::get_terminal_content_bounds() {
                     console::render_at(cx, cy);
+                }
+
+                // Render editor INSIDE the editor window
+                if let Some((cx, cy, _cw, _ch)) = window_manager::get_editor_content_bounds() {
+                    editor::render_at(cx, cy);
                 }
 
                 framebuffer::draw_cursor();

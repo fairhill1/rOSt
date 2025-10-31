@@ -16,8 +16,8 @@ fn write_output(s: &str) {
 pub struct Shell {
     command_buffer: [u8; MAX_COMMAND_LEN],
     cursor_pos: usize,
-    filesystem: Option<SimpleFilesystem>,
-    device_index: Option<usize>,
+    pub filesystem: Option<SimpleFilesystem>,
+    pub device_index: Option<usize>,
 }
 
 impl Shell {

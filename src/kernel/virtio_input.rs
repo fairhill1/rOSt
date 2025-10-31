@@ -11,6 +11,14 @@ const VIRTIO_VENDOR_ID: u16 = 0x1AF4;
 const VIRTIO_INPUT_DEVICE_ID: u16 = 0x1052; // VirtIO Input (modern)
 const VIRTIO_INPUT_DEVICE_ID_LEGACY: u16 = 0x1012; // VirtIO Input (legacy)
 
+// Modifier keys (Linux evdev key codes)
+const KEY_LEFT_CTRL: u16 = 29;
+const KEY_RIGHT_CTRL: u16 = 97;
+const KEY_LEFT_SHIFT: u16 = 42;
+const KEY_RIGHT_SHIFT: u16 = 54;
+const KEY_LEFT_ALT: u16 = 56;
+const KEY_RIGHT_ALT: u16 = 100;
+
 // VirtIO Input Event Types (Linux input event codes)
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
@@ -100,6 +108,8 @@ pub struct VirtioInputDevice {
     event_buffers: [*mut VirtioInputEvent; 16],
     last_used_idx: u16,
     queue_size: u16,
+    // Modifier key state tracking
+    modifier_state: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -178,6 +188,7 @@ impl VirtioInputDevice {
                                         event_buffers: [core::ptr::null_mut(); 16],
                                         last_used_idx: 0,
                                         queue_size: 16,
+                                        modifier_state: 0,
                                     };
 
                                     if virtio_input.init() {
@@ -299,6 +310,7 @@ impl VirtioInputDevice {
                                         event_buffers: [core::ptr::null_mut(); 16],
                                         last_used_idx: 0,
                                         queue_size: 16,
+                                        modifier_state: 0,
                                     };
 
                                     if virtio_input.init() {
@@ -669,7 +681,7 @@ impl VirtioInputDevice {
     }
 
     /// Convert VirtIO input event to our InputEvent format
-    fn convert_virtio_event(&self, event: &VirtioInputEvent) -> Option<InputEvent> {
+    fn convert_virtio_event(&mut self, event: &VirtioInputEvent) -> Option<InputEvent> {
         match event.event_type {
             EV_REL => {
                 // Relative movement (mouse)
@@ -695,6 +707,53 @@ impl VirtioInputDevice {
                 }
             }
             EV_KEY => {
+                // Track modifier key state
+                match event.code {
+                    KEY_LEFT_CTRL => {
+                        if event.value != 0 {
+                            self.modifier_state |= 1 << 0; // MOD_LEFT_CTRL
+                        } else {
+                            self.modifier_state &= !(1 << 0);
+                        }
+                    }
+                    KEY_RIGHT_CTRL => {
+                        if event.value != 0 {
+                            self.modifier_state |= 1 << 4; // MOD_RIGHT_CTRL
+                        } else {
+                            self.modifier_state &= !(1 << 4);
+                        }
+                    }
+                    KEY_LEFT_SHIFT => {
+                        if event.value != 0 {
+                            self.modifier_state |= 1 << 1; // MOD_LEFT_SHIFT
+                        } else {
+                            self.modifier_state &= !(1 << 1);
+                        }
+                    }
+                    KEY_RIGHT_SHIFT => {
+                        if event.value != 0 {
+                            self.modifier_state |= 1 << 5; // MOD_RIGHT_SHIFT
+                        } else {
+                            self.modifier_state &= !(1 << 5);
+                        }
+                    }
+                    KEY_LEFT_ALT => {
+                        if event.value != 0 {
+                            self.modifier_state |= 1 << 2; // MOD_LEFT_ALT
+                        } else {
+                            self.modifier_state &= !(1 << 2);
+                        }
+                    }
+                    KEY_RIGHT_ALT => {
+                        if event.value != 0 {
+                            self.modifier_state |= 1 << 6; // MOD_RIGHT_ALT
+                        } else {
+                            self.modifier_state &= !(1 << 6);
+                        }
+                    }
+                    _ => {}
+                }
+
                 // Key or button press
                 if event.code >= BTN_LEFT && event.code <= BTN_MIDDLE {
                     let button = (event.code - BTN_LEFT) as u8;
@@ -703,9 +762,9 @@ impl VirtioInputDevice {
                 } else {
                     // Keyboard key
                     if event.value != 0 {
-                        Some(InputEvent::KeyPressed { key: event.code as u8, modifiers: 0 })
+                        Some(InputEvent::KeyPressed { key: event.code as u8, modifiers: self.modifier_state })
                     } else {
-                        Some(InputEvent::KeyReleased { key: event.code as u8, modifiers: 0 })
+                        Some(InputEvent::KeyReleased { key: event.code as u8, modifiers: self.modifier_state })
                     }
                 }
             }

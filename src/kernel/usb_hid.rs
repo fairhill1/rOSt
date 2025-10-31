@@ -3,6 +3,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use alloc::collections::VecDeque;
+use alloc::string::{String, ToString};
 use crate::kernel::uart_write_string;
 
 // USB HID Class Codes
@@ -398,10 +399,65 @@ pub fn test_input_events() -> (bool, bool) {
     while let Some(event) = get_input_event() {
         match event {
             InputEvent::KeyPressed { key, modifiers } => {
-                // VirtIO keyboard uses Linux evdev codes
-                if let Some(ascii) = evdev_to_ascii(key, modifiers) {
-                    // Only pass to shell if terminal window is focused
-                    if crate::kernel::window_manager::has_focused_terminal() {
+                // Check if editor window is focused
+                if crate::kernel::window_manager::has_focused_editor() {
+                    // Check for Ctrl+S (save)
+                    let is_ctrl = (modifiers & (MOD_LEFT_CTRL | MOD_RIGHT_CTRL)) != 0;
+
+                    if is_ctrl && key == 31 { // KEY_S = 31 in evdev
+                        // Handle save in editor
+                        if let Some(editor) = crate::kernel::editor::get_editor() {
+                            save_editor_file(editor);
+                        }
+                        needs_full_redraw = true;
+                    } else {
+                        // Arrow keys for editor navigation (Linux evdev codes)
+                        match key {
+                            103 => { // KEY_UP
+                                if let Some(editor) = crate::kernel::editor::get_editor() {
+                                    editor.move_up();
+                                }
+                                needs_full_redraw = true;
+                            }
+                            108 => { // KEY_DOWN
+                                if let Some(editor) = crate::kernel::editor::get_editor() {
+                                    editor.move_down();
+                                }
+                                needs_full_redraw = true;
+                            }
+                            105 => { // KEY_LEFT
+                                if let Some(editor) = crate::kernel::editor::get_editor() {
+                                    editor.move_left();
+                                }
+                                needs_full_redraw = true;
+                            }
+                            106 => { // KEY_RIGHT
+                                if let Some(editor) = crate::kernel::editor::get_editor() {
+                                    editor.move_right();
+                                }
+                                needs_full_redraw = true;
+                            }
+                            _ => {
+                                // Regular text input
+                                if let Some(ascii) = evdev_to_ascii(key, modifiers) {
+                                    if let Some(editor) = crate::kernel::editor::get_editor() {
+                                        if ascii == b'\n' {
+                                            editor.insert_newline();
+                                        } else if ascii == 8 { // Backspace
+                                            editor.delete_char();
+                                        } else if ascii >= 32 && ascii < 127 { // Printable ASCII
+                                            editor.insert_char(ascii as char);
+                                        }
+                                    }
+                                    needs_full_redraw = true;
+                                }
+                            }
+                        }
+                    }
+                } else if crate::kernel::window_manager::has_focused_terminal() {
+                    // VirtIO keyboard uses Linux evdev codes
+                    if let Some(ascii) = evdev_to_ascii(key, modifiers) {
+                        // Only pass to shell if terminal window is focused
                         unsafe {
                             if let Some(ref mut shell) = SHELL {
                                 shell.handle_char(ascii);
@@ -435,11 +491,85 @@ pub fn test_input_events() -> (bool, bool) {
     (needs_full_redraw, needs_cursor_redraw)
 }
 
+/// Save the editor file to disk
+fn save_editor_file(editor: &mut crate::kernel::editor::TextEditor) {
+    use crate::kernel::filesystem;
+
+    // Check if we have a filename
+    let filename = if let Some(name) = editor.get_filename() {
+        name.to_string()
+    } else {
+        // For now, use a default name - in future we could prompt the user
+        editor.set_filename("untitled");
+        editor.set_status("Saving as 'untitled'...");
+        String::from("untitled")
+    };
+
+    // Get file content
+    let content = editor.get_text();
+    let content_bytes = content.as_bytes();
+
+    // Access the filesystem through the shell's device
+    unsafe {
+        if let Some(ref mut shell) = SHELL {
+            if let Some(ref mut fs) = shell.filesystem {
+                if let Some(device_idx) = shell.device_index {
+                    if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                        if let Some(device) = devices.get_mut(device_idx) {
+                            // Check if file exists
+                            let files = fs.list_files();
+                            let file_exists = files.iter().any(|f| f.get_name() == filename);
+
+                            if !file_exists {
+                                // Create file with appropriate size
+                                let size = ((content_bytes.len() + 511) / 512) * 512; // Round up to sector
+                                match fs.create_file(device, &filename, size as u32) {
+                                    Ok(()) => {
+                                        uart_write_string(&alloc::format!("Created file '{}'\r\n", filename));
+                                    }
+                                    Err(e) => {
+                                        editor.set_status(&alloc::format!("Error creating file: {}", e));
+                                        uart_write_string(&alloc::format!("Error creating file: {}\r\n", e));
+                                        return;
+                                    }
+                                }
+                            }
+
+                            // Write content to file
+                            match fs.write_file(device, &filename, content_bytes) {
+                                Ok(()) => {
+                                    editor.mark_saved();
+                                    editor.set_status(&alloc::format!("Saved {} bytes to '{}'", content_bytes.len(), filename));
+                                    uart_write_string(&alloc::format!("Saved {} bytes to '{}'\r\n", content_bytes.len(), filename));
+                                }
+                                Err(e) => {
+                                    editor.set_status(&alloc::format!("Error saving: {}", e));
+                                    uart_write_string(&alloc::format!("Error saving: {}\r\n", e));
+                                }
+                            }
+                        } else {
+                            editor.set_status("Block device not available");
+                        }
+                    } else {
+                        editor.set_status("Block devices not initialized");
+                    }
+                } else {
+                    editor.set_status("No device index");
+                }
+            } else {
+                editor.set_status("Filesystem not mounted");
+            }
+        } else {
+            editor.set_status("Shell not initialized");
+        }
+    }
+}
+
 /// Initialize USB HID subsystem
 pub fn init_usb_hid() {
     uart_write_string("Initializing USB HID subsystem...\r\n");
     uart_write_string("Setting up XHCI interrupt handling...\r\n");
-    
+
     // Initialize input event queue for XHCI events
     unsafe {
         INPUT_EVENT_QUEUE = Some(VecDeque::new());
