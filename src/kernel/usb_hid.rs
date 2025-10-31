@@ -28,8 +28,8 @@ const HID_SET_PROTOCOL: u8 = 0x0B;
 // Linux evdev key codes to ASCII mapping (for VirtIO keyboard)
 // Based on linux/input-event-codes.h
 const EVDEV_TO_ASCII: [u8; 256] = [
-    // 0-9
-    0, 0, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8',
+    // 0-9 (KEY_ESC = 1)
+    0, 27, b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8',
     // 10-19 (14 = KEY_BACKSPACE)
     b'9', b'0', b'-', b'=', 8, 0, b'q', b'w', b'e', b'r',
     // 20-29
@@ -401,12 +401,17 @@ pub fn test_input_events() -> (bool, bool) {
                     // Handle filename input
                     if let Some(ascii) = evdev_to_ascii(key, modifiers) {
                         if ascii == b'\n' {
-                            // Enter pressed - create the file
-                            finish_filename_prompt_for_file_explorer();
+                            // Enter pressed - check if renaming or creating new file
+                            if is_renaming() {
+                                finish_rename_prompt_for_file_explorer();
+                            } else {
+                                finish_filename_prompt_for_file_explorer();
+                            }
                             needs_full_redraw = true;
                         } else if ascii == 27 { // ESC
-                            // Cancel the prompt
+                            // Cancel the prompt (clears both rename and new file states)
                             cancel_filename_prompt();
+                            unsafe { RENAME_OLD_FILENAME = None; }
                             needs_full_redraw = true;
                         } else if ascii == 8 { // Backspace
                             backspace_filename_prompt();
@@ -710,6 +715,9 @@ pub fn test_input_events() -> (bool, bool) {
 /// Prompt state for filename input
 static mut FILENAME_PROMPT: Option<String> = None;
 
+/// Rename mode state (stores old filename when renaming)
+static mut RENAME_OLD_FILENAME: Option<String> = None;
+
 /// Status message to show in menu bar
 static mut MENU_STATUS_MESSAGE: Option<String> = None;
 
@@ -857,6 +865,55 @@ pub fn finish_filename_prompt_for_file_explorer() {
                 }
             }
         }
+    }
+}
+
+/// Start prompting for a new filename when renaming
+pub fn start_rename_prompt(old_filename: &str) {
+    unsafe {
+        FILENAME_PROMPT = Some(String::new());
+        RENAME_OLD_FILENAME = Some(String::from(old_filename));
+    }
+}
+
+/// Check if we're in rename mode
+pub fn is_renaming() -> bool {
+    unsafe { RENAME_OLD_FILENAME.is_some() }
+}
+
+/// Finish the rename prompt and rename the file in file explorer
+pub fn finish_rename_prompt_for_file_explorer() {
+    unsafe {
+        if let Some(new_filename) = FILENAME_PROMPT.take() {
+            if let Some(old_filename) = RENAME_OLD_FILENAME.take() {
+                if !new_filename.is_empty() {
+                    // Get the focused file explorer
+                    if let Some(explorer_id) = crate::kernel::window_manager::get_focused_file_explorer_id() {
+                        if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(explorer_id) {
+                            if let (Some(ref mut fs), Some(device_idx)) = (&mut explorer.filesystem, explorer.device_index) {
+                                if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                                    if let Some(device) = devices.get_mut(device_idx) {
+                                        // Rename the file
+                                        match fs.rename_file(device, &old_filename, &new_filename) {
+                                            Ok(()) => {
+                                                // Refresh the file list and re-select the renamed file
+                                                crate::kernel::file_explorer::refresh(explorer_id);
+                                                crate::kernel::file_explorer::select_file_by_name(explorer_id, &new_filename);
+                                            }
+                                            Err(_e) => {
+                                                // Rename failed
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Make sure to clear both states
+        RENAME_OLD_FILENAME = None;
     }
 }
 

@@ -98,6 +98,7 @@ impl Shell {
             "cat" => self.cmd_cat(&parts),
             "create" => self.cmd_create(&parts),
             "rm" => self.cmd_rm(&parts),
+            "rename" | "mv" => self.cmd_rename(&parts),
             "write" => self.cmd_write(&parts),
             "edit" => self.cmd_edit(&parts),
             "clear" => self.cmd_clear(),
@@ -115,6 +116,7 @@ impl Shell {
         self.write_output("  cat <filename>        - Show file contents\r\n");
         self.write_output("  create <name> <size>  - Create a file\r\n");
         self.write_output("  rm <filename>         - Delete a file\r\n");
+        self.write_output("  rename <old> <new>    - Rename a file\r\n");
         self.write_output("  write <file> <text>   - Write text to file\r\n");
         self.write_output("  edit <filename>       - Open file in editor\r\n");
         self.write_output("  clear                 - Clear screen\r\n");
@@ -235,6 +237,37 @@ impl Shell {
 
                         match fs.delete_file(device, filename) {
                             Ok(()) => self.write_output(&alloc::format!("Deleted '{}'\r\n", filename)),
+                            Err(e) => self.write_output(&alloc::format!("Error: {}\r\n", e)),
+                        }
+                    } else {
+                        self.write_output("Block device not available\r\n");
+                    }
+                } else {
+                    self.write_output("Block devices not initialized\r\n");
+                }
+            }
+        } else {
+            self.write_output("Filesystem not mounted\r\n");
+        }
+    }
+
+    fn cmd_rename(&mut self, parts: &[&str]) {
+        if parts.len() < 3 {
+            self.write_output("Usage: rename <old_name> <new_name>\r\n");
+            return;
+        }
+
+        if let (Some(ref mut fs), Some(idx)) = (&mut self.filesystem, self.device_index) {
+            unsafe {
+                if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                    if let Some(device) = devices.get_mut(idx) {
+                        let old_name = parts[1];
+                        let new_name = parts[2];
+
+                        match fs.rename_file(device, old_name, new_name) {
+                            Ok(()) => self.write_output(&alloc::format!(
+                                "Renamed '{}' to '{}'\r\n", old_name, new_name
+                            )),
                             Err(e) => self.write_output(&alloc::format!("Error: {}\r\n", e)),
                         }
                     } else {
