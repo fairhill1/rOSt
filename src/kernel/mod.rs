@@ -517,6 +517,78 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                         Ok(()) => uart_write_string("✗ Should have failed!\r\n"),
                         Err(e) => uart_write_string(&alloc::format!("✓ Correctly rejected: {}\r\n", e)),
                     }
+
+                    // Test file read/write
+                    uart_write_string("\n--- Testing File Read/Write ---\r\n");
+
+                    // Write data to 'hello' file
+                    uart_write_string("\nWriting data to 'hello' file...\r\n");
+                    let test_data = b"Hello, World! This is a test message.";
+                    match fs.write_file(&mut blk_devices[0], "hello", test_data) {
+                        Ok(()) => uart_write_string(&alloc::format!("✓ Wrote {} bytes\r\n", test_data.len())),
+                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                    }
+
+                    // Read data back from 'hello' file
+                    uart_write_string("\nReading data from 'hello' file...\r\n");
+                    let mut read_buffer = [0u8; 100];
+                    match fs.read_file(&mut blk_devices[0], "hello", &mut read_buffer) {
+                        Ok(bytes_read) => {
+                            uart_write_string(&alloc::format!("✓ Read {} bytes\r\n", bytes_read));
+
+                            // Verify data
+                            let matches = read_buffer[..test_data.len()] == test_data[..];
+                            if matches {
+                                uart_write_string("✓ Data verification SUCCESS! Content matches:\r\n");
+                                uart_write_string("  \"");
+                                uart_write_string(core::str::from_utf8(&read_buffer[..test_data.len()]).unwrap_or("???"));
+                                uart_write_string("\"\r\n");
+                            } else {
+                                uart_write_string("✗ Data verification FAILED!\r\n");
+                            }
+                        }
+                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                    }
+
+                    // Write to 'data' file (multiple sectors)
+                    uart_write_string("\nWriting 400 bytes to 'data' file...\r\n");
+                    let mut big_data = [0u8; 400];
+                    for i in 0..400 {
+                        big_data[i] = (i % 256) as u8;
+                    }
+                    match fs.write_file(&mut blk_devices[0], "data", &big_data) {
+                        Ok(()) => uart_write_string("✓ Wrote 400 bytes\r\n"),
+                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                    }
+
+                    // Read it back
+                    uart_write_string("\nReading 400 bytes from 'data' file...\r\n");
+                    let mut big_read_buffer = [0u8; 512];
+                    match fs.read_file(&mut blk_devices[0], "data", &mut big_read_buffer) {
+                        Ok(bytes_read) => {
+                            uart_write_string(&alloc::format!("✓ Read {} bytes\r\n", bytes_read));
+
+                            // Verify
+                            let matches = big_read_buffer[..400] == big_data[..];
+                            if matches {
+                                uart_write_string("✓ Data verification SUCCESS! All 400 bytes match!\r\n");
+                                uart_write_string("  First 16 bytes: ");
+                                for i in 0..16 {
+                                    let byte = big_read_buffer[i];
+                                    let hex_chars = b"0123456789ABCDEF";
+                                    unsafe {
+                                        core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(byte >> 4) as usize]);
+                                        core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(byte & 0x0F) as usize]);
+                                        core::ptr::write_volatile(0x09000000 as *mut u8, b' ');
+                                    }
+                                }
+                                uart_write_string("\r\n");
+                            } else {
+                                uart_write_string("✗ Data verification FAILED!\r\n");
+                            }
+                        }
+                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                    }
                 }
                 Err(e) => {
                     uart_write_string("✗ Mount failed: ");

@@ -10,22 +10,33 @@
 2025-10-31
 
 ## Current Goal
-Implement file I/O using VirtIO block device driver
+Build interactive shell for file operations
 
 ## Previous Goals (✅ Completed)
 - ✅ Get real keyboard and mouse input working from QEMU graphical window using VirtIO input devices
-- ✅ Implement VirtIO block device driver for disk read/write
+- ✅ Implement VirtIO block device driver for disk read/write (read_sector, write_sector)
+- ✅ Implement custom filesystem (SimpleFS) with full CRUD operations
 
-## Current Status: ✅ **VirtIO Block Device Working!**
+## Current Status: ✅ **Filesystem Fully Working!**
+
+### ✅ SimpleFS Filesystem - WORKING! 📁
+- **ALL FILE OPERATIONS WORKING** - Complete filesystem implementation!
+- **Format & Mount** - Initialize new disks and load existing filesystems
+- **Create Files** - Allocate sectors and update file table (tested: 100B, 2KB, 512B files)
+- **Delete Files** - Mark entries as free and update metadata
+- **Write Data** - Sector-by-sector writes with proper buffer handling
+- **Read Data** - Sector-by-sector reads with size validation
+- **List Files** - Enumerate all stored files with size/location info
+- All tests passing: format, mount, create, delete, read, write, verification
 
 ### ✅ VirtIO Block Device - WORKING! 💾
-- **SECTOR READ WORKING** - Successfully reading sectors from disk!
+- **SECTOR READ/WRITE WORKING** - Full disk I/O capabilities!
 - VirtIO block device (PCI 0:3:0) initialized successfully
 - Virtqueue setup complete (descriptor, available, used rings)
 - 3-descriptor chain working (header → data → status)
 - Device found and initialized using modern VirtIO 1.0 protocol
 - Tested with 10MB test disk image
-- Ready for filesystem implementation!
+- Both read_sector() and write_sector() functions fully operational
 
 ### ✅ VirtIO Input - WORKING! ⌨️🐭
 - **MOUSE INPUT WORKING** - Mouse movement and button clicks detected!
@@ -61,6 +72,24 @@ Implement file I/O using VirtIO block device driver
 2. **PCI 0:2:0** - ✅ Mouse - Working!
 
 ### Recent Fixes (2025-10-31)
+
+#### Filesystem Implementation Fixes
+7. **🔥 CRITICAL: Stack Overflow in create_file() and delete_file()** 🔥
+   - **Problem**: 512-byte sector buffers allocated on stack caused stack overflow
+   - **Symptom**: Functions would execute but never return - hung after printing last debug message
+   - **Solution**: Use static buffers (`CREATE_BUFFER`, `TEMP_BUFFER`) instead of stack allocation
+   - **Code**: `filesystem.rs:300-324` (create_file), `filesystem.rs:366-394` (delete_file)
+   - **Impact**: Without this fix, file operations appear to work but system hangs
+
+8. **Legacy VirtIO Block Device Causing "Zero Sized Buffers" Error**
+   - **Problem**: System tried to initialize both modern (0x1042) and legacy (0x1001) block devices
+   - **Symptom**: QEMU error "virtio: zero sized buffers are not allowed" after certain operations
+   - **Root Cause**: Legacy VirtIO device driver has bugs, doesn't work properly
+   - **Solution**: Skip legacy devices, only initialize modern VirtIO (device_id == 0x1042)
+   - **Code**: `virtio_blk.rs:238-255`
+   - **Impact**: All filesystem operations now work reliably
+
+#### VirtIO Input Fixes
 1. **Virtqueue memory allocation** - Changed from 0x20000000 (invalid I/O space) to 0x50000000 (valid RAM)
    - This fixed `used_idx` from 0xFFFF → 0
 2. **DTB parser depth tracking** - Fixed child nodes overwriting parent node properties
@@ -85,9 +114,10 @@ Implement file I/O using VirtIO block device driver
 ### Core Files
 - `src/kernel/dtb.rs` - DTB parser (reads device tree at 0x40000000)
 - `src/kernel/virtio_input.rs` - VirtIO input driver
-- `src/kernel/virtio_blk.rs` - **NEW!** VirtIO block device driver
+- `src/kernel/virtio_blk.rs` - **NEW!** VirtIO block device driver (read/write sectors)
+- `src/kernel/filesystem.rs` - **NEW!** SimpleFS filesystem implementation (format, mount, create, delete, read, write)
 - `src/kernel/pci.rs` - PCI config space access (added `read_u8()`, `write_config_u32()`, `get_bar_size()`, `get_capabilities_ptr()`)
-- `src/kernel/mod.rs` - Kernel init (calls DTB parser, VirtIO input, and VirtIO block init)
+- `src/kernel/mod.rs` - Kernel init and filesystem tests
 
 ## VirtIO Block Driver Implementation (2025-10-31)
 
@@ -126,13 +156,89 @@ Based on [Stephen Brennan's blog post](https://brennan.io/2020/03/22/sos-block-d
 - ✅ Device detection and initialization
 - ✅ Virtqueue allocation and configuration
 - ✅ Sector reads (tested with sector 0)
+- ✅ Sector writes (tested with round-trip verification)
 - ✅ Completion polling (busy-wait on used ring index)
 
+## SimpleFS Filesystem Implementation (2025-10-31)
+
+### Filesystem Design
+Simple custom filesystem with superblock, file table, and data sectors:
+
+**Disk Layout:**
+- **Sector 0**: Superblock (512 bytes) - magic number, version, total sectors, file count
+- **Sector 1**: File table (512 bytes) - up to 32 file entries (16 bytes each)
+- **Sectors 2-9**: Reserved for future use
+- **Sectors 10+**: Data blocks (file contents)
+
+**File Entry Structure (16 bytes):**
+- name: 8 bytes (null-terminated)
+- start_sector: 2 bytes (starting sector number)
+- size_sectors: 2 bytes (number of sectors allocated)
+- size_bytes: 4 bytes (actual file size in bytes)
+- flags: 1 byte (0x01 = used, 0x00 = free)
+- reserved: 3 bytes (future use)
+
+### Key Implementation Details
+
+1. **Format Operation**
+   - Creates empty superblock with magic number 0x524F5354 ("ROST")
+   - Initializes empty file table with all entries marked as free
+   - Sets next_free_sector to 10 (first data sector)
+
+2. **Mount Operation**
+   - Reads and validates superblock (checks magic number and version)
+   - Loads file table into memory
+   - Calculates next_free_sector by scanning used files
+
+3. **Create File Operation**
+   - Validates filename (1-8 characters)
+   - Checks for duplicates
+   - Allocates sectors based on size (rounds up to 512-byte boundaries)
+   - Updates file table and superblock
+   - Writes both to disk
+
+4. **Delete File Operation**
+   - Finds file entry in table
+   - Marks entry as free (flags = 0x00)
+   - Updates superblock file count
+   - Writes updated table and superblock to disk
+   - **NOTE**: Does NOT reclaim sectors (no defragmentation)
+
+5. **Write File Operation**
+   - Validates file exists and data fits in allocated space
+   - Writes data sector-by-sector (512 bytes at a time)
+   - Pads last sector with zeros if needed
+   - Returns error if data exceeds allocated size
+
+6. **Read File Operation**
+   - Validates file exists and buffer is large enough
+   - Reads data sector-by-sector
+   - Returns actual bytes read (size_bytes, not padded sector size)
+
+### Critical Gotchas
+- **Stack Overflow**: NEVER allocate 512-byte buffers on stack - use static buffers!
+- **Packed Structs**: Use `ptr::read_volatile()` and `ptr::write_volatile()` for all field access
+- **No Defragmentation**: Deleted files don't reclaim sectors (simple implementation)
+- **Fixed File Table**: Maximum 32 files (hard limit in sector 1)
+
+### Test Results
+All tests passing:
+- ✅ Format disk
+- ✅ Mount filesystem (0 files initially)
+- ✅ Create files: hello (100B), test (2KB), data (512B)
+- ✅ List files (shows all 3)
+- ✅ Reject duplicate file creation
+- ✅ Delete file (test)
+- ✅ List after deletion (shows 2 remaining)
+- ✅ Write data to files (37 bytes text, 400 bytes binary)
+- ✅ Read data back (verification success)
+- ✅ Binary data round-trip (all 400 bytes match)
+
 ### What's Next
-- Add write_sector() function
-- Implement simple filesystem (FAT or custom)
-- Add file operations (open, read, write, close)
-- Build simple shell for file interaction
+- Build simple shell for interactive file operations
+- Add directory support (subdirectories)
+- Implement defragmentation for deleted files
+- Add file metadata (timestamps, permissions)
 
 ## ✅ GOAL ACHIEVED - WORKING INPUT!
 

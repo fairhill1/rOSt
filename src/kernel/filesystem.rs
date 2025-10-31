@@ -296,29 +296,32 @@ impl SimpleFilesystem {
         self.next_free_sector += size_sectors as u64;
 
         // Write updated superblock to disk
-        let mut sector_buffer = [0u8; SECTOR_SIZE];
+        // Use static buffer to avoid stack overflow
+        static mut CREATE_BUFFER: [u8; 512] = [0; 512];
+
         unsafe {
+            CREATE_BUFFER.fill(0);
             ptr::copy_nonoverlapping(
                 &self.superblock as *const Superblock as *const u8,
-                sector_buffer.as_mut_ptr(),
+                CREATE_BUFFER.as_mut_ptr(),
                 core::mem::size_of::<Superblock>(),
             );
         }
-        device.write_sector(0, &sector_buffer)?;
+        device.write_sector(0, unsafe { &CREATE_BUFFER })?;
 
         // Write updated file table to disk
-        sector_buffer = [0u8; SECTOR_SIZE];
-        for (i, entry) in self.file_table.iter().enumerate() {
-            let offset = i * core::mem::size_of::<FileEntry>();
-            unsafe {
+        unsafe {
+            CREATE_BUFFER.fill(0);
+            for (i, entry) in self.file_table.iter().enumerate() {
+                let offset = i * core::mem::size_of::<FileEntry>();
                 ptr::copy_nonoverlapping(
                     entry as *const FileEntry as *const u8,
-                    sector_buffer.as_mut_ptr().add(offset),
+                    CREATE_BUFFER.as_mut_ptr().add(offset),
                     core::mem::size_of::<FileEntry>(),
                 );
             }
         }
-        device.write_sector(1, &sector_buffer)?;
+        device.write_sector(1, unsafe { &CREATE_BUFFER })?;
 
         let start_sec = unsafe { ptr::read_volatile(ptr::addr_of!(new_entry.start_sector)) };
         crate::kernel::uart_write_string(&alloc::format!(
@@ -362,34 +365,139 @@ impl SimpleFilesystem {
         }
 
         // Write updated superblock to disk
-        let mut sector_buffer = [0u8; SECTOR_SIZE];
+        // Use static buffer to avoid stack issues
+        static mut TEMP_BUFFER: [u8; 512] = [0; 512];
+
         unsafe {
+            TEMP_BUFFER.fill(0);
             ptr::copy_nonoverlapping(
                 &self.superblock as *const Superblock as *const u8,
-                sector_buffer.as_mut_ptr(),
+                TEMP_BUFFER.as_mut_ptr(),
                 core::mem::size_of::<Superblock>(),
             );
         }
-        device.write_sector(0, &sector_buffer)?;
+        if let Err(e) = device.write_sector(0, unsafe { &TEMP_BUFFER }) {
+            return Err(e);
+        }
 
         // Write updated file table to disk
-        sector_buffer = [0u8; SECTOR_SIZE];
-        for (i, entry) in self.file_table.iter().enumerate() {
-            let offset = i * core::mem::size_of::<FileEntry>();
-            unsafe {
+        unsafe {
+            TEMP_BUFFER.fill(0);
+            for (i, entry) in self.file_table.iter().enumerate() {
+                let offset = i * core::mem::size_of::<FileEntry>();
                 ptr::copy_nonoverlapping(
                     entry as *const FileEntry as *const u8,
-                    sector_buffer.as_mut_ptr().add(offset),
+                    TEMP_BUFFER.as_mut_ptr().add(offset),
                     core::mem::size_of::<FileEntry>(),
                 );
             }
         }
-        device.write_sector(1, &sector_buffer)?;
+        if let Err(e) = device.write_sector(1, unsafe { &TEMP_BUFFER }) {
+            return Err(e);
+        }
+
+        Ok(())
+    }
+
+    /// Write data to a file
+    pub fn write_file(
+        &mut self,
+        device: &mut VirtioBlkDevice,
+        name: &str,
+        data: &[u8],
+    ) -> Result<(), &'static str> {
+        // Find the file
+        let mut file_entry = None;
+        for entry in &self.file_table {
+            if entry.is_used() && entry.get_name() == name {
+                file_entry = Some(entry.clone());
+                break;
+            }
+        }
+
+        let file_entry = file_entry.ok_or("File not found")?;
+
+        let size_bytes = file_entry.get_size_bytes();
+        if data.len() > size_bytes as usize {
+            return Err("Data too large for file");
+        }
+
+        let start_sector = file_entry.get_start_sector();
+        let size_sectors = file_entry.get_size_sectors();
+
+        // Write data sector by sector
+        let mut bytes_written = 0;
+        for sector_idx in 0..size_sectors {
+            let mut sector_buffer = [0u8; SECTOR_SIZE];
+
+            // Copy data for this sector
+            let bytes_to_write = core::cmp::min(SECTOR_SIZE, data.len() - bytes_written);
+            sector_buffer[..bytes_to_write].copy_from_slice(&data[bytes_written..bytes_written + bytes_to_write]);
+
+            // Write sector
+            device.write_sector((start_sector + sector_idx) as u64, &sector_buffer)?;
+
+            bytes_written += bytes_to_write;
+            if bytes_written >= data.len() {
+                break;
+            }
+        }
 
         crate::kernel::uart_write_string(&alloc::format!(
-            "Deleted file '{}'\r\n", name
+            "Wrote {} bytes to file '{}'\r\n", bytes_written, name
         ));
 
         Ok(())
+    }
+
+    /// Read data from a file
+    pub fn read_file(
+        &self,
+        device: &mut VirtioBlkDevice,
+        name: &str,
+        buffer: &mut [u8],
+    ) -> Result<usize, &'static str> {
+        // Find the file
+        let mut file_entry = None;
+        for entry in &self.file_table {
+            if entry.is_used() && entry.get_name() == name {
+                file_entry = Some(entry.clone());
+                break;
+            }
+        }
+
+        let file_entry = file_entry.ok_or("File not found")?;
+
+        let size_bytes = file_entry.get_size_bytes() as usize;
+        if buffer.len() < size_bytes {
+            return Err("Buffer too small for file");
+        }
+
+        let start_sector = file_entry.get_start_sector();
+        let size_sectors = file_entry.get_size_sectors();
+
+        // Read data sector by sector
+        let mut bytes_read = 0;
+        for sector_idx in 0..size_sectors {
+            let mut sector_buffer = [0u8; SECTOR_SIZE];
+
+            // Read sector
+            device.read_sector((start_sector + sector_idx) as u64, &mut sector_buffer)?;
+
+            // Copy to output buffer
+            let bytes_to_copy = core::cmp::min(SECTOR_SIZE, size_bytes - bytes_read);
+            buffer[bytes_read..bytes_read + bytes_to_copy].copy_from_slice(&sector_buffer[..bytes_to_copy]);
+
+            bytes_read += bytes_to_copy;
+            if bytes_read >= size_bytes {
+                break;
+            }
+        }
+
+        crate::kernel::uart_write_string(&alloc::format!(
+            "Read {} bytes from file '{}'\r\n", bytes_read, name
+        ));
+
+        Ok(bytes_read)
     }
 }
