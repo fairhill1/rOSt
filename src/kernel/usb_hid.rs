@@ -602,7 +602,16 @@ pub fn test_input_events() -> (bool, bool) {
                     needs_full_redraw = true; // Clicks trigger a full redraw
                 }
             }
-            InputEvent::MouseWheel { .. } => {
+            InputEvent::MouseWheel { delta } => {
+                // Handle mouse wheel scrolling in focused editor
+                if let Some(editor_id) = crate::kernel::window_manager::get_focused_editor_id() {
+                    if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                        // Negative delta = scroll up, positive = scroll down
+                        // Multiply by 3 for smoother scrolling
+                        editor.scroll(-delta as i32 * 3);
+                    }
+                    needs_full_redraw = true;
+                }
             }
         }
     }

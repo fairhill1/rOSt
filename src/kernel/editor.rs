@@ -489,6 +489,18 @@ impl TextEditor {
         self.selection_end = Some((self.cursor_row, self.cursor_col));
     }
 
+    /// Scroll the editor by a number of lines (positive = down, negative = up)
+    pub fn scroll(&mut self, lines: i32) {
+        if lines > 0 {
+            // Scroll down
+            let max_scroll = self.lines.len().saturating_sub(self.visible_height);
+            self.scroll_offset = (self.scroll_offset + lines as usize).min(max_scroll);
+        } else if lines < 0 {
+            // Scroll up
+            self.scroll_offset = self.scroll_offset.saturating_sub((-lines) as usize);
+        }
+    }
+
     /// Get all text as a single string
     pub fn get_text(&self) -> String {
         self.lines.join("\n")
