@@ -65,6 +65,20 @@ pub struct UdpHeader {
     pub checksum: u16,
 }
 
+/// TCP header (20 bytes minimum)
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct TcpHeader {
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub seq_num: u32,
+    pub ack_num: u32,
+    pub data_offset_flags: u16,  // Data offset (4 bits) + reserved (3 bits) + flags (9 bits)
+    pub window_size: u16,
+    pub checksum: u16,
+    pub urgent_ptr: u16,
+}
+
 // Ethernet types
 pub const ETHERTYPE_IPV4: u16 = 0x0800;
 pub const ETHERTYPE_ARP: u16 = 0x0806;
@@ -82,6 +96,14 @@ pub const ICMP_ECHO_REQUEST: u8 = 8;
 pub const ARP_REQUEST: u16 = 0x0001;
 pub const ARP_REPLY: u16 = 0x0002;
 
+// TCP flags (in host byte order, will be converted to network order)
+pub const TCP_FLAG_FIN: u16 = 0x0001;
+pub const TCP_FLAG_SYN: u16 = 0x0002;
+pub const TCP_FLAG_RST: u16 = 0x0004;
+pub const TCP_FLAG_PSH: u16 = 0x0008;
+pub const TCP_FLAG_ACK: u16 = 0x0010;
+pub const TCP_FLAG_URG: u16 = 0x0020;
+
 /// Convert u16 from big-endian to native
 pub fn be16_to_cpu(val: u16) -> u16 {
     u16::from_be(val)
@@ -89,6 +111,16 @@ pub fn be16_to_cpu(val: u16) -> u16 {
 
 /// Convert u16 from native to big-endian
 pub fn cpu_to_be16(val: u16) -> u16 {
+    val.to_be()
+}
+
+/// Convert u32 from big-endian to native
+pub fn be32_to_cpu(val: u32) -> u32 {
+    u32::from_be(val)
+}
+
+/// Convert u32 from native to big-endian
+pub fn cpu_to_be32(val: u32) -> u32 {
     val.to_be()
 }
 
@@ -380,6 +412,86 @@ pub fn parse_udp(payload: &[u8]) -> Option<(UdpHeader, &[u8])> {
     };
 
     let data = &payload[8..];
+    Some((header, data))
+}
+
+/// Build a TCP segment
+pub fn build_tcp(
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    src_port: u16,
+    dst_port: u16,
+    seq_num: u32,
+    ack_num: u32,
+    flags: u16,
+    window_size: u16,
+    payload: &[u8]
+) -> Vec<u8> {
+    // Data offset is 5 (20 bytes, no options) in units of 32-bit words
+    // Shift left by 12 bits to put in upper 4 bits, then OR with flags
+    let data_offset_flags = ((5u16 << 12) | flags).to_be();
+
+    let mut header = TcpHeader {
+        src_port: cpu_to_be16(src_port),
+        dst_port: cpu_to_be16(dst_port),
+        seq_num: cpu_to_be32(seq_num),
+        ack_num: cpu_to_be32(ack_num),
+        data_offset_flags,
+        window_size: cpu_to_be16(window_size),
+        checksum: 0,  // Will calculate after
+        urgent_ptr: 0,
+    };
+
+    // Build pseudo-header for checksum (same as UDP)
+    let tcp_len = 20 + payload.len();
+    let mut pseudo_header = Vec::new();
+    pseudo_header.extend_from_slice(&src_ip);
+    pseudo_header.extend_from_slice(&dst_ip);
+    pseudo_header.push(0);  // Zero
+    pseudo_header.push(IP_PROTO_TCP);  // Protocol
+    pseudo_header.extend_from_slice(&(tcp_len as u16).to_be_bytes());
+
+    // Build full packet for checksum (pseudo-header + TCP header + data)
+    let mut checksum_data = pseudo_header;
+    let header_bytes = unsafe {
+        core::slice::from_raw_parts(&header as *const _ as *const u8, 20)
+    };
+    checksum_data.extend_from_slice(header_bytes);
+    checksum_data.extend_from_slice(payload);
+
+    // Calculate checksum
+    header.checksum = cpu_to_be16(checksum(&checksum_data));
+
+    // Build final packet (TCP header + data only, no pseudo-header)
+    let mut packet = Vec::new();
+    let final_header_bytes = unsafe {
+        core::slice::from_raw_parts(&header as *const _ as *const u8, 20)
+    };
+    packet.extend_from_slice(final_header_bytes);
+    packet.extend_from_slice(payload);
+
+    packet
+}
+
+/// Parse a TCP segment
+pub fn parse_tcp(payload: &[u8]) -> Option<(TcpHeader, &[u8])> {
+    if payload.len() < 20 {
+        return None;
+    }
+
+    let header = unsafe {
+        ptr::read_unaligned(payload.as_ptr() as *const TcpHeader)
+    };
+
+    // Extract data offset (upper 4 bits of data_offset_flags)
+    let data_offset_flags_native = u16::from_be(header.data_offset_flags);
+    let data_offset = (data_offset_flags_native >> 12) as usize * 4;
+
+    if payload.len() < data_offset {
+        return None;
+    }
+
+    let data = &payload[data_offset..];
     Some((header, data))
 }
 

@@ -22,6 +22,7 @@ pub mod virtio_blk;
 pub mod virtio_net;
 pub mod network;
 pub mod dns;
+pub mod tcp;
 pub mod filesystem;
 pub mod shell;
 pub mod dtb;
