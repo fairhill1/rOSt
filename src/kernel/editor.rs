@@ -385,6 +385,97 @@ impl TextEditor {
         self.is_selecting = false;
     }
 
+    /// Get selected text (if any)
+    fn get_selected_text(&self) -> Option<String> {
+        if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
+            // Normalize selection
+            let (start, end) = if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            };
+
+            if start == end {
+                return None; // Empty selection
+            }
+
+            let (start_row, start_col) = start;
+            let (end_row, end_col) = end;
+
+            if start_row == end_row {
+                // Single line selection
+                Some(self.lines[start_row][start_col..end_col].to_string())
+            } else {
+                // Multi-line selection
+                let mut result = String::new();
+
+                // First line
+                result.push_str(&self.lines[start_row][start_col..]);
+                result.push('\n');
+
+                // Middle lines
+                for row in (start_row + 1)..end_row {
+                    result.push_str(&self.lines[row]);
+                    result.push('\n');
+                }
+
+                // Last line
+                result.push_str(&self.lines[end_row][..end_col]);
+
+                Some(result)
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Copy selected text to clipboard
+    pub fn copy(&mut self) {
+        if let Some(text) = self.get_selected_text() {
+            unsafe {
+                CLIPBOARD = Some(text);
+            }
+            self.set_status("Copied to clipboard");
+        } else {
+            self.set_status("No selection to copy");
+        }
+    }
+
+    /// Cut selected text to clipboard
+    pub fn cut(&mut self) {
+        if let Some(text) = self.get_selected_text() {
+            unsafe {
+                CLIPBOARD = Some(text);
+            }
+            self.delete_selection();
+            self.set_status("Cut to clipboard");
+        } else {
+            self.set_status("No selection to cut");
+        }
+    }
+
+    /// Paste text from clipboard
+    pub fn paste(&mut self) {
+        let clipboard_text = unsafe { CLIPBOARD.clone() };
+
+        if let Some(text) = clipboard_text {
+            // Delete selection first if there is one
+            self.delete_selection();
+
+            // Insert the text
+            for ch in text.chars() {
+                if ch == '\n' {
+                    self.insert_newline();
+                } else {
+                    self.insert_char(ch);
+                }
+            }
+            self.set_status("Pasted from clipboard");
+        } else {
+            self.set_status("Clipboard is empty");
+        }
+    }
+
     /// Render the editor at a specific offset (for window rendering)
     pub fn render_at(&self, offset_x: i32, offset_y: i32) {
         // Normalize selection (start should be before end)
@@ -467,6 +558,9 @@ impl TextEditor {
 
 /// Global editor instances
 static mut EDITORS: Vec<TextEditor> = Vec::new();
+
+/// Global clipboard (shared across all editor instances)
+static mut CLIPBOARD: Option<String> = None;
 
 pub fn init() {
     // Nothing to do - editors are created on demand
