@@ -33,6 +33,8 @@ pub struct BootInfo {
     pub acpi_rsdp: Option<u64>,
 }
 
+// Static storage for block devices (needs to outlive local scope for shell access)
+static mut BLOCK_DEVICES: Option<alloc::vec::Vec<virtio_blk::VirtioBlkDevice>> = None;
 
 // Basic UART output for debugging
 fn uart_write_string(s: &str) {
@@ -319,22 +321,27 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Initialize VirtIO block devices
         uart_write_string("Initializing VirtIO block devices...\r\n");
-        let mut blk_devices = virtio_blk::VirtioBlkDevice::find_and_init(info.ecam_base, info.mmio_base);
+        unsafe {
+            BLOCK_DEVICES = Some(virtio_blk::VirtioBlkDevice::find_and_init(info.ecam_base, info.mmio_base));
+        }
+
+        // Create a local reference for easier access (must borrow from static)
+        let blk_devices = unsafe { BLOCK_DEVICES.as_mut().unwrap() };
 
         if !blk_devices.is_empty() {
             uart_write_string("VirtIO block device initialized! Running read/write tests...\r\n");
 
-            // Test 1: Write a pattern to sector 1
-            uart_write_string("\nTest 1: Writing pattern to sector 1...\r\n");
+            // Test 1: Write a pattern to sector 1000 (high sector to avoid filesystem collision)
+            uart_write_string("\nTest 1: Writing pattern to sector 1000...\r\n");
             let mut write_buffer = [0u8; 512];
             // Fill with a recognizable pattern
             for i in 0..512 {
                 write_buffer[i] = (i % 256) as u8;
             }
 
-            match blk_devices[0].write_sector(1, &write_buffer) {
+            match blk_devices[0].write_sector(1000, &write_buffer) {
                 Ok(()) => {
-                    uart_write_string("Write successful! Pattern written to sector 1.\r\n");
+                    uart_write_string("Write successful! Pattern written to sector 1000.\r\n");
                 }
                 Err(e) => {
                     uart_write_string("ERROR: Failed to write sector: ");
@@ -344,9 +351,9 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
             }
 
             // Test 2: Read it back and verify
-            uart_write_string("\nTest 2: Reading back sector 1 to verify...\r\n");
+            uart_write_string("\nTest 2: Reading back sector 1000 to verify...\r\n");
             let mut read_buffer = [0u8; 512];
-            match blk_devices[0].read_sector(1, &mut read_buffer) {
+            match blk_devices[0].read_sector(1000, &mut read_buffer) {
                 Ok(()) => {
                     uart_write_string("Read successful! Verifying data...\r\n");
 
@@ -413,63 +420,100 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
             // Test filesystem
             uart_write_string("\n=== Testing SimpleFS Filesystem ===\r\n");
 
-            // Format the disk
-            uart_write_string("\nFormatting disk...\r\n");
-            match filesystem::SimpleFilesystem::format(&mut blk_devices[0], 20480) {
-                Ok(()) => {
-                    uart_write_string("✓ Disk formatted successfully!\r\n");
-                }
-                Err(e) => {
-                    uart_write_string("✗ Format failed: ");
-                    uart_write_string(e);
-                    uart_write_string("\r\n");
-                }
+            // Determine which device to use for persistent storage
+            // Strategy: Use the last device in the array (most likely to be the data disk)
+            let fs_device_idx = blk_devices.len() - 1;
+
+            if blk_devices.len() >= 2 {
+                uart_write_string(&alloc::format!(
+                    "Found {} block devices - using device {} for persistent storage\r\n",
+                    blk_devices.len(), fs_device_idx
+                ));
+            } else {
+                uart_write_string(&alloc::format!(
+                    "Found only 1 block device - using device {} (assuming persistent)\r\n",
+                    fs_device_idx
+                ));
             }
 
-            // Mount the filesystem
-            uart_write_string("\nMounting filesystem...\r\n");
-            match filesystem::SimpleFilesystem::mount(&mut blk_devices[0]) {
+            // Try to mount existing filesystem first
+            uart_write_string("\nTrying to mount existing filesystem...\r\n");
+            let mut fs_result = filesystem::SimpleFilesystem::mount(&mut blk_devices[fs_device_idx]);
+
+            if fs_result.is_err() {
+                // No existing filesystem, format and mount
+                uart_write_string("No existing filesystem found. Formatting disk...\r\n");
+                match filesystem::SimpleFilesystem::format(&mut blk_devices[fs_device_idx], 20480) {
+                    Ok(()) => {
+                        uart_write_string("✓ Disk formatted successfully!\r\n");
+                    }
+                    Err(e) => {
+                        uart_write_string("✗ Format failed: ");
+                        uart_write_string(e);
+                        uart_write_string("\r\n");
+                    }
+                }
+
+                // Mount the freshly formatted filesystem
+                uart_write_string("\nMounting filesystem...\r\n");
+                fs_result = filesystem::SimpleFilesystem::mount(&mut blk_devices[fs_device_idx]);
+            }
+
+            match fs_result {
                 Ok(mut fs) => {
                     uart_write_string(&alloc::format!(
                         "✓ Filesystem mounted! {} files found\r\n",
                         fs.file_count()
                     ));
 
-                    // List files (should be empty)
+                    // List files
                     let files = fs.list_files();
-                    if files.is_empty() {
-                        uart_write_string("✓ File list is empty (as expected on fresh format)\r\n");
-                    } else {
+                    let file_count = fs.file_count();
+
+                    // Skip initialization tests if filesystem already has files
+                    if file_count > 0 {
                         uart_write_string(&alloc::format!(
-                            "Found {} files:\r\n", files.len()
+                            "Existing filesystem with {} file entries - skipping initialization tests\r\n",
+                            file_count
                         ));
-                        for file in files {
-                            uart_write_string(&alloc::format!(
-                                "  - {} ({} bytes)\r\n",
-                                file.get_name(),
-                                file.get_size_bytes()
-                            ));
+
+                        if !files.is_empty() {
+                            uart_write_string("Visible files:\r\n");
+                            for file in &files {
+                                uart_write_string(&alloc::format!(
+                                    "  - {} ({} bytes)\r\n",
+                                    file.get_name(),
+                                    file.get_size_bytes()
+                                ));
+                            }
+                        } else {
+                            uart_write_string("Warning: file_count > 0 but list_files() returned empty (corruption?)\r\n");
                         }
-                    }
+                    } else {
+                        // Fresh filesystem - run initialization tests
+                        uart_write_string("\n--- Testing File Operations ---\r\n");
+                        let is_empty = files.is_empty();
+                        if is_empty {
+                            uart_write_string("✓ File list is empty (as expected on fresh format)\r\n");
+                        }
 
-                    // Test file operations
-                    uart_write_string("\n--- Testing File Operations ---\r\n");
+                        // Create some test files only if this is a fresh filesystem
+                        if is_empty {
+                        uart_write_string("\nCreating test files...\r\n");
+                        match fs.create_file(&mut blk_devices[fs_device_idx], "hello", 100) {
+                            Ok(()) => uart_write_string("✓ Created 'hello' (100 bytes)\r\n"),
+                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                        }
 
-                    // Create some test files
-                    uart_write_string("\nCreating test files...\r\n");
-                    match fs.create_file(&mut blk_devices[0], "hello", 100) {
-                        Ok(()) => uart_write_string("✓ Created 'hello' (100 bytes)\r\n"),
-                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                    }
+                        match fs.create_file(&mut blk_devices[fs_device_idx], "test", 2048) {
+                            Ok(()) => uart_write_string("✓ Created 'test' (2048 bytes)\r\n"),
+                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                        }
 
-                    match fs.create_file(&mut blk_devices[0], "test", 2048) {
-                        Ok(()) => uart_write_string("✓ Created 'test' (2048 bytes)\r\n"),
-                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                    }
-
-                    match fs.create_file(&mut blk_devices[0], "data", 512) {
-                        Ok(()) => uart_write_string("✓ Created 'data' (512 bytes)\r\n"),
-                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                        match fs.create_file(&mut blk_devices[fs_device_idx], "data", 512) {
+                            Ok(()) => uart_write_string("✓ Created 'data' (512 bytes)\r\n"),
+                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                        }
                     }
 
                     // List files
@@ -486,54 +530,56 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                         ));
                     }
 
-                    // Test duplicate file creation (should fail)
-                    uart_write_string("\nTrying to create duplicate file...\r\n");
-                    match fs.create_file(&mut blk_devices[0], "hello", 50) {
-                        Ok(()) => uart_write_string("✗ Should have failed!\r\n"),
-                        Err(e) => uart_write_string(&alloc::format!("✓ Correctly rejected: {}\r\n", e)),
-                    }
+                    // Only run detailed tests on fresh filesystem
+                    if files.len() == 3 {
+                        // Test duplicate file creation (should fail)
+                        uart_write_string("\nTrying to create duplicate file...\r\n");
+                        match fs.create_file(&mut blk_devices[fs_device_idx], "hello", 50) {
+                            Ok(()) => uart_write_string("✗ Should have failed!\r\n"),
+                            Err(e) => uart_write_string(&alloc::format!("✓ Correctly rejected: {}\r\n", e)),
+                        }
 
-                    // Delete a file
-                    uart_write_string("\nDeleting 'test' file...\r\n");
-                    match fs.delete_file(&mut blk_devices[0], "test") {
-                        Ok(()) => uart_write_string("✓ File deleted\r\n"),
-                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                    }
+                        // Delete a file
+                        uart_write_string("\nDeleting 'test' file...\r\n");
+                        match fs.delete_file(&mut blk_devices[fs_device_idx], "test") {
+                            Ok(()) => uart_write_string("✓ File deleted\r\n"),
+                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                        }
 
-                    // List files again
-                    uart_write_string("\nListing files after deletion...\r\n");
-                    let files = fs.list_files();
-                    uart_write_string(&alloc::format!("✓ Found {} file(s):\r\n", files.len()));
-                    for file in &files {
-                        uart_write_string(&alloc::format!(
-                            "  - '{}': {} bytes\r\n",
-                            file.get_name(),
-                            file.get_size_bytes()
-                        ));
-                    }
+                        // List files again
+                        uart_write_string("\nListing files after deletion...\r\n");
+                        let files = fs.list_files();
+                        uart_write_string(&alloc::format!("✓ Found {} file(s):\r\n", files.len()));
+                        for file in &files {
+                            uart_write_string(&alloc::format!(
+                                "  - '{}': {} bytes\r\n",
+                                file.get_name(),
+                                file.get_size_bytes()
+                            ));
+                        }
 
-                    // Try to delete non-existent file
-                    uart_write_string("\nTrying to delete non-existent file...\r\n");
-                    match fs.delete_file(&mut blk_devices[0], "missing") {
-                        Ok(()) => uart_write_string("✗ Should have failed!\r\n"),
-                        Err(e) => uart_write_string(&alloc::format!("✓ Correctly rejected: {}\r\n", e)),
-                    }
+                        // Try to delete non-existent file
+                        uart_write_string("\nTrying to delete non-existent file...\r\n");
+                        match fs.delete_file(&mut blk_devices[fs_device_idx], "missing") {
+                            Ok(()) => uart_write_string("✗ Should have failed!\r\n"),
+                            Err(e) => uart_write_string(&alloc::format!("✓ Correctly rejected: {}\r\n", e)),
+                        }
 
-                    // Test file read/write
-                    uart_write_string("\n--- Testing File Read/Write ---\r\n");
+                        // Test file read/write
+                        uart_write_string("\n--- Testing File Read/Write ---\r\n");
 
-                    // Write data to 'hello' file
-                    uart_write_string("\nWriting data to 'hello' file...\r\n");
-                    let test_data = b"Hello, World! This is a test message.";
-                    match fs.write_file(&mut blk_devices[0], "hello", test_data) {
-                        Ok(()) => uart_write_string(&alloc::format!("✓ Wrote {} bytes\r\n", test_data.len())),
-                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                    }
+                        // Write data to 'hello' file
+                        uart_write_string("\nWriting data to 'hello' file...\r\n");
+                        let test_data = b"Hello, World! This is a test message.";
+                        match fs.write_file(&mut blk_devices[fs_device_idx], "hello", test_data) {
+                            Ok(()) => uart_write_string(&alloc::format!("✓ Wrote {} bytes\r\n", test_data.len())),
+                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                        }
 
-                    // Read data back from 'hello' file
-                    uart_write_string("\nReading data from 'hello' file...\r\n");
-                    let mut read_buffer = [0u8; 100];
-                    match fs.read_file(&mut blk_devices[0], "hello", &mut read_buffer) {
+                        // Read data back from 'hello' file
+                        uart_write_string("\nReading data from 'hello' file...\r\n");
+                        let mut read_buffer = [0u8; 100];
+                        match fs.read_file(&mut blk_devices[fs_device_idx], "hello", &mut read_buffer) {
                         Ok(bytes_read) => {
                             uart_write_string(&alloc::format!("✓ Read {} bytes\r\n", bytes_read));
 
@@ -551,21 +597,21 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                         Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
                     }
 
-                    // Write to 'data' file (multiple sectors)
-                    uart_write_string("\nWriting 400 bytes to 'data' file...\r\n");
-                    let mut big_data = [0u8; 400];
-                    for i in 0..400 {
-                        big_data[i] = (i % 256) as u8;
-                    }
-                    match fs.write_file(&mut blk_devices[0], "data", &big_data) {
-                        Ok(()) => uart_write_string("✓ Wrote 400 bytes\r\n"),
-                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                    }
+                        // Write to 'data' file (multiple sectors)
+                        uart_write_string("\nWriting 400 bytes to 'data' file...\r\n");
+                        let mut big_data = [0u8; 400];
+                        for i in 0..400 {
+                            big_data[i] = (i % 256) as u8;
+                        }
+                        match fs.write_file(&mut blk_devices[fs_device_idx], "data", &big_data) {
+                            Ok(()) => uart_write_string("✓ Wrote 400 bytes\r\n"),
+                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
+                        }
 
-                    // Read it back
-                    uart_write_string("\nReading 400 bytes from 'data' file...\r\n");
-                    let mut big_read_buffer = [0u8; 512];
-                    match fs.read_file(&mut blk_devices[0], "data", &mut big_read_buffer) {
+                        // Read it back
+                        uart_write_string("\nReading 400 bytes from 'data' file...\r\n");
+                        let mut big_read_buffer = [0u8; 512];
+                        match fs.read_file(&mut blk_devices[fs_device_idx], "data", &mut big_read_buffer) {
                         Ok(bytes_read) => {
                             uart_write_string(&alloc::format!("✓ Read {} bytes\r\n", bytes_read));
 
@@ -587,18 +633,20 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                             } else {
                                 uart_write_string("✗ Data verification FAILED!\r\n");
                             }
+                            }
+                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
                         }
-                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                    }
+                        } // End of is_empty check
+                    } // End of fresh filesystem tests / else block for file_count check
 
                     // Initialize shell with filesystem and device
                     uart_write_string("\n=== Initializing Shell ===\r\n");
 
-                    // Create shell and give it the filesystem
+                    // Create shell and give it the filesystem (pass device index)
                     unsafe {
                         usb_hid::SHELL = Some(shell::Shell::new());
                         if let Some(ref mut shell) = usb_hid::SHELL {
-                            shell.set_filesystem(fs, &mut blk_devices[0]);
+                            shell.set_filesystem(fs, fs_device_idx);
                         }
                     }
 

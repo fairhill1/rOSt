@@ -12,7 +12,7 @@ pub struct Shell {
     command_buffer: [u8; MAX_COMMAND_LEN],
     cursor_pos: usize,
     filesystem: Option<SimpleFilesystem>,
-    block_device: Option<*mut VirtioBlkDevice>,
+    device_index: Option<usize>,
 }
 
 impl Shell {
@@ -21,13 +21,13 @@ impl Shell {
             command_buffer: [0; MAX_COMMAND_LEN],
             cursor_pos: 0,
             filesystem: None,
-            block_device: None,
+            device_index: None,
         }
     }
 
-    pub fn set_filesystem(&mut self, fs: SimpleFilesystem, device: *mut VirtioBlkDevice) {
+    pub fn set_filesystem(&mut self, fs: SimpleFilesystem, device_idx: usize) {
         self.filesystem = Some(fs);
-        self.block_device = Some(device);
+        self.device_index = Some(device_idx);
     }
 
     pub fn show_prompt(&self) {
@@ -137,31 +137,40 @@ impl Shell {
             return;
         }
 
-        if let (Some(ref fs), Some(device_ptr)) = (&self.filesystem, self.block_device) {
-            let device = unsafe { &mut *device_ptr };
-            let filename = parts[1];
+        if let (Some(ref fs), Some(idx)) = (&self.filesystem, self.device_index) {
+            unsafe {
+                if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                    if let Some(device) = devices.get_mut(idx) {
+                        let filename = parts[1];
 
-            // Get file size
-            let files = fs.list_files();
-            let file = files.iter().find(|f| f.get_name() == filename);
+                        // Get file size
+                        let files = fs.list_files();
+                        let file = files.iter().find(|f| f.get_name() == filename);
 
-            if let Some(file) = file {
-                let size = file.get_size_bytes() as usize;
-                let mut buffer = alloc::vec![0u8; size];
+                        if let Some(file) = file {
+                            let size = file.get_size_bytes() as usize;
+                            let mut buffer = alloc::vec![0u8; size];
 
-                match fs.read_file(device, filename, &mut buffer) {
-                    Ok(bytes_read) => {
-                        if let Ok(text) = core::str::from_utf8(&buffer[..bytes_read]) {
-                            uart_write_string(text);
-                            uart_write_string("\r\n");
+                            match fs.read_file(device, filename, &mut buffer) {
+                                Ok(bytes_read) => {
+                                    if let Ok(text) = core::str::from_utf8(&buffer[..bytes_read]) {
+                                        uart_write_string(text);
+                                        uart_write_string("\r\n");
+                                    } else {
+                                        uart_write_string("(binary file)\r\n");
+                                    }
+                                }
+                                Err(e) => uart_write_string(&alloc::format!("Error: {}\r\n", e)),
+                            }
                         } else {
-                            uart_write_string("(binary file)\r\n");
+                            uart_write_string("File not found\r\n");
                         }
+                    } else {
+                        uart_write_string("Block device not available\r\n");
                     }
-                    Err(e) => uart_write_string(&alloc::format!("Error: {}\r\n", e)),
+                } else {
+                    uart_write_string("Block devices not initialized\r\n");
                 }
-            } else {
-                uart_write_string("File not found\r\n");
             }
         } else {
             uart_write_string("Filesystem not mounted\r\n");
@@ -174,19 +183,28 @@ impl Shell {
             return;
         }
 
-        if let (Some(ref mut fs), Some(device_ptr)) = (&mut self.filesystem, self.block_device) {
-            let device = unsafe { &mut *device_ptr };
-            let filename = parts[1];
+        if let (Some(ref mut fs), Some(idx)) = (&mut self.filesystem, self.device_index) {
+            unsafe {
+                if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                    if let Some(device) = devices.get_mut(idx) {
+                        let filename = parts[1];
 
-            if let Ok(size) = parts[2].parse::<u32>() {
-                match fs.create_file(device, filename, size) {
-                    Ok(()) => uart_write_string(&alloc::format!(
-                        "Created '{}' ({} bytes)\r\n", filename, size
-                    )),
-                    Err(e) => uart_write_string(&alloc::format!("Error: {}\r\n", e)),
+                        if let Ok(size) = parts[2].parse::<u32>() {
+                            match fs.create_file(device, filename, size) {
+                                Ok(()) => uart_write_string(&alloc::format!(
+                                    "Created '{}' ({} bytes)\r\n", filename, size
+                                )),
+                                Err(e) => uart_write_string(&alloc::format!("Error: {}\r\n", e)),
+                            }
+                        } else {
+                            uart_write_string("Invalid size\r\n");
+                        }
+                    } else {
+                        uart_write_string("Block device not available\r\n");
+                    }
+                } else {
+                    uart_write_string("Block devices not initialized\r\n");
                 }
-            } else {
-                uart_write_string("Invalid size\r\n");
             }
         } else {
             uart_write_string("Filesystem not mounted\r\n");
@@ -199,13 +217,22 @@ impl Shell {
             return;
         }
 
-        if let (Some(ref mut fs), Some(device_ptr)) = (&mut self.filesystem, self.block_device) {
-            let device = unsafe { &mut *device_ptr };
-            let filename = parts[1];
+        if let (Some(ref mut fs), Some(idx)) = (&mut self.filesystem, self.device_index) {
+            unsafe {
+                if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                    if let Some(device) = devices.get_mut(idx) {
+                        let filename = parts[1];
 
-            match fs.delete_file(device, filename) {
-                Ok(()) => uart_write_string(&alloc::format!("Deleted '{}'\r\n", filename)),
-                Err(e) => uart_write_string(&alloc::format!("Error: {}\r\n", e)),
+                        match fs.delete_file(device, filename) {
+                            Ok(()) => uart_write_string(&alloc::format!("Deleted '{}'\r\n", filename)),
+                            Err(e) => uart_write_string(&alloc::format!("Error: {}\r\n", e)),
+                        }
+                    } else {
+                        uart_write_string("Block device not available\r\n");
+                    }
+                } else {
+                    uart_write_string("Block devices not initialized\r\n");
+                }
             }
         } else {
             uart_write_string("Filesystem not mounted\r\n");
@@ -218,16 +245,25 @@ impl Shell {
             return;
         }
 
-        if let (Some(ref mut fs), Some(device_ptr)) = (&mut self.filesystem, self.block_device) {
-            let device = unsafe { &mut *device_ptr };
-            let filename = parts[1];
-            let text = parts[2..].join(" ");
+        if let (Some(ref mut fs), Some(idx)) = (&mut self.filesystem, self.device_index) {
+            unsafe {
+                if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                    if let Some(device) = devices.get_mut(idx) {
+                        let filename = parts[1];
+                        let text = parts[2..].join(" ");
 
-            match fs.write_file(device, filename, text.as_bytes()) {
-                Ok(()) => uart_write_string(&alloc::format!(
-                    "Wrote {} bytes to '{}'\r\n", text.len(), filename
-                )),
-                Err(e) => uart_write_string(&alloc::format!("Error: {}\r\n", e)),
+                        match fs.write_file(device, filename, text.as_bytes()) {
+                            Ok(()) => uart_write_string(&alloc::format!(
+                                "Wrote {} bytes to '{}'\r\n", text.len(), filename
+                            )),
+                            Err(e) => uart_write_string(&alloc::format!("Error: {}\r\n", e)),
+                        }
+                    } else {
+                        uart_write_string("Block device not available\r\n");
+                    }
+                } else {
+                    uart_write_string("Block devices not initialized\r\n");
+                }
             }
         } else {
             uart_write_string("Filesystem not mounted\r\n");

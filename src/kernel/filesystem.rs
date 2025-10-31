@@ -12,9 +12,10 @@ extern crate alloc;
 
 const FS_MAGIC: u32 = 0x524F5354; // "ROST" in ASCII
 const FS_VERSION: u32 = 1;
-const DATA_START_SECTOR: u64 = 10;
+const DATA_START_SECTOR: u64 = 11; // Moved to 11 to make room for 2-sector file table
 const MAX_FILES: usize = 32;
 const SECTOR_SIZE: usize = 512;
+const FILE_TABLE_SECTORS: u64 = 2; // File table spans sectors 1-2 (640 bytes needs 2 sectors)
 
 /// Filesystem superblock (stored in sector 0)
 #[repr(C, packed)]
@@ -118,20 +119,28 @@ impl SimpleFilesystem {
             reserved: [0; 3],
         };
 
-        // Write file table to sector 1
-        sector_buffer = [0u8; SECTOR_SIZE];
-        for i in 0..MAX_FILES {
-            let offset = i * core::mem::size_of::<FileEntry>();
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    &empty_entry as *const FileEntry as *const u8,
-                    sector_buffer.as_mut_ptr().add(offset),
-                    core::mem::size_of::<FileEntry>(),
-                );
+        // Write file table to sectors 1-2 (640 bytes total across 2 sectors)
+        let entry_size = core::mem::size_of::<FileEntry>();
+        let entries_per_sector = SECTOR_SIZE / entry_size; // 512 / 20 = 25
+
+        for sector in 0..FILE_TABLE_SECTORS {
+            sector_buffer = [0u8; SECTOR_SIZE];
+            let start_entry = (sector * entries_per_sector as u64) as usize;
+            let end_entry = core::cmp::min(start_entry + entries_per_sector, MAX_FILES);
+
+            for i in start_entry..end_entry {
+                let offset = (i - start_entry) * entry_size;
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        &empty_entry as *const FileEntry as *const u8,
+                        sector_buffer.as_mut_ptr().add(offset),
+                        entry_size,
+                    );
+                }
             }
+            device.write_sector(1 + sector, &sector_buffer)?;
         }
-        device.write_sector(1, &sector_buffer)?;
-        crate::kernel::uart_write_string("File table initialized at sector 1\r\n");
+        crate::kernel::uart_write_string("File table initialized at sectors 1-2\r\n");
 
         crate::kernel::uart_write_string("Format complete!\r\n");
         Ok(())
@@ -170,9 +179,7 @@ impl SimpleFilesystem {
 
         crate::kernel::uart_write_string("Superblock validated\r\n");
 
-        // Read file table from sector 1
-        device.read_sector(1, &mut sector_buffer)?;
-
+        // Read file table from sectors 1-2
         let mut file_table = [FileEntry {
             name: [0; 8],
             start_sector: 0,
@@ -182,14 +189,23 @@ impl SimpleFilesystem {
             reserved: [0; 3],
         }; MAX_FILES];
 
-        for i in 0..MAX_FILES {
-            let offset = i * core::mem::size_of::<FileEntry>();
-            file_table[i] = unsafe {
-                ptr::read_unaligned(sector_buffer.as_ptr().add(offset) as *const FileEntry)
-            };
+        let entry_size = core::mem::size_of::<FileEntry>();
+        let entries_per_sector = SECTOR_SIZE / entry_size; // 25 entries per sector
+
+        for sector in 0..FILE_TABLE_SECTORS {
+            device.read_sector(1 + sector, &mut sector_buffer)?;
+            let start_entry = (sector * entries_per_sector as u64) as usize;
+            let end_entry = core::cmp::min(start_entry + entries_per_sector, MAX_FILES);
+
+            for i in start_entry..end_entry {
+                let offset = (i - start_entry) * entry_size;
+                file_table[i] = unsafe {
+                    ptr::read_unaligned(sector_buffer.as_ptr().add(offset) as *const FileEntry)
+                };
+            }
         }
 
-        crate::kernel::uart_write_string("File table loaded\r\n");
+        crate::kernel::uart_write_string("File table loaded from sectors 1-2\r\n");
 
         // Calculate next free sector
         let mut next_free_sector = DATA_START_SECTOR;
@@ -309,19 +325,27 @@ impl SimpleFilesystem {
         }
         device.write_sector(0, unsafe { &CREATE_BUFFER })?;
 
-        // Write updated file table to disk
-        unsafe {
-            CREATE_BUFFER.fill(0);
-            for (i, entry) in self.file_table.iter().enumerate() {
-                let offset = i * core::mem::size_of::<FileEntry>();
-                ptr::copy_nonoverlapping(
-                    entry as *const FileEntry as *const u8,
-                    CREATE_BUFFER.as_mut_ptr().add(offset),
-                    core::mem::size_of::<FileEntry>(),
-                );
+        // Write updated file table to disk (sectors 1-2)
+        let entry_size = core::mem::size_of::<FileEntry>();
+        let entries_per_sector = SECTOR_SIZE / entry_size;
+
+        for sector in 0..FILE_TABLE_SECTORS {
+            unsafe {
+                CREATE_BUFFER.fill(0);
+                let start_entry = (sector * entries_per_sector as u64) as usize;
+                let end_entry = core::cmp::min(start_entry + entries_per_sector, MAX_FILES);
+
+                for i in start_entry..end_entry {
+                    let offset = (i - start_entry) * entry_size;
+                    ptr::copy_nonoverlapping(
+                        &self.file_table[i] as *const FileEntry as *const u8,
+                        CREATE_BUFFER.as_mut_ptr().add(offset),
+                        entry_size,
+                    );
+                }
             }
+            device.write_sector(1 + sector, unsafe { &CREATE_BUFFER })?;
         }
-        device.write_sector(1, unsafe { &CREATE_BUFFER })?;
 
         Ok(())
     }
@@ -374,20 +398,28 @@ impl SimpleFilesystem {
             return Err(e);
         }
 
-        // Write updated file table to disk
-        unsafe {
-            TEMP_BUFFER.fill(0);
-            for (i, entry) in self.file_table.iter().enumerate() {
-                let offset = i * core::mem::size_of::<FileEntry>();
-                ptr::copy_nonoverlapping(
-                    entry as *const FileEntry as *const u8,
-                    TEMP_BUFFER.as_mut_ptr().add(offset),
-                    core::mem::size_of::<FileEntry>(),
-                );
+        // Write updated file table to disk (sectors 1-2)
+        let entry_size = core::mem::size_of::<FileEntry>();
+        let entries_per_sector = SECTOR_SIZE / entry_size;
+
+        for sector in 0..FILE_TABLE_SECTORS {
+            unsafe {
+                TEMP_BUFFER.fill(0);
+                let start_entry = (sector * entries_per_sector as u64) as usize;
+                let end_entry = core::cmp::min(start_entry + entries_per_sector, MAX_FILES);
+
+                for i in start_entry..end_entry {
+                    let offset = (i - start_entry) * entry_size;
+                    ptr::copy_nonoverlapping(
+                        &self.file_table[i] as *const FileEntry as *const u8,
+                        TEMP_BUFFER.as_mut_ptr().add(offset),
+                        entry_size,
+                    );
+                }
             }
-        }
-        if let Err(e) = device.write_sector(1, unsafe { &TEMP_BUFFER }) {
-            return Err(e);
+            if let Err(e) = device.write_sector(1 + sector, unsafe { &TEMP_BUFFER }) {
+                return Err(e);
+            }
         }
 
         Ok(())
