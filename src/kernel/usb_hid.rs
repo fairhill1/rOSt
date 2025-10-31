@@ -434,6 +434,24 @@ pub fn test_input_events() -> (bool, bool) {
                                 save_editor_file(editor);
                             }
                             needs_full_redraw = true;
+                        } else if is_ctrl && key == 46 { // KEY_C = 46 in evdev (Ctrl+C)
+                            // Handle copy
+                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                editor.copy();
+                            }
+                            needs_full_redraw = true;
+                        } else if is_ctrl && key == 45 { // KEY_X = 45 in evdev (Ctrl+X)
+                            // Handle cut
+                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                editor.cut();
+                            }
+                            needs_full_redraw = true;
+                        } else if is_ctrl && key == 47 { // KEY_V = 47 in evdev (Ctrl+V)
+                            // Handle paste
+                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                editor.paste();
+                            }
+                            needs_full_redraw = true;
                         } else {
                             // Arrow keys for editor navigation (Linux evdev codes)
                             match key {
