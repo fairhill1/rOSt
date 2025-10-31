@@ -280,15 +280,6 @@ impl TextEditor {
                 }
             }
         }
-
-        // Draw status bar at bottom
-        let status_y = offset_y + (EDITOR_HEIGHT as i32 * LINE_HEIGHT as i32) + 8;
-        let status_text = if self.modified {
-            alloc::format!("[MODIFIED] {}", self.status)
-        } else {
-            self.status.clone()
-        };
-        framebuffer::draw_string(offset_x as u32, status_y as u32, &status_text, COLOR_STATUS);
     }
 }
 

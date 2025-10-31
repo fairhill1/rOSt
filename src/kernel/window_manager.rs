@@ -243,27 +243,41 @@ impl WindowManager {
             }
         }
 
-        // Draw menu items with borders and backgrounds
-        let mut current_x = MENU_START_X;
-        for item in MENU_ITEMS.iter() {
-            let item_width = Self::calculate_menu_item_width(item.label);
-            let item_y = MENU_START_Y;
+        // Check if we're prompting for a filename
+        if crate::kernel::usb_hid::is_prompting_filename() {
+            // Show filename prompt instead of menu items
+            if let Some(filename) = crate::kernel::usb_hid::get_filename_prompt() {
+                let prompt_text = alloc::format!("Enter filename: {}_", filename);
+                framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &prompt_text, COLOR_TEXT);
+            } else {
+                framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, "Enter filename: _", COLOR_TEXT);
+            }
+        } else if let Some(status_msg) = crate::kernel::usb_hid::get_menu_status() {
+            // Show status message instead of menu items
+            framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &status_msg, COLOR_TEXT);
+        } else {
+            // Draw menu items with borders and backgrounds
+            let mut current_x = MENU_START_X;
+            for item in MENU_ITEMS.iter() {
+                let item_width = Self::calculate_menu_item_width(item.label);
+                let item_y = MENU_START_Y;
 
-            // Draw menu item border
-            self.draw_menu_rect(current_x, item_y, item_width, MENU_ITEM_HEIGHT, COLOR_MENU_ITEM_BORDER);
+                // Draw menu item border
+                self.draw_menu_rect(current_x, item_y, item_width, MENU_ITEM_HEIGHT, COLOR_MENU_ITEM_BORDER);
 
-            // Draw menu item background (inset by 1 pixel for border)
-            self.draw_menu_rect(current_x + 1, item_y + 1,
-                               item_width - 2, MENU_ITEM_HEIGHT - 2,
-                               COLOR_MENU_ITEM);
+                // Draw menu item background (inset by 1 pixel for border)
+                self.draw_menu_rect(current_x + 1, item_y + 1,
+                                   item_width - 2, MENU_ITEM_HEIGHT - 2,
+                                   COLOR_MENU_ITEM);
 
-            // Draw menu item text (centered with padding)
-            let text_x = current_x + MENU_ITEM_PADDING_X;
-            let text_y = item_y + 4;
-            framebuffer::draw_string(text_x, text_y, item.label, COLOR_TEXT);
+                // Draw menu item text (centered with padding)
+                let text_x = current_x + MENU_ITEM_PADDING_X;
+                let text_y = item_y + 4;
+                framebuffer::draw_string(text_x, text_y, item.label, COLOR_TEXT);
 
-            // Move to next position
-            current_x += item_width + MENU_ITEM_SPACING;
+                // Move to next position
+                current_x += item_width + MENU_ITEM_SPACING;
+            }
         }
     }
 
