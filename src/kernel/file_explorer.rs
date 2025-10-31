@@ -82,9 +82,28 @@ impl FileExplorer {
         explorer
     }
 
-    /// Refresh file list from filesystem
+    /// Refresh file list from filesystem (remounts to get latest changes from disk)
     pub fn refresh_files(&mut self) {
         self.files.clear();
+
+        // Remount filesystem from disk to get latest changes (e.g., from terminal)
+        if let Some(device_idx) = self.device_index {
+            unsafe {
+                if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                    if let Some(device) = devices.get_mut(device_idx) {
+                        match SimpleFilesystem::mount(device) {
+                            Ok(fs) => {
+                                // Update with fresh filesystem from disk
+                                self.filesystem = Some(fs);
+                            }
+                            Err(_) => {
+                                // Keep existing filesystem if remount fails
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Get filesystem instance
         if let Some(ref fs) = self.filesystem {
@@ -594,6 +613,15 @@ pub fn select_file_by_name(id: usize, filename: &str) {
                 }
                 break;
             }
+        }
+    }
+}
+
+/// Refresh all open file explorers (called when filesystem changes from terminal)
+pub fn refresh_all_explorers() {
+    unsafe {
+        for explorer in FILE_EXPLORERS.iter_mut() {
+            explorer.refresh_files();
         }
     }
 }
