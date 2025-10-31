@@ -319,6 +319,14 @@ impl WindowManager {
             }
         }
 
+        // Draw time in top right corner
+        let datetime = crate::kernel::rtc::get_datetime();
+        let time_str = datetime.format_time();
+        let time_width = time_str.len() as u32 * CHAR_WIDTH;
+        let time_x = self.screen_width.saturating_sub(time_width + 8); // 8px padding from right edge
+        let time_y = MENU_START_Y + 4;
+        framebuffer::draw_string(time_x, time_y, &time_str, COLOR_TEXT);
+
         // Check if we're prompting for a filename
         if crate::kernel::usb_hid::is_prompting_filename() {
             // Show filename prompt instead of menu items
