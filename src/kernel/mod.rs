@@ -672,8 +672,8 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 window_manager::render();
 
                 // Render console INSIDE the terminal window (not over everything)
-                if let Some((cx, cy, _cw, _ch)) = window_manager::get_terminal_content_bounds() {
-                    console::render_at(cx, cy);
+                if let Some((cx, cy, cw, ch)) = window_manager::get_terminal_content_bounds() {
+                    console::render_at(cx, cy, cw, ch);
                 }
 
                 // Render editor INSIDE the editor window
