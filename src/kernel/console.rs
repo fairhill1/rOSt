@@ -50,15 +50,13 @@ impl Console {
             }
             8 | 127 => {
                 // Backspace - move back and clear character
+                // Only delete if we're not at the beginning of the line
+                // (Don't delete previous lines' content!)
                 if self.cursor_x > 0 {
                     self.cursor_x -= 1;
                     self.buffer[self.cursor_y][self.cursor_x] = b' ';
-                } else if self.cursor_y > 0 {
-                    // Move to end of previous line
-                    self.cursor_y -= 1;
-                    self.cursor_x = CONSOLE_WIDTH - 1;
-                    self.buffer[self.cursor_y][self.cursor_x] = b' ';
                 }
+                // If at beginning of line, do nothing - don't corrupt previous output
             }
             _ => {
                 // Regular character
@@ -102,28 +100,30 @@ impl Console {
         self.dirty = true;
     }
 
-    /// Render the console to the framebuffer
-    pub fn render(&mut self) {
-        if !self.dirty {
-            return;
-        }
+    /// Render the console to the framebuffer at a specific offset (for window rendering)
+    /// Note: Always renders, ignoring dirty flag, because caller controls when to redraw
+    pub fn render_at(&mut self, offset_x: i32, offset_y: i32) {
+        // Always render when called - the caller (main loop) decides when to redraw
+        // The dirty flag is only used for the legacy render() function
 
         // Don't clear screen - the window manager handles that now
 
-        // Draw all characters
+        // Draw all characters with offset
         for y in 0..CONSOLE_HEIGHT {
             for x in 0..CONSOLE_WIDTH {
                 let ch = self.buffer[y][x];
                 if ch != b' ' {
                     // Draw character directly instead of using draw_string
-                    let char_x = (x as u32) * CHAR_WIDTH;
-                    let char_y = (y as u32) * LINE_HEIGHT; // Use LINE_HEIGHT for spacing
+                    let char_x = offset_x + ((x as i32) * CHAR_WIDTH as i32);
+                    let char_y = offset_y + ((y as i32) * LINE_HEIGHT as i32);
 
-                    // Use a temporary buffer to create a string from the char
-                    let mut buf = [0u8; 1];
-                    buf[0] = ch;
-                    if let Ok(s) = core::str::from_utf8(&buf) {
-                        framebuffer::draw_string(char_x, char_y, s, self.fg_color);
+                    if char_x >= 0 && char_y >= 0 {
+                        // Use a temporary buffer to create a string from the char
+                        let mut buf = [0u8; 1];
+                        buf[0] = ch;
+                        if let Ok(s) = core::str::from_utf8(&buf) {
+                            framebuffer::draw_string(char_x as u32, char_y as u32, s, self.fg_color);
+                        }
                     }
                 }
             }
@@ -131,15 +131,28 @@ impl Console {
 
         // Draw cursor (blinking underscore)
         if self.cursor_x < CONSOLE_WIDTH && self.cursor_y < CONSOLE_HEIGHT {
-            framebuffer::draw_string(
-                (self.cursor_x as u32) * CHAR_WIDTH,
-                (self.cursor_y as u32) * LINE_HEIGHT, // Use LINE_HEIGHT for spacing
-                "_",
-                self.fg_color,
-            );
+            let cursor_x = offset_x + ((self.cursor_x as i32) * CHAR_WIDTH as i32);
+            let cursor_y = offset_y + ((self.cursor_y as i32) * LINE_HEIGHT as i32);
+
+            if cursor_x >= 0 && cursor_y >= 0 {
+                framebuffer::draw_string(
+                    cursor_x as u32,
+                    cursor_y as u32,
+                    "_",
+                    self.fg_color,
+                );
+            }
         }
 
         self.dirty = false;
+    }
+
+    /// Render the console to the framebuffer (legacy interface for compatibility)
+    pub fn render(&mut self) {
+        // Only render if dirty (optimization for legacy code path)
+        if self.dirty {
+            self.render_at(0, 0);
+        }
     }
 
     /// Mark as dirty to force a redraw
@@ -187,6 +200,15 @@ pub fn render() {
     unsafe {
         if let Some(ref mut console) = CONSOLE {
             console.render();
+        }
+    }
+}
+
+/// Render the console at a specific offset (for window rendering)
+pub fn render_at(offset_x: i32, offset_y: i32) {
+    unsafe {
+        if let Some(ref mut console) = CONSOLE {
+            console.render_at(offset_x, offset_y);
         }
     }
 }

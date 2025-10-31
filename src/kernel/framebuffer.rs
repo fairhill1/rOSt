@@ -463,3 +463,10 @@ pub fn set_cursor_pos(x: i32, y: i32) {
         }
     }
 }
+
+/// Get screen dimensions
+pub fn get_screen_dimensions() -> (u32, u32) {
+    unsafe {
+        (SCREEN_WIDTH, SCREEN_HEIGHT)
+    }
+}

@@ -400,13 +400,15 @@ pub fn test_input_events() -> (bool, bool) {
             InputEvent::KeyPressed { key, modifiers } => {
                 // VirtIO keyboard uses Linux evdev codes
                 if let Some(ascii) = evdev_to_ascii(key, modifiers) {
-                    // Pass to shell if it exists
-                    unsafe {
-                        if let Some(ref mut shell) = SHELL {
-                            shell.handle_char(ascii);
+                    // Only pass to shell if terminal window is focused
+                    if crate::kernel::window_manager::has_focused_terminal() {
+                        unsafe {
+                            if let Some(ref mut shell) = SHELL {
+                                shell.handle_char(ascii);
+                            }
                         }
+                        needs_full_redraw = true; // Keyboard input requires full redraw
                     }
-                    needs_full_redraw = true; // Keyboard input requires full redraw
                 }
             }
             InputEvent::KeyReleased { key: _, modifiers: _ } => {
@@ -415,28 +417,14 @@ pub fn test_input_events() -> (bool, bool) {
             InputEvent::MouseMove { x_delta, y_delta } => {
                 // Move the cursor on screen
                 crate::kernel::framebuffer::move_cursor(x_delta, y_delta);
-
-                // Get cursor position for window dragging
-                let (cx, cy) = crate::kernel::framebuffer::get_cursor_pos();
-                let window_moved = crate::kernel::window_manager::handle_mouse_move(cx, cy);
-
-                // Only full redraw if a window was dragged, otherwise just cursor
-                if window_moved {
-                    needs_full_redraw = true;
-                } else {
-                    needs_cursor_redraw = true;
-                }
+                // Just update cursor, no window dragging in tiling mode
+                needs_cursor_redraw = true;
             }
             InputEvent::MouseButton { button, pressed } => {
-                if button == 0 { // Left mouse button
+                if button == 0 && pressed { // Left mouse button press
                     let (cx, cy) = crate::kernel::framebuffer::get_cursor_pos();
-                    if pressed {
-                        // Mouse button pressed - check for window clicks
-                        crate::kernel::window_manager::handle_mouse_click(cx, cy);
-                    } else {
-                        // Mouse button released - stop dragging
-                        crate::kernel::window_manager::handle_mouse_release();
-                    }
+                    // Check for window clicks (menu bar, close button, focus)
+                    crate::kernel::window_manager::handle_mouse_click(cx, cy);
                     needs_full_redraw = true; // Clicks trigger a full redraw
                 }
             }
