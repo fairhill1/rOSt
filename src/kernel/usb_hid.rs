@@ -551,6 +551,70 @@ pub fn test_input_events() -> (bool, bool) {
                         }
                         needs_full_redraw = true; // Keyboard input requires full redraw
                     }
+                } else if let Some(explorer_id) = crate::kernel::window_manager::get_focused_file_explorer_id() {
+                    // File explorer keyboard navigation
+                    match key {
+                        103 => { // KEY_UP
+                            crate::kernel::file_explorer::move_selection_up(explorer_id);
+                            needs_full_redraw = true;
+                        }
+                        108 => { // KEY_DOWN
+                            crate::kernel::file_explorer::move_selection_down(explorer_id);
+                            needs_full_redraw = true;
+                        }
+                        28 => { // KEY_ENTER
+                            use crate::kernel::file_explorer::FileExplorerAction;
+                            let action = crate::kernel::file_explorer::open_selected(explorer_id);
+
+                            match action {
+                                FileExplorerAction::OpenFile(filename) => {
+                                    // Open file in a new editor window
+                                    if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(explorer_id) {
+                                        if let (Some(ref fs), Some(device_idx)) = (&explorer.filesystem, explorer.device_index) {
+                                            // Get file info by listing all files
+                                            let file_list = fs.list_files();
+                                            let file_entry = file_list.iter().find(|e| e.get_name() == filename);
+
+                                            if let Some(file) = file_entry {
+                                                let size = file.get_size_bytes() as usize;
+                                                let mut buffer = alloc::vec![0u8; size];
+
+                                                unsafe {
+                                                    if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                                                        if let Some(device) = devices.get_mut(device_idx) {
+                                                            if let Ok(bytes_read) = fs.read_file(device, &filename, &mut buffer) {
+                                                                // Find the actual content length
+                                                                let actual_len = buffer[..bytes_read].iter()
+                                                                    .position(|&b| b == 0)
+                                                                    .unwrap_or(bytes_read);
+
+                                                                if let Ok(text) = core::str::from_utf8(&buffer[..actual_len]) {
+                                                                    let editor_id = crate::kernel::editor::create_editor_with_content(
+                                                                        &filename,
+                                                                        text
+                                                                    );
+                                                                    let title = alloc::format!("Editor - {}", filename);
+                                                                    let window = crate::kernel::window_manager::Window::new(
+                                                                        0, 0, 640, 480, &title,
+                                                                        crate::kernel::window_manager::WindowContent::Editor,
+                                                                        editor_id
+                                                                    );
+                                                                    crate::kernel::window_manager::add_window(window);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            needs_full_redraw = true;
+                        }
+                        _ => {}
+                    }
                 }
             }
             InputEvent::KeyReleased { key: _, modifiers: _ } => {

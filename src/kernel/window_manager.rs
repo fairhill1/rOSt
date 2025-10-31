@@ -36,6 +36,7 @@ pub enum WindowContent {
     Terminal,
     AboutDialog,
     Editor,
+    FileExplorer,
 }
 
 pub struct Window {
@@ -152,6 +153,10 @@ impl Window {
                 // Editor content is rendered by the editor system directly
                 // (see main rendering loop which calls editor::render_at())
             }
+            WindowContent::FileExplorer => {
+                // File explorer content is rendered by the file_explorer system directly
+                // (see main rendering loop which calls file_explorer::render_at())
+            }
         }
     }
 
@@ -176,6 +181,7 @@ struct MenuItem {
 const MENU_ITEMS: &[MenuItem] = &[
     MenuItem { label: "Terminal", window_type: WindowContent::Terminal },
     MenuItem { label: "Editor", window_type: WindowContent::Editor },
+    MenuItem { label: "Files", window_type: WindowContent::FileExplorer },
     MenuItem { label: "About", window_type: WindowContent::AboutDialog },
 ];
 
@@ -443,6 +449,9 @@ impl WindowManager {
                 WindowContent::Editor => {
                     crate::kernel::editor::remove_editor(window.instance_id);
                 },
+                WindowContent::FileExplorer => {
+                    crate::kernel::file_explorer::remove_file_explorer(window.instance_id);
+                },
                 WindowContent::AboutDialog => {
                     // No instance to remove
                 },
@@ -487,6 +496,10 @@ impl WindowManager {
                     let id = crate::kernel::editor::create_editor();
                     ("Text Editor", id)
                 },
+                WindowContent::FileExplorer => {
+                    let id = crate::kernel::file_explorer::create_file_explorer();
+                    ("Files", id)
+                },
                 WindowContent::AboutDialog => {
                     ("About rOSt", 0) // AboutDialog doesn't need an instance
                 },
@@ -516,6 +529,85 @@ impl WindowManager {
 
                         if let Some(editor) = crate::kernel::editor::get_editor(instance_id) {
                             editor.handle_mouse_down(relative_x, relative_y);
+                        }
+                    }
+                }
+
+                // If it's a file explorer window and click is in content area, handle click
+                if self.windows[i].content == WindowContent::FileExplorer {
+                    let (cx, cy, cw, ch) = self.windows[i].get_content_bounds();
+                    if x >= cx && x < cx + cw as i32 && y >= cy && y < cy + ch as i32 {
+                        // Click is inside file explorer content area
+                        let relative_x = x - cx;
+                        let relative_y = y - cy;
+                        let instance_id = self.windows[i].instance_id;
+                        let current_time = crate::kernel::get_time_ms();
+
+                        use crate::kernel::file_explorer::FileExplorerAction;
+                        let action = crate::kernel::file_explorer::handle_click(
+                            instance_id,
+                            relative_x,
+                            relative_y,
+                            ch,
+                            current_time
+                        );
+
+                        match action {
+                            FileExplorerAction::OpenFile(filename) => {
+                                // Open file in a new editor window
+                                // Get filesystem from file explorer
+                                if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(instance_id) {
+                                    if let (Some(ref fs), Some(device_idx)) = (&explorer.filesystem, explorer.device_index) {
+                                        // Get file info by listing all files
+                                        let file_list = fs.list_files();
+                                        let file_entry = file_list.iter().find(|e| e.get_name() == filename);
+
+                                        if let Some(file) = file_entry {
+                                            let size = file.get_size_bytes() as usize;
+                                            let mut buffer = alloc::vec![0u8; size];
+
+                                            unsafe {
+                                                if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                                                    if let Some(device) = devices.get_mut(device_idx) {
+                                                        if let Ok(bytes_read) = fs.read_file(device, &filename, &mut buffer) {
+                                                            // Find the actual content length
+                                                            let actual_len = buffer[..bytes_read].iter()
+                                                                .position(|&b| b == 0)
+                                                                .unwrap_or(bytes_read);
+
+                                                            if let Ok(text) = core::str::from_utf8(&buffer[..actual_len]) {
+                                                                let editor_id = crate::kernel::editor::create_editor_with_content(
+                                                                    &filename,
+                                                                    text
+                                                                );
+                                                                let title = alloc::format!("Editor - {}", filename);
+                                                                let window = Window::new(0, 0, 640, 480, &title, WindowContent::Editor, editor_id);
+                                                                self.add_window(window);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            FileExplorerAction::Refresh => {
+                                crate::kernel::file_explorer::refresh(instance_id);
+                            },
+                            FileExplorerAction::DeleteFile => {
+                                if crate::kernel::file_explorer::delete_selected(instance_id) {
+                                    crate::kernel::file_explorer::refresh(instance_id);
+                                }
+                            },
+                            FileExplorerAction::NewFile => {
+                                // Request filename from user via menu bar prompt
+                                crate::kernel::usb_hid::start_filename_prompt();
+                            },
+                            FileExplorerAction::Redraw => {
+                                // Just need to redraw
+                            },
+                            FileExplorerAction::None => {},
                         }
                     }
                 }
@@ -618,6 +710,25 @@ impl WindowManager {
             .last() {
             window.title = String::from(title);
         }
+    }
+
+    /// Get the focused file explorer window instance ID
+    pub fn get_focused_file_explorer_id(&self) -> Option<usize> {
+        self.windows.iter()
+            .filter(|w| w.content == WindowContent::FileExplorer && w.is_focused)
+            .last()
+            .map(|w| w.instance_id)
+    }
+
+    /// Get all file explorer windows with their instance IDs and content bounds
+    pub fn get_all_file_explorers(&self) -> Vec<(usize, i32, i32, u32, u32)> {
+        self.windows.iter()
+            .filter(|w| w.content == WindowContent::FileExplorer && w.visible)
+            .map(|w| {
+                let (x, y, width, height) = w.get_content_bounds();
+                (w.instance_id, x, y, width, height)
+            })
+            .collect()
     }
 }
 
@@ -739,6 +850,36 @@ pub fn set_editor_window_title(title: &str) {
     unsafe {
         if let Some(ref mut wm) = WINDOW_MANAGER {
             wm.set_editor_title(title);
+        }
+    }
+}
+
+pub fn has_focused_file_explorer() -> bool {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_focused_file_explorer_id().is_some()
+        } else {
+            false
+        }
+    }
+}
+
+pub fn get_focused_file_explorer_id() -> Option<usize> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_focused_file_explorer_id()
+        } else {
+            None
+        }
+    }
+}
+
+pub fn get_all_file_explorers() -> Vec<(usize, i32, i32, u32, u32)> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_all_file_explorers()
+        } else {
+            Vec::new()
         }
     }
 }
