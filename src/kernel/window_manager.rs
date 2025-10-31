@@ -28,6 +28,7 @@ const COLOR_TEXT: u32 = 0xFFFFFFFF;           // White text
 const COLOR_CLOSE_BTN: u32 = 0xFFCC3333;      // Red close button
 const COLOR_MENU_BAR: u32 = 0xFF2B2B2B;       // Lighter gray menu bar
 const COLOR_MENU_ITEM: u32 = 0xFF3D3D3D;      // Menu item background
+const COLOR_MENU_ITEM_HOVER: u32 = 0xFF5D5D5D; // Menu item background on hover (brighter)
 const COLOR_MENU_ITEM_BORDER: u32 = 0xFF555555; // Menu item border
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -256,11 +257,27 @@ impl WindowManager {
             // Show status message instead of menu items
             framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &status_msg, COLOR_TEXT);
         } else {
+            // Get cursor position for hover detection
+            let (cursor_x, cursor_y) = framebuffer::get_cursor_pos();
+
             // Draw menu items with borders and backgrounds
             let mut current_x = MENU_START_X;
             for item in MENU_ITEMS.iter() {
                 let item_width = Self::calculate_menu_item_width(item.label);
                 let item_y = MENU_START_Y;
+
+                // Check if cursor is hovering over this item
+                let is_hovering = cursor_x >= current_x as i32 &&
+                                  cursor_x < (current_x + item_width) as i32 &&
+                                  cursor_y >= item_y as i32 &&
+                                  cursor_y < (item_y + MENU_ITEM_HEIGHT) as i32;
+
+                // Choose background color based on hover state
+                let bg_color = if is_hovering {
+                    COLOR_MENU_ITEM_HOVER
+                } else {
+                    COLOR_MENU_ITEM
+                };
 
                 // Draw menu item border
                 self.draw_menu_rect(current_x, item_y, item_width, MENU_ITEM_HEIGHT, COLOR_MENU_ITEM_BORDER);
@@ -268,7 +285,7 @@ impl WindowManager {
                 // Draw menu item background (inset by 1 pixel for border)
                 self.draw_menu_rect(current_x + 1, item_y + 1,
                                    item_width - 2, MENU_ITEM_HEIGHT - 2,
-                                   COLOR_MENU_ITEM);
+                                   bg_color);
 
                 // Draw menu item text (centered with padding)
                 let text_x = current_x + MENU_ITEM_PADDING_X;
