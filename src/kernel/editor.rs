@@ -448,6 +448,23 @@ impl TextEditor {
         self.is_selecting = false;
     }
 
+    /// Select all text
+    pub fn select_all(&mut self) {
+        if self.lines.is_empty() {
+            return;
+        }
+
+        // Set selection from start of first line to end of last line
+        self.selection_start = Some((0, 0));
+        let last_line = self.lines.len() - 1;
+        let last_col = self.lines[last_line].len();
+        self.selection_end = Some((last_line, last_col));
+
+        // Move cursor to end
+        self.cursor_row = last_line;
+        self.cursor_col = last_col;
+    }
+
     /// Get selected text (if any)
     fn get_selected_text(&self) -> Option<String> {
         if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
