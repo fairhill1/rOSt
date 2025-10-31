@@ -108,8 +108,7 @@ impl Console {
             return;
         }
 
-        // Clear screen
-        framebuffer::clear_screen(self.bg_color);
+        // Don't clear screen - the window manager handles that now
 
         // Draw all characters
         for y in 0..CONSOLE_HEIGHT {

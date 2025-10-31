@@ -389,9 +389,11 @@ pub fn simulate_keyboard_input() {
 }
 
 /// Process input events from the queue and update GUI
-/// Returns true if any input was processed that requires a screen update
-pub fn test_input_events() -> bool {
-    let mut needs_redraw = false;
+/// Returns (needs_full_redraw, needs_cursor_redraw)
+pub fn test_input_events() -> (bool, bool) {
+    let mut needs_full_redraw = false;
+    let mut needs_cursor_redraw = false;
+
     // Process all queued input events and update cursor
     while let Some(event) = get_input_event() {
         match event {
@@ -404,7 +406,7 @@ pub fn test_input_events() -> bool {
                             shell.handle_char(ascii);
                         }
                     }
-                    needs_redraw = true; // Keyboard input requires redraw
+                    needs_full_redraw = true; // Keyboard input requires full redraw
                 }
             }
             InputEvent::KeyReleased { key: _, modifiers: _ } => {
@@ -413,16 +415,36 @@ pub fn test_input_events() -> bool {
             InputEvent::MouseMove { x_delta, y_delta } => {
                 // Move the cursor on screen
                 crate::kernel::framebuffer::move_cursor(x_delta, y_delta);
-                needs_redraw = true;
+
+                // Get cursor position for window dragging
+                let (cx, cy) = crate::kernel::framebuffer::get_cursor_pos();
+                let window_moved = crate::kernel::window_manager::handle_mouse_move(cx, cy);
+
+                // Only full redraw if a window was dragged, otherwise just cursor
+                if window_moved {
+                    needs_full_redraw = true;
+                } else {
+                    needs_cursor_redraw = true;
+                }
             }
-            InputEvent::MouseButton { .. } => {
-                needs_redraw = true; // Clicks should also trigger a redraw
+            InputEvent::MouseButton { button, pressed } => {
+                if button == 0 { // Left mouse button
+                    let (cx, cy) = crate::kernel::framebuffer::get_cursor_pos();
+                    if pressed {
+                        // Mouse button pressed - check for window clicks
+                        crate::kernel::window_manager::handle_mouse_click(cx, cy);
+                    } else {
+                        // Mouse button released - stop dragging
+                        crate::kernel::window_manager::handle_mouse_release();
+                    }
+                    needs_full_redraw = true; // Clicks trigger a full redraw
+                }
             }
             InputEvent::MouseWheel { .. } => {
             }
         }
     }
-    needs_redraw
+    (needs_full_redraw, needs_cursor_redraw)
 }
 
 /// Initialize USB HID subsystem
