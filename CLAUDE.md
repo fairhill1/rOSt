@@ -150,3 +150,6 @@ When stuck:
 ---
 
 **🚨 Keep this file updated after major changes! 🚨**
+
+**🚨 Never credit claude when making a commit.🚨**
+

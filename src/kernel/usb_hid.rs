@@ -438,18 +438,20 @@ pub fn test_input_events() -> (bool, bool) {
                                 needs_full_redraw = true;
                             }
                             _ => {
-                                // Regular text input
-                                if let Some(ascii) = evdev_to_ascii(key, modifiers) {
-                                    if let Some(editor) = crate::kernel::editor::get_editor() {
-                                        if ascii == b'\n' {
-                                            editor.insert_newline();
-                                        } else if ascii == 8 { // Backspace
-                                            editor.delete_char();
-                                        } else if ascii >= 32 && ascii < 127 { // Printable ASCII
-                                            editor.insert_char(ascii as char);
+                                // Regular text input (but not if Ctrl is held)
+                                if !is_ctrl {
+                                    if let Some(ascii) = evdev_to_ascii(key, modifiers) {
+                                        if let Some(editor) = crate::kernel::editor::get_editor() {
+                                            if ascii == b'\n' {
+                                                editor.insert_newline();
+                                            } else if ascii == 8 { // Backspace
+                                                editor.delete_char();
+                                            } else if ascii >= 32 && ascii < 127 { // Printable ASCII
+                                                editor.insert_char(ascii as char);
+                                            }
                                         }
+                                        needs_full_redraw = true;
                                     }
-                                    needs_full_redraw = true;
                                 }
                             }
                         }
