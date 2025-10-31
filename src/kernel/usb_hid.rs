@@ -509,8 +509,14 @@ pub fn test_input_events() -> (bool, bool) {
             InputEvent::MouseMove { x_delta, y_delta } => {
                 // Move the cursor on screen
                 crate::kernel::framebuffer::move_cursor(x_delta, y_delta);
-                // Just update cursor, no window dragging in tiling mode
-                needs_cursor_redraw = true;
+
+                // Check if cursor is in menu bar area (needs full redraw for hover effects)
+                let (cx, cy) = crate::kernel::framebuffer::get_cursor_pos();
+                if cy >= 0 && cy < 32 { // Menu bar height is 32
+                    needs_full_redraw = true;
+                } else {
+                    needs_cursor_redraw = true;
+                }
             }
             InputEvent::MouseButton { button, pressed } => {
                 if button == 0 && pressed { // Left mouse button press
