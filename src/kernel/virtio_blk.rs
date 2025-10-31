@@ -154,8 +154,8 @@ impl Virtqueue {
         let total_size = desc_size + avail_size + used_size + 64 + 4;
 
         // Allocate physical memory (must be DMA accessible)
-        // We'll use 0x50000000 like we did for VirtIO input
-        let phys_addr = 0x50000000u64;
+        // Use 0x50020000 to avoid conflict with input devices at 0x50000000 and 0x50010000
+        let phys_addr = 0x50020000u64;
         let virt_addr = phys_addr; // Identity mapped for now
 
         // Zero out the memory
@@ -375,7 +375,8 @@ impl VirtioBlkDevice {
 
         // Read and program BAR4 (where VirtIO capabilities point)
         let bar4_size = pci_dev.get_bar_size(4)?;
-        let bar4_addr = mmio_base + 0x100000; // Allocate space in MMIO region
+        // Allocate at 0x300000 offset to avoid conflict with input devices at 0x100000 and 0x200000
+        let bar4_addr = mmio_base + 0x300000;
 
         pci_dev.write_config_u32(0x20, bar4_addr as u32);
         pci_dev.write_config_u32(0x24, (bar4_addr >> 32) as u32);
