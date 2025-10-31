@@ -73,6 +73,22 @@ Build interactive shell for file operations
 
 ### Recent Fixes (2025-10-31)
 
+#### VirtIO Block Device Fixes
+9. **🔥 CRITICAL: Memory Conflicts Breaking Keyboard Input** 🔥
+   - **Problem**: Block device allocated BAR and virtqueue at same addresses as keyboard
+   - **Symptom**: Mouse worked, but keyboard completely non-functional after adding block device
+   - **Root Cause**: Two conflicts:
+     1. BAR address: Block device used `0x10100000` (same as keyboard's BAR)
+     2. Virtqueue memory: Block device used `0x50000000` (same as keyboard's virtqueue)
+   - **Solution**:
+     - BAR: Changed block device from `0x10100000` → `0x10300000`
+     - Virtqueue: Changed block device from `0x50000000` → `0x50020000`
+   - **Code**: `virtio_blk.rs:158` (virtqueue), `virtio_blk.rs:379` (BAR)
+   - **Memory Layout**:
+     - BARs: Keyboard `0x10100000`, Mouse `0x10200000`, Block `0x10300000`
+     - Virtqueues: Keyboard `0x50000000`, Mouse `0x50010000`, Block `0x50020000`
+   - **Impact**: Keyboard input completely broken without this fix
+
 #### Filesystem Implementation Fixes
 7. **🔥 CRITICAL: Stack Overflow in create_file() and delete_file()** 🔥
    - **Problem**: 512-byte sector buffers allocated on stack caused stack overflow
