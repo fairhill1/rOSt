@@ -26,12 +26,15 @@ pub enum PixelFormat {
 static mut FRAMEBUFFER: Option<Framebuffer> = None;
 
 // Mouse cursor state
-static mut MOUSE_CURSOR: MouseCursor = MouseCursor { x: 400, y: 300 };
+static mut MOUSE_CURSOR: MouseCursor = MouseCursor { x: 400, y: 300, prev_x: 400, prev_y: 300 };
+static mut MOUSE_CURSOR_BACKGROUND: [u32; 16 * 16] = [0; 256];
 
 #[derive(Clone, Copy)]
 struct MouseCursor {
     x: i32,
     y: i32,
+    prev_x: i32,
+    prev_y: i32,
 }
 
 struct Framebuffer {
@@ -64,6 +67,17 @@ impl Framebuffer {
         };
         
         ptr::write_volatile(pixel, color_value);
+    }
+
+    unsafe fn get_pixel(&self, x: u32, y: u32) -> u32 {
+        if x >= self.width || y >= self.height {
+            return 0; // Return black for out-of-bounds
+        }
+        
+        let offset = (y * self.stride + x) as isize;
+        let pixel = self.base.offset(offset);
+        
+        ptr::read_volatile(pixel)
     }
     
     fn fill_rect(&mut self, x: u32, y: u32, width: u32, height: u32, color: u32) {
@@ -267,29 +281,51 @@ const CURSOR_ARROW: [[u8; 16]; 16] = [
     [0,0,0,0,0,1,2,2,1,0,0,0,0,0,0,0],
 ];
 
-/// Draw the mouse cursor at its current position
+/// Draw the mouse cursor at its current position, handling background restoration.
 pub fn draw_cursor() {
     unsafe {
         if let Some(ref mut fb) = FRAMEBUFFER {
-            let cursor = MOUSE_CURSOR;
-
+            // 1. Restore the background at the previous cursor position.
             for y in 0..16 {
                 for x in 0..16 {
-                    let screen_x = cursor.x + x as i32;
-                    let screen_y = cursor.y + y as i32;
-
-                    if screen_x >= 0 && screen_x < fb.width as i32 &&
-                       screen_y >= 0 && screen_y < fb.height as i32 {
-                        let color = match CURSOR_ARROW[y][x] {
-                            1 => 0xFF000000, // Black outline
-                            2 => 0xFFFFFFFF, // White fill
-                            _ => continue,   // Transparent
-                        };
-
-                        fb.put_pixel(screen_x as u32, screen_y as u32, color);
+                    let screen_x = MOUSE_CURSOR.prev_x + x as i32;
+                    let screen_y = MOUSE_CURSOR.prev_y + y as i32;
+                    if screen_x >= 0 && screen_x < fb.width as i32 && screen_y >= 0 && screen_y < fb.height as i32 {
+                        fb.put_pixel(screen_x as u32, screen_y as u32, MOUSE_CURSOR_BACKGROUND[y * 16 + x]);
                     }
                 }
             }
+
+            // 2. Save the background at the new cursor position.
+            for y in 0..16 {
+                for x in 0..16 {
+                    let screen_x = MOUSE_CURSOR.x + x as i32;
+                    let screen_y = MOUSE_CURSOR.y + y as i32;
+                    if screen_x >= 0 && screen_x < fb.width as i32 && screen_y >= 0 && screen_y < fb.height as i32 {
+                        MOUSE_CURSOR_BACKGROUND[y * 16 + x] = fb.get_pixel(screen_x as u32, screen_y as u32);
+                    }
+                }
+            }
+
+            // 3. Draw the new cursor.
+            for y in 0..16 {
+                for x in 0..16 {
+                    let screen_x = MOUSE_CURSOR.x + x as i32;
+                    let screen_y = MOUSE_CURSOR.y + y as i32;
+
+                    if screen_x >= 0 && screen_x < fb.width as i32 && screen_y >= 0 && screen_y < fb.height as i32 {
+                        match CURSOR_ARROW[y as usize][x as usize] {
+                            1 => fb.put_pixel(screen_x as u32, screen_y as u32, 0xFF000000), // Black outline
+                            2 => fb.put_pixel(screen_x as u32, screen_y as u32, 0xFFFFFFFF), // White fill
+                            _ => (), // Transparent
+                        }
+                    }
+                }
+            }
+
+            // 4. Update previous position for the next frame.
+            MOUSE_CURSOR.prev_x = MOUSE_CURSOR.x;
+            MOUSE_CURSOR.prev_y = MOUSE_CURSOR.y;
         }
     }
 }
@@ -297,15 +333,16 @@ pub fn draw_cursor() {
 /// Move the mouse cursor by delta values
 pub fn move_cursor(dx: i8, dy: i8) {
     unsafe {
+        // Update to new position
         MOUSE_CURSOR.x += dx as i32;
         MOUSE_CURSOR.y += dy as i32;
 
-        // Clamp to screen bounds
+        // Clamp to screen bounds to prevent cursor from going off-screen
         if let Some(ref fb) = FRAMEBUFFER {
             if MOUSE_CURSOR.x < 0 { MOUSE_CURSOR.x = 0; }
             if MOUSE_CURSOR.y < 0 { MOUSE_CURSOR.y = 0; }
-            if MOUSE_CURSOR.x >= fb.width as i32 { MOUSE_CURSOR.x = fb.width as i32 - 1; }
-            if MOUSE_CURSOR.y >= fb.height as i32 { MOUSE_CURSOR.y = fb.height as i32 - 1; }
+            if MOUSE_CURSOR.x >= fb.width as i32 - 16 { MOUSE_CURSOR.x = fb.width as i32 - 16; }
+            if MOUSE_CURSOR.y >= fb.height as i32 - 16 { MOUSE_CURSOR.y = fb.height as i32 - 16; }
         }
     }
 }

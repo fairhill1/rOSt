@@ -308,7 +308,8 @@ pub fn simulate_keyboard_input() {
 }
 
 /// Process input events from the queue and update GUI
-pub fn test_input_events() {
+pub fn test_input_events() -> bool {
+    let mut mouse_moved = false;
     // Process all queued input events and update cursor
     while let Some(event) = get_input_event() {
         match event {
@@ -329,6 +330,7 @@ pub fn test_input_events() {
             InputEvent::MouseMove { x_delta, y_delta } => {
                 // Move the cursor on screen
                 crate::kernel::framebuffer::move_cursor(x_delta, y_delta);
+                mouse_moved = true;
 
                 uart_write_string("Mouse moved: ");
                 // Simple hex output for deltas
@@ -340,6 +342,7 @@ pub fn test_input_events() {
                 uart_write_string("\r\n");
             }
             InputEvent::MouseButton { button, pressed } => {
+                mouse_moved = true; // Clicks should also trigger a redraw
                 uart_write_string("Mouse button ");
                 unsafe {
                     core::ptr::write_volatile(0x09000000 as *mut u8, button + b'0');
@@ -359,6 +362,7 @@ pub fn test_input_events() {
             }
         }
     }
+    mouse_moved
 }
 
 /// Initialize USB HID subsystem
