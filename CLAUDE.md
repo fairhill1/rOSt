@@ -4,14 +4,43 @@
 
 ## What Works
 
+✅ **Full GUI Desktop Environment**
+- Tiling window manager with menu bar
+- Multiple windows (Terminal, Text Editor, File Explorer, About dialog)
+- Click to focus, close button on each window
+- Auto-tiling layout (1-4 windows supported)
+
+✅ **Text Editor**
+- Full-featured text editor with syntax highlighting support
+- Mouse selection (click and drag to select)
+- Keyboard shortcuts: Ctrl+S (save), Ctrl+A (select all), Ctrl+C/X/V (copy/cut/paste)
+- Undo/Redo support (Ctrl+Z/Ctrl+Y)
+- Line numbers in gutter
+- Arrow key navigation with Shift selection
+- Open files from filesystem, save back to disk
+
+✅ **File Explorer**
+- Visual file browser with icons and file sizes
+- Single-click to select, double-click to open in editor
+- Keyboard navigation: Arrow keys to navigate, Enter to open
+- Toolbar buttons: Refresh, New File, Delete
+- Scrolling support for large file lists
+- Hardware-independent double-click detection (500ms)
+
 ✅ **Full Persistent Filesystem with Interactive Shell**
 - Create, read, write, delete files that survive reboots
 - Interactive shell: `ls`, `cat`, `create`, `rm`, `write`, `clear`, `help`
 - Custom SimpleFS filesystem (32 files max, up to 10MB disk)
 
+✅ **ARM Generic Timer**
+- Hardware-independent microsecond-precision timing
+- Uses ARM Generic Timer (CNTPCT_EL0, CNTFRQ_EL0)
+- Enables consistent double-click detection across different CPU speeds
+
 ✅ **VirtIO Input**
 - Keyboard and mouse input via VirtIO devices
 - Events flow from QEMU window to OS
+- Full keyboard support with modifiers (Ctrl, Shift, Alt)
 
 ✅ **VirtIO Block Storage**
 - Sector read/write operations
@@ -57,7 +86,34 @@ qemu-system-aarch64 \
 - Click on QEMU graphical window (not terminal) for input
 - Device order matters: test_disk.img before uefi_disk for persistence
 
-## Shell Commands
+## Using the GUI
+
+**Menu Bar (top of screen):**
+- **Terminal** - Opens a new terminal window with interactive shell
+- **Editor** - Opens a new blank text editor
+- **Files** - Opens file explorer to browse/manage files
+- **About** - Shows OS information
+
+**Window Controls:**
+- Click window to focus
+- Click red X button to close window
+- Windows auto-tile (1-4 windows supported)
+
+**File Explorer:**
+- Click file to select (blue highlight)
+- Double-click file to open in editor
+- Arrow keys to navigate, Enter to open
+- Toolbar buttons: Refresh, New File, Delete
+
+**Text Editor:**
+- Click and drag to select text
+- Arrow keys to navigate
+- Shift+Arrow keys to select
+- Ctrl+S: Save, Ctrl+A: Select All
+- Ctrl+C/X/V: Copy/Cut/Paste
+- Ctrl+Z/Y: Undo/Redo
+
+## Shell Commands (Terminal Window)
 
 ```
 help                    - Show available commands
@@ -93,14 +149,28 @@ clear                   - Clear screen
 
 ## Core Files
 
+### GUI & Window Management
+- `src/kernel/window_manager.rs` - Tiling window manager with menu bar
+- `src/kernel/editor.rs` - Full-featured text editor with mouse selection
+- `src/kernel/file_explorer.rs` - Visual file browser with keyboard/mouse navigation
+- `src/kernel/console.rs` - Multi-instance terminal/console support
+- `src/kernel/framebuffer.rs` - Double-buffered rendering system
+
+### VirtIO Drivers
 - `src/kernel/virtio_gpu.rs` - VirtIO GPU driver with hardware cursor
-- `src/kernel/virtio_input.rs` - Keyboard/mouse input driver
+- `src/kernel/virtio_input.rs` - Keyboard/mouse input driver (evdev codes)
 - `src/kernel/virtio_blk.rs` - Block device driver
+
+### Filesystem & Storage
 - `src/kernel/filesystem.rs` - SimpleFS implementation
-- `src/kernel/shell.rs` - Interactive shell
+- `src/kernel/shell.rs` - Interactive shell for terminal windows
+
+### System
+- `src/kernel/timer.rs` - ARM Generic Timer for hardware-independent timing
+- `src/kernel/usb_hid.rs` - Input event handling and routing
 - `src/kernel/dtb.rs` - Device Tree parser
 - `src/kernel/pci.rs` - PCI configuration
-- `src/kernel/mod.rs` - Kernel init
+- `src/kernel/mod.rs` - Kernel init and main loop
 
 ## Critical Gotchas
 
@@ -128,6 +198,10 @@ clear                   - Clear screen
 3. **SimpleFS** - Custom filesystem with CRUD operations
 4. **File Persistence** - Fixed sector collision (test was overwriting file table)
 5. **Interactive Shell** - UART-based command interface
+6. **GUI & Window Manager** - Tiling window manager with menu bar and multiple window types
+7. **Text Editor** - Full-featured editor with mouse selection, undo/redo, clipboard
+8. **File Explorer** - Visual file browser with keyboard/mouse navigation
+9. **ARM Generic Timer** - Hardware-independent timing for double-click detection
 
 ### Key Fixes
 - **File persistence:** VirtIO test was overwriting sector 1 (file table) - moved to sector 1000
@@ -135,6 +209,7 @@ clear                   - Clear screen
 - **Memory conflicts:** Block device initially used same addresses as keyboard - allocated unique addresses
 - **Stack overflow:** 512-byte buffers on stack caused hangs - switched to static buffers
 - **Legacy VirtIO:** Legacy devices (0x1001) hang - now only uses modern (0x1042)
+- **Double-click timing:** Frame counter was hardware-dependent (7220 frames/sec!) - switched to ARM Generic Timer for consistent 500ms threshold
 
 ## Resources
 

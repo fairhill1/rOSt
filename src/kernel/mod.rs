@@ -25,6 +25,8 @@ pub mod dtb;
 pub mod console;
 pub mod window_manager;
 pub mod editor;
+pub mod file_explorer;
+pub mod timer;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]
@@ -71,6 +73,11 @@ pub fn handle_mouse_movement(x_delta: i32, y_delta: i32) {
             framebuffer::set_cursor_pos(CURSOR_X as i32, CURSOR_Y as i32);
         }
     }
+}
+
+// Get current time in milliseconds (for double-click detection, etc.)
+pub fn get_time_ms() -> u64 {
+    timer::get_time_ms()
 }
 
 // Simple hex printing for debug
@@ -312,6 +319,10 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize text editor
         editor::init();
         uart_write_string("Text editor initialized!\r\n");
+
+        // Initialize file explorer
+        file_explorer::init();
+        uart_write_string("File explorer initialized!\r\n");
     } else {
         uart_write_string("No framebuffer available - running in text mode\r\n");
     }
@@ -734,6 +745,11 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 // Render all editors INSIDE their windows
                 for (instance_id, cx, cy, _cw, ch) in window_manager::get_all_editors() {
                     editor::render_at(instance_id, cx, cy, ch);
+                }
+
+                // Render all file explorers INSIDE their windows
+                for (instance_id, cx, cy, cw, ch) in window_manager::get_all_file_explorers() {
+                    file_explorer::render_at(instance_id, cx, cy, cw, ch);
                 }
 
                 // Hardware cursor is now handled by VirtIO GPU, no need for software cursor

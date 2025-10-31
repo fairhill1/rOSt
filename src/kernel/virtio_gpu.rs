@@ -632,15 +632,6 @@ impl VirtioGpuDriver {
     }
 
     fn send_command(&mut self, cmd: &[u8], resp: &mut [u8]) -> Result<(), &'static str> {
-        crate::kernel::uart_write_string("VirtIO GPU: Sending command (");
-        let mut len = cmd.len() as u64;
-        for _ in 0..4 {
-            let digit = (len >> 12) & 0xF;
-            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-            unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-            len <<= 4;
-        }
-        crate::kernel::uart_write_string(" bytes)\r\n");
 
         // Allocate buffers for command and response
         let cmd_buf = crate::kernel::memory::alloc_physical_page().ok_or("Failed to allocate cmd buffer")?;
@@ -670,12 +661,10 @@ impl VirtioGpuDriver {
         self.notify_queue(0, notify_off);
 
         // Wait for response
-        crate::kernel::uart_write_string("VirtIO GPU: Waiting for response...\r\n");
         for i in 0..1000000 {
             let controlq = self.controlq.as_mut().ok_or("Control queue not initialized")?;
             if let Some((used_idx, _len)) = controlq.get_used_buffer() {
                 if used_idx == desc_idx {
-                    crate::kernel::uart_write_string("VirtIO GPU: Got response!\r\n");
                     // Copy response
                     unsafe {
                         let resp_ptr = resp_buf as *const u8;
