@@ -229,7 +229,7 @@ impl PciDevice {
         // Check if capabilities list is present (bit 4)
         if (status & (1 << 4)) != 0 {
             // Capabilities pointer is at offset 0x34
-            let cap_ptr = config.read_u32(self.bus, self.device, self.function, 0x34) as u8;
+            let cap_ptr = config.read_u8(self.bus, self.device, self.function, 0x34);
             if cap_ptr != 0 {
                 Some(cap_ptr)
             } else {
@@ -254,6 +254,49 @@ impl PciDevice {
     pub fn read_config_u32(&self, offset: u8) -> u32 {
         let config = PciConfig::with_base_addr(self.ecam_base);
         config.read_u32(self.bus, self.device, self.function, offset)
+    }
+
+    pub fn write_config_u32(&self, offset: u8, value: u32) {
+        let config = PciConfig::with_base_addr(self.ecam_base);
+        config.write_u32(self.bus, self.device, self.function, offset, value)
+    }
+
+    pub fn get_capabilities_ptr(&self) -> Option<u8> {
+        self.read_capability_pointer()
+    }
+
+    pub fn get_bar_size(&self, bar_index: u8) -> Option<u32> {
+        if bar_index >= 6 {
+            return None;
+        }
+
+        let config = PciConfig::with_base_addr(self.ecam_base);
+        let bar_offset = PCI_BAR0 + (bar_index * 4);
+
+        // Save original BAR value
+        let original = config.read_u32(self.bus, self.device, self.function, bar_offset);
+
+        // Write all 1s to determine size
+        config.write_u32(self.bus, self.device, self.function, bar_offset, 0xFFFFFFFF);
+        let size_mask = config.read_u32(self.bus, self.device, self.function, bar_offset);
+
+        // Restore original value
+        config.write_u32(self.bus, self.device, self.function, bar_offset, original);
+
+        // Calculate size from mask
+        if size_mask == 0 || size_mask == 0xFFFFFFFF {
+            return None;
+        }
+
+        // For memory BARs, mask off lower 4 bits; for I/O BARs, mask off lower 2 bits
+        let mask = if (original & 1) == 0 {
+            size_mask & 0xFFFFFFF0  // Memory BAR
+        } else {
+            size_mask & 0xFFFFFFFC  // I/O BAR
+        };
+
+        let size = (!mask).wrapping_add(1);
+        Some(size)
     }
 }
 
