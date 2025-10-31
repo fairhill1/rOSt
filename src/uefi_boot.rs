@@ -53,50 +53,88 @@ pub extern "efiapi" fn efi_main(
             unsafe {
                 let gop_ref = &*gop;
                 
-                // Try multiple GOP modes to find one with a valid framebuffer
+                // Query available modes and find the best large resolution
+                let mode = &*gop_ref.mode;
+                let max_mode = mode.max_mode;
+
+                print_string("Max GOP mode: ");
+                print_number(max_mode);
+                print_string("\r\n");
+
                 let mut valid_fb_info = None;
-                
-                for mode_num in 0..4 {
-                    print_string("Trying GOP SetMode(");
-                    print_number(mode_num);
-                    print_string(")...\r\n");
-                    
-                    let set_mode_result = (gop_ref.set_mode)(gop, mode_num);
-                    print_string("SetMode result: 0x");
-                    print_hex(set_mode_result as u64);
-                    print_string("\r\n");
-                    
-                    if set_mode_result == EFI_SUCCESS {
-                        let mode = &*gop_ref.mode;
-                        let mode_info = &*mode.info;
-                        let framebuffer_base = mode.frame_buffer_base;
-                        let framebuffer_size = mode.frame_buffer_size;
-                        
-                        print_string("Mode ");
-                        print_number(mode_num);
-                        print_string(" - FB base: 0x");
-                        print_hex(framebuffer_base);
-                        print_string(" size: 0x");
-                        print_hex(framebuffer_size as u64);
-                        print_string(" res: ");
-                        print_number(mode_info.horizontal_resolution);
-                        print_string("x");
-                        print_number(mode_info.vertical_resolution);
-                        print_string("\r\n");
-                        
-                        // Accept any mode with a non-zero framebuffer base
-                        if framebuffer_base != 0 && framebuffer_size > 0 {
-                            print_string("Found valid framebuffer!\r\n");
-                            valid_fb_info = Some(kernel::framebuffer::FramebufferInfo {
-                                base_address: framebuffer_base,
-                                size: framebuffer_size as usize,
-                                width: mode_info.horizontal_resolution,
-                                height: mode_info.vertical_resolution,
-                                pixels_per_scanline: mode_info.pixels_per_scan_line,
-                                pixel_format: kernel::framebuffer::PixelFormat::Rgb,
-                            });
-                            break;
+                let mut best_mode = 0;
+                let mut best_resolution = 0;
+
+                // Query all available modes to find the best (largest) one
+                for mode_num in 0..max_mode {
+                    let mut size_of_info: usize = 0;
+                    let mut mode_info_ptr: *mut raw_uefi::GraphicsOutputModeInformation = core::ptr::null_mut();
+
+                    let query_result = (gop_ref.query_mode)(gop, mode_num, &mut size_of_info, &mut mode_info_ptr);
+
+                    if query_result == EFI_SUCCESS && !mode_info_ptr.is_null() {
+                        let info = &*mode_info_ptr;
+                        let resolution = info.horizontal_resolution * info.vertical_resolution;
+
+                        // Prefer 1024x768 or larger, but not too large
+                        if resolution >= 1024 * 768 && resolution <= 1920 * 1080 && resolution > best_resolution {
+                            best_mode = mode_num;
+                            best_resolution = resolution;
+
+                            print_string("Found good mode ");
+                            print_number(mode_num);
+                            print_string(": ");
+                            print_number(info.horizontal_resolution);
+                            print_string("x");
+                            print_number(info.vertical_resolution);
+                            print_string("\r\n");
                         }
+                    }
+                }
+
+                // If no large mode found, use first valid mode
+                if best_resolution == 0 {
+                    print_string("No large mode found, trying mode 0\r\n");
+                    best_mode = 0;
+                }
+
+                // Set the best mode
+                print_string("Setting GOP mode ");
+                print_number(best_mode);
+                print_string("...\r\n");
+
+                let set_mode_result = (gop_ref.set_mode)(gop, best_mode);
+                print_string("SetMode result: 0x");
+                print_hex(set_mode_result as u64);
+                print_string("\r\n");
+
+                if set_mode_result == EFI_SUCCESS {
+                    let mode = &*gop_ref.mode;
+                    let mode_info = &*mode.info;
+                    let framebuffer_base = mode.frame_buffer_base;
+                    let framebuffer_size = mode.frame_buffer_size;
+
+                    print_string("Active mode - FB base: 0x");
+                    print_hex(framebuffer_base);
+                    print_string(" size: 0x");
+                    print_hex(framebuffer_size as u64);
+                    print_string(" res: ");
+                    print_number(mode_info.horizontal_resolution);
+                    print_string("x");
+                    print_number(mode_info.vertical_resolution);
+                    print_string("\r\n");
+
+                    // Accept any mode with a non-zero framebuffer base
+                    if framebuffer_base != 0 && framebuffer_size > 0 {
+                        print_string("Found valid framebuffer!\r\n");
+                        valid_fb_info = Some(kernel::framebuffer::FramebufferInfo {
+                            base_address: framebuffer_base,
+                            size: framebuffer_size as usize,
+                            width: mode_info.horizontal_resolution,
+                            height: mode_info.vertical_resolution,
+                            pixels_per_scanline: mode_info.pixels_per_scan_line,
+                            pixel_format: kernel::framebuffer::PixelFormat::Rgb,
+                        });
                     }
                 }
                 
