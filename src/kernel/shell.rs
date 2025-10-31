@@ -106,6 +106,7 @@ impl Shell {
             "ping" => self.cmd_ping(&parts),
             "arp" => self.cmd_arp(),
             "nslookup" | "dig" => self.cmd_nslookup(&parts),
+            "http" | "wget" => self.cmd_http(&parts),
             _ => {
                 self.write_output("Unknown command: ");
                 self.write_output(parts[0]);
@@ -128,6 +129,7 @@ impl Shell {
         self.write_output("  ifconfig              - Show network configuration\r\n");
         self.write_output("  ping <ip>             - Ping a host (e.g. ping 8.8.8.8)\r\n");
         self.write_output("  nslookup <domain>     - Resolve domain to IP (e.g. nslookup google.com)\r\n");
+        self.write_output("  http <url>            - HTTP GET request (e.g. http example.com)\r\n");
         self.write_output("  arp                   - Show ARP cache\r\n");
         self.write_output("  help                  - Show this help\r\n");
     }
@@ -756,6 +758,273 @@ impl Shell {
                 }
 
                 self.write_output("DNS timeout - no response\r\n");
+            } else {
+                self.write_output("Network not initialized\r\n");
+            }
+        }
+    }
+
+    fn cmd_http(&mut self, parts: &[&str]) {
+        if parts.len() < 2 {
+            self.write_output("Usage: http <domain>\r\n");
+            self.write_output("Example: http example.com\r\n");
+            return;
+        }
+
+        let domain = parts[1];
+        self.write_output(&alloc::format!("HTTP GET http://{}/\r\n", domain));
+
+        unsafe {
+            if let Some(ref mut devices) = crate::kernel::NET_DEVICES.as_mut() {
+                if devices.is_empty() {
+                    self.write_output("No network device available\r\n");
+                    return;
+                }
+
+                let our_mac = devices[0].mac_address();
+                let our_ip = crate::kernel::OUR_IP;
+                let gateway_mac = [0x52, 0x55, 0x0a, 0x00, 0x02, 0x02];
+
+                // Step 1: Resolve domain name to IP (or parse if already an IP)
+                let server_ip = if let Some(ip) = crate::kernel::network::parse_ip(domain) {
+                    // Already an IP address, use it directly
+                    self.write_output(&alloc::format!("Using IP {}...\r\n", domain));
+                    ip
+                } else {
+                    // Need to resolve via DNS
+                    self.write_output(&alloc::format!("Resolving {}...\r\n", domain));
+
+                    let dns_server = [8, 8, 8, 8];
+                    static mut HTTP_QUERY_ID: u16 = 100;
+                    let query_id = HTTP_QUERY_ID;
+                    HTTP_QUERY_ID = HTTP_QUERY_ID.wrapping_add(1);
+
+                    let dns_query = crate::kernel::dns::build_dns_query(
+                        domain, crate::kernel::dns::DNS_TYPE_A, query_id);
+                    let udp_packet = crate::kernel::network::build_udp(
+                        our_ip, dns_server, 12345, 53, &dns_query);
+                    let ip_packet = crate::kernel::network::build_ipv4(
+                        our_ip, dns_server,
+                        crate::kernel::network::IP_PROTO_UDP,
+                        &udp_packet, query_id);
+                    let eth_frame = crate::kernel::network::build_ethernet(
+                        gateway_mac, our_mac, crate::kernel::network::ETHERTYPE_IPV4, &ip_packet);
+
+                    if let Err(e) = devices[0].transmit(&eth_frame) {
+                        self.write_output(&alloc::format!("Failed to send DNS query: {}\r\n", e));
+                        return;
+                    }
+
+                    // Replenish receive buffers
+                    let _ = devices[0].add_receive_buffers(16);
+
+                    // Wait for DNS response
+                    let mut resolved_ip = None;
+                    for _ in 0..2000 {
+                        let mut rx_buffer = [0u8; 1526];
+                        if let Ok(len) = devices[0].receive(&mut rx_buffer) {
+                            if let Some((frame, payload)) = crate::kernel::network::parse_ethernet(&rx_buffer[..len]) {
+                                let ethertype = crate::kernel::network::be16_to_cpu(frame.ethertype);
+
+                                // Handle ARP requests
+                                if ethertype == crate::kernel::network::ETHERTYPE_ARP {
+                                    if let Some(arp) = crate::kernel::network::parse_arp(payload) {
+                                        if crate::kernel::network::be16_to_cpu(arp.operation) == crate::kernel::network::ARP_REQUEST && arp.target_ip == our_ip {
+                                            let arp_reply = crate::kernel::network::build_arp_reply(
+                                                our_mac, our_ip, arp.sender_mac, arp.sender_ip);
+                                            let _ = devices[0].transmit(&arp_reply);
+                                        }
+                                    }
+                                }
+                                // Handle IPv4 packets
+                                else if ethertype == crate::kernel::network::ETHERTYPE_IPV4 {
+                                    if let Some((ip_hdr, ip_payload)) = crate::kernel::network::parse_ipv4(payload) {
+                                        if ip_hdr.protocol == crate::kernel::network::IP_PROTO_UDP {
+                                            if let Some((udp_hdr, udp_payload)) = crate::kernel::network::parse_udp(ip_payload) {
+                                                if crate::kernel::network::be16_to_cpu(udp_hdr.src_port) == 53 {
+                                                    if let Some(addresses) = crate::kernel::dns::parse_dns_response(udp_payload) {
+                                                        if !addresses.is_empty() {
+                                                            resolved_ip = Some(addresses[0]);
+                                                            self.write_output(&alloc::format!("Resolved to {}\r\n",
+                                                                crate::kernel::network::format_ip(addresses[0])));
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        for _ in 0..10000 {
+                            core::arch::asm!("nop");
+                        }
+                    }
+
+                    match resolved_ip {
+                        Some(ip) => ip,
+                        None => {
+                            self.write_output("DNS resolution failed\r\n");
+                            return;
+                        }
+                    }
+                };
+
+                // Step 2: Establish TCP connection
+                self.write_output("Establishing TCP connection...\r\n");
+
+                // Use a simple local port
+                static mut HTTP_LOCAL_PORT: u16 = 50000;
+                let local_port = HTTP_LOCAL_PORT;
+                HTTP_LOCAL_PORT = HTTP_LOCAL_PORT.wrapping_add(1);
+
+                let mut conn = crate::kernel::tcp::TcpConnection::new(
+                    our_ip, server_ip, local_port, 80);
+
+                // Send SYN
+                if let Err(e) = conn.connect(&mut devices[0], gateway_mac, our_mac) {
+                    self.write_output(&alloc::format!("Failed to send SYN: {}\r\n", e));
+                    return;
+                }
+
+                // Wait for SYN-ACK
+                let mut connection_established = false;
+                for _ in 0..2000 {
+                    let mut rx_buffer = [0u8; 1526];
+                    if let Ok(len) = devices[0].receive(&mut rx_buffer) {
+                        if let Some((frame, payload)) = crate::kernel::network::parse_ethernet(&rx_buffer[..len]) {
+                            let ethertype = crate::kernel::network::be16_to_cpu(frame.ethertype);
+
+                            // Handle ARP
+                            if ethertype == crate::kernel::network::ETHERTYPE_ARP {
+                                if let Some(arp) = crate::kernel::network::parse_arp(payload) {
+                                    if crate::kernel::network::be16_to_cpu(arp.operation) == crate::kernel::network::ARP_REQUEST && arp.target_ip == our_ip {
+                                        let arp_reply = crate::kernel::network::build_arp_reply(
+                                            our_mac, our_ip, arp.sender_mac, arp.sender_ip);
+                                        let _ = devices[0].transmit(&arp_reply);
+                                    }
+                                }
+                            }
+                            // Handle TCP
+                            else if ethertype == crate::kernel::network::ETHERTYPE_IPV4 {
+                                if let Some((ip_hdr, ip_payload)) = crate::kernel::network::parse_ipv4(payload) {
+                                    if ip_hdr.protocol == crate::kernel::network::IP_PROTO_TCP {
+                                        if let Some((tcp_hdr, tcp_data)) = crate::kernel::network::parse_tcp(ip_payload) {
+                                            // Check if this is for our connection
+                                            if crate::kernel::network::be16_to_cpu(tcp_hdr.dst_port) == local_port {
+                                                if let Ok(()) = conn.handle_segment(&tcp_hdr, tcp_data) {
+                                                    if conn.state == crate::kernel::tcp::TcpState::Established {
+                                                        connection_established = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    for _ in 0..10000 {
+                        core::arch::asm!("nop");
+                    }
+                }
+
+                if !connection_established {
+                    self.write_output("Connection failed - no SYN-ACK received\r\n");
+                    return;
+                }
+
+                self.write_output("Connected!\r\n");
+
+                // Send ACK to complete handshake
+                if let Err(e) = conn.send_ack(&mut devices[0], gateway_mac, our_mac) {
+                    self.write_output(&alloc::format!("Failed to send ACK: {}\r\n", e));
+                    return;
+                }
+
+                // Step 3: Send HTTP GET request
+                let http_request = alloc::format!(
+                    "GET / HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                    domain
+                );
+
+                self.write_output("Sending HTTP request...\r\n");
+
+                if let Err(e) = conn.send_data(&mut devices[0], gateway_mac, our_mac, http_request.as_bytes()) {
+                    self.write_output(&alloc::format!("Failed to send HTTP request: {}\r\n", e));
+                    return;
+                }
+
+                // Step 4: Receive HTTP response
+                self.write_output("Waiting for response...\r\n");
+                self.write_output("---\r\n");
+
+                let mut response_received = false;
+                for _ in 0..5000 {
+                    let mut rx_buffer = [0u8; 1526];
+                    if let Ok(len) = devices[0].receive(&mut rx_buffer) {
+                        if let Some((frame, payload)) = crate::kernel::network::parse_ethernet(&rx_buffer[..len]) {
+                            let ethertype = crate::kernel::network::be16_to_cpu(frame.ethertype);
+
+                            // Handle ARP
+                            if ethertype == crate::kernel::network::ETHERTYPE_ARP {
+                                if let Some(arp) = crate::kernel::network::parse_arp(payload) {
+                                    if crate::kernel::network::be16_to_cpu(arp.operation) == crate::kernel::network::ARP_REQUEST && arp.target_ip == our_ip {
+                                        let arp_reply = crate::kernel::network::build_arp_reply(
+                                            our_mac, our_ip, arp.sender_mac, arp.sender_ip);
+                                        let _ = devices[0].transmit(&arp_reply);
+                                    }
+                                }
+                            }
+                            // Handle TCP
+                            else if ethertype == crate::kernel::network::ETHERTYPE_IPV4 {
+                                if let Some((ip_hdr, ip_payload)) = crate::kernel::network::parse_ipv4(payload) {
+                                    if ip_hdr.protocol == crate::kernel::network::IP_PROTO_TCP {
+                                        if let Some((tcp_hdr, tcp_data)) = crate::kernel::network::parse_tcp(ip_payload) {
+                                            // Check if this is for our connection
+                                            if crate::kernel::network::be16_to_cpu(tcp_hdr.dst_port) == local_port {
+                                                // Update connection state
+                                                let _ = conn.handle_segment(&tcp_hdr, tcp_data);
+
+                                                // Display response data
+                                                if !tcp_data.is_empty() {
+                                                    if let Ok(text) = core::str::from_utf8(tcp_data) {
+                                                        self.write_output(text);
+                                                    }
+                                                    response_received = true;
+
+                                                    // Update ACK number for received data
+                                                    conn.ack_num = conn.ack_num.wrapping_add(tcp_data.len() as u32);
+
+                                                    // Send ACK for received data
+                                                    let _ = conn.send_ack(&mut devices[0], gateway_mac, our_mac);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    for _ in 0..10000 {
+                        core::arch::asm!("nop");
+                    }
+                }
+
+                if !response_received {
+                    self.write_output("No response received\r\n");
+                } else {
+                    self.write_output("\r\n---\r\n");
+                }
+
+                // Close connection
+                let _ = conn.close(&mut devices[0], gateway_mac, our_mac);
+
             } else {
                 self.write_output("Network not initialized\r\n");
             }
