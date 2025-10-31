@@ -105,6 +105,7 @@ impl Shell {
             "ifconfig" => self.cmd_ifconfig(),
             "ping" => self.cmd_ping(&parts),
             "arp" => self.cmd_arp(),
+            "nslookup" | "dig" => self.cmd_nslookup(&parts),
             _ => {
                 self.write_output("Unknown command: ");
                 self.write_output(parts[0]);
@@ -126,6 +127,7 @@ impl Shell {
         self.write_output("\r\nNetwork commands:\r\n");
         self.write_output("  ifconfig              - Show network configuration\r\n");
         self.write_output("  ping <ip>             - Ping a host (e.g. ping 8.8.8.8)\r\n");
+        self.write_output("  nslookup <domain>     - Resolve domain to IP (e.g. nslookup google.com)\r\n");
         self.write_output("  arp                   - Show ARP cache\r\n");
         self.write_output("  help                  - Show this help\r\n");
     }
@@ -626,6 +628,134 @@ impl Shell {
                 }
 
                 self.write_output("Request timeout - no reply\r\n");
+            } else {
+                self.write_output("Network not initialized\r\n");
+            }
+        }
+    }
+
+    fn cmd_nslookup(&mut self, parts: &[&str]) {
+        if parts.len() < 2 {
+            self.write_output("Usage: nslookup <domain>\r\n");
+            self.write_output("Example: nslookup google.com\r\n");
+            return;
+        }
+
+        let domain = parts[1];
+        self.write_output(&alloc::format!("Resolving {} ...\r\n", domain));
+
+        unsafe {
+            if let Some(ref mut devices) = crate::kernel::NET_DEVICES.as_mut() {
+                if devices.is_empty() {
+                    self.write_output("No network device available\r\n");
+                    return;
+                }
+
+                let our_mac = devices[0].mac_address();
+                let our_ip = crate::kernel::OUR_IP;
+                let gateway_ip = crate::kernel::GATEWAY_IP;
+
+                // Use Google's public DNS server
+                let dns_server = [8, 8, 8, 8];
+
+                // Hardcoded QEMU gateway MAC (user-mode networking doesn't do ARP)
+                let gateway_mac = [0x52, 0x55, 0x0a, 0x00, 0x02, 0x02];
+
+                // Build DNS query
+                static mut QUERY_ID: u16 = 1;
+                let query_id = QUERY_ID;
+                QUERY_ID = QUERY_ID.wrapping_add(1);
+
+                let dns_query = crate::kernel::dns::build_dns_query(
+                    domain, crate::kernel::dns::DNS_TYPE_A, query_id);
+
+                // Build UDP packet (source port 12345, dest port 53)
+                let udp_packet = crate::kernel::network::build_udp(
+                    our_ip, dns_server, 12345, 53, &dns_query);
+
+                // Build IPv4 packet
+                let ip_packet = crate::kernel::network::build_ipv4(
+                    our_ip, dns_server,
+                    crate::kernel::network::IP_PROTO_UDP,
+                    &udp_packet, query_id);
+
+                // Build Ethernet frame
+                let eth_frame = crate::kernel::network::build_ethernet(
+                    gateway_mac, our_mac, crate::kernel::network::ETHERTYPE_IPV4, &ip_packet);
+
+                // Send the DNS query
+                if let Err(e) = devices[0].transmit(&eth_frame) {
+                    self.write_output(&alloc::format!("Failed to send DNS query: {}\r\n", e));
+                    return;
+                }
+
+                self.write_output("DNS query sent, waiting for response...\r\n");
+
+                // Replenish receive buffers
+                if let Err(e) = devices[0].add_receive_buffers(16) {
+                    self.write_output(&alloc::format!("Warning: Failed to add RX buffers: {}\r\n", e));
+                }
+
+                // Wait for DNS response
+                for _ in 0..2000 {
+                    let mut rx_buffer = [0u8; 1526];
+                    if let Ok(len) = devices[0].receive(&mut rx_buffer) {
+                        if let Some((frame, payload)) = crate::kernel::network::parse_ethernet(&rx_buffer[..len]) {
+                            let ethertype = crate::kernel::network::be16_to_cpu(frame.ethertype);
+
+                            // Handle ARP requests (QEMU needs to learn our MAC)
+                            if ethertype == crate::kernel::network::ETHERTYPE_ARP {
+                                if let Some(arp) = crate::kernel::network::parse_arp(payload) {
+                                    let arp_op = crate::kernel::network::be16_to_cpu(arp.operation);
+                                    if arp_op == crate::kernel::network::ARP_REQUEST && arp.target_ip == our_ip {
+                                        let arp_reply = crate::kernel::network::build_arp_reply(
+                                            our_mac, our_ip, arp.sender_mac, arp.sender_ip);
+                                        let _ = devices[0].transmit(&arp_reply);
+                                    }
+                                }
+                            }
+                            // Handle IPv4 packets
+                            else if ethertype == crate::kernel::network::ETHERTYPE_IPV4 {
+                                if let Some((ip_hdr, ip_payload)) = crate::kernel::network::parse_ipv4(payload) {
+                                    // Check if this is UDP
+                                    if ip_hdr.protocol == crate::kernel::network::IP_PROTO_UDP {
+                                        if let Some((udp_hdr, udp_payload)) = crate::kernel::network::parse_udp(ip_payload) {
+                                            let src_port = crate::kernel::network::be16_to_cpu(udp_hdr.src_port);
+                                            let dst_port = crate::kernel::network::be16_to_cpu(udp_hdr.dst_port);
+
+                                            // Check if this is a DNS response (from port 53 to our port 12345)
+                                            if src_port == 53 && dst_port == 12345 {
+                                                // Parse DNS response
+                                                if let Some(addresses) = crate::kernel::dns::parse_dns_response(udp_payload) {
+                                                    if addresses.is_empty() {
+                                                        self.write_output("No A records found\r\n");
+                                                    } else {
+                                                        self.write_output(&alloc::format!("Resolved {} to:\r\n", domain));
+                                                        for addr in addresses {
+                                                            self.write_output(&alloc::format!("  {}\r\n",
+                                                                crate::kernel::network::format_ip(addr)));
+                                                        }
+                                                    }
+                                                    return;
+                                                } else {
+                                                    self.write_output("Failed to parse DNS response\r\n");
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Small delay
+                    for _ in 0..10000 {
+                        core::arch::asm!("nop");
+                    }
+                }
+
+                self.write_output("DNS timeout - no response\r\n");
             } else {
                 self.write_output("Network not initialized\r\n");
             }

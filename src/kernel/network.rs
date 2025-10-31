@@ -1,5 +1,5 @@
 // Network protocol stack implementation
-// Supports: Ethernet, ARP, IPv4, ICMP
+// Supports: Ethernet, ARP, IPv4, ICMP, UDP
 
 use alloc::vec::Vec;
 use core::ptr;
@@ -53,6 +53,16 @@ pub struct IcmpHeader {
     pub checksum: u16,
     pub id: u16,
     pub sequence: u16,
+}
+
+/// UDP header (8 bytes)
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct UdpHeader {
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub length: u16,    // Header + data length
+    pub checksum: u16,
 }
 
 // Ethernet types
@@ -312,6 +322,61 @@ pub fn parse_icmp(payload: &[u8]) -> Option<(IcmpHeader, &[u8])> {
 
     let header = unsafe {
         ptr::read_unaligned(payload.as_ptr() as *const IcmpHeader)
+    };
+
+    let data = &payload[8..];
+    Some((header, data))
+}
+
+/// Build a UDP packet
+pub fn build_udp(src_ip: [u8; 4], dst_ip: [u8; 4], src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
+    let udp_len = 8 + payload.len();
+
+    let mut header = UdpHeader {
+        src_port: cpu_to_be16(src_port),
+        dst_port: cpu_to_be16(dst_port),
+        length: cpu_to_be16(udp_len as u16),
+        checksum: 0,  // Will calculate after
+    };
+
+    // Build pseudo-header for checksum
+    let mut pseudo_header = Vec::new();
+    pseudo_header.extend_from_slice(&src_ip);
+    pseudo_header.extend_from_slice(&dst_ip);
+    pseudo_header.push(0);  // Zero
+    pseudo_header.push(IP_PROTO_UDP);  // Protocol
+    pseudo_header.extend_from_slice(&(udp_len as u16).to_be_bytes());
+
+    // Build full packet for checksum (pseudo-header + UDP header + data)
+    let mut checksum_data = pseudo_header;
+    let header_bytes = unsafe {
+        core::slice::from_raw_parts(&header as *const _ as *const u8, 8)
+    };
+    checksum_data.extend_from_slice(header_bytes);
+    checksum_data.extend_from_slice(payload);
+
+    // Calculate checksum
+    header.checksum = cpu_to_be16(checksum(&checksum_data));
+
+    // Build final packet (UDP header + data only, no pseudo-header)
+    let mut packet = Vec::new();
+    let final_header_bytes = unsafe {
+        core::slice::from_raw_parts(&header as *const _ as *const u8, 8)
+    };
+    packet.extend_from_slice(final_header_bytes);
+    packet.extend_from_slice(payload);
+
+    packet
+}
+
+/// Parse a UDP packet
+pub fn parse_udp(payload: &[u8]) -> Option<(UdpHeader, &[u8])> {
+    if payload.len() < 8 {
+        return None;
+    }
+
+    let header = unsafe {
+        ptr::read_unaligned(payload.as_ptr() as *const UdpHeader)
     };
 
     let data = &payload[8..];
