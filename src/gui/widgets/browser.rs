@@ -766,7 +766,14 @@ impl Browser {
                 return (x, current_y);
             }
             "ul" | "ol" => {
-                // Lists
+                // Lists - use small fixed indent to prevent excessive nesting
+                const LIST_INDENT: usize = 32; // Small fixed indent per nesting level
+
+                // Add extra spacing before nested lists (x > 10 means we're indented)
+                if !self.layout.is_empty() && x > 10 {
+                    current_y += CHAR_HEIGHT * font_size / 2; // Extra space before nested list
+                }
+
                 for (i, child) in node.children.iter().enumerate() {
                     // Save the starting Y position for this list item
                     let list_item_y = current_y;
@@ -777,7 +784,7 @@ impl Browser {
 
                     // Layout the list item content first to get its starting position
                     let content_start_idx = self.layout.len();
-                    let (_, new_y) = self.layout_node(child, current_x + bullet_width + 8, list_item_y, max_width - bullet_width - 8, color, bold, italic, font_size, element_id);
+                    let (_, new_y) = self.layout_node(child, current_x + LIST_INDENT, list_item_y, max_width - LIST_INDENT, color, bold, italic, font_size, element_id);
 
                     // Find the Y position where the content actually started
                     let content_y = if self.layout.len() > content_start_idx {
@@ -811,7 +818,16 @@ impl Browser {
 
         // Render children
         for child in &node.children {
-            let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic, font_size, element_id);
+            // For block-level children (like nested lists), pass the base x position
+            // For inline children (like text), pass current_x (continues on same line)
+            let child_is_block = if let NodeType::Element(child_elem) = &child.node_type {
+                matches!(child_elem.tag_name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "br")
+            } else {
+                false
+            };
+
+            let child_x = if child_is_block { x } else { current_x };
+            let (new_x, new_y) = self.layout_node(child, child_x, current_y, max_width, color, bold, italic, font_size, element_id);
             current_x = new_x;
             current_y = new_y;
         }
