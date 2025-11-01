@@ -620,6 +620,11 @@ impl TextEditor {
         self.is_selecting = false;
     }
 
+    /// Check if there's an active selection
+    pub fn has_selection(&self) -> bool {
+        self.selection_start.is_some() && self.selection_end.is_some()
+    }
+
     /// Select all text
     pub fn select_all(&mut self) {
         if self.lines.is_empty() {

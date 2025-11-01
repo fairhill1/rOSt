@@ -395,8 +395,21 @@ pub fn test_input_events() -> (bool, bool) {
     while let Some(event) = get_input_event() {
         match event {
             InputEvent::KeyPressed { key, modifiers } => {
-                // Check if we're in delete confirmation mode
-                if is_confirming_delete() {
+                // Check if we're in close confirmation mode
+                if is_confirming_close() {
+                    // Handle y/n input for close confirmation
+                    if let Some(ascii) = evdev_to_ascii(key, modifiers) {
+                        if ascii == b'y' || ascii == b'Y' {
+                            // Confirm close
+                            confirm_close_window();
+                            needs_full_redraw = true;
+                        } else if ascii == b'n' || ascii == b'N' || ascii == 27 { // n, N, or ESC
+                            // Cancel close
+                            cancel_close_confirm();
+                            needs_full_redraw = true;
+                        }
+                    }
+                } else if is_confirming_delete() {
                     // Handle y/n input for delete confirmation
                     if let Some(ascii) = evdev_to_ascii(key, modifiers) {
                         if ascii == b'y' || ascii == b'Y' {
@@ -461,10 +474,32 @@ pub fn test_input_events() -> (bool, bool) {
                         }
                     } else {
                         // Normal editor input handling
-                        // Check for Ctrl+S (save)
-                        let is_ctrl = (modifiers & (MOD_LEFT_CTRL | MOD_RIGHT_CTRL)) != 0;
 
-                        if is_ctrl && key == 30 { // KEY_A = 30 in evdev (Ctrl+A)
+                        // Check for ESC first (to close window or clear selection)
+                        if key == 1 { // KEY_ESC = 1 in evdev
+                            if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
+                                if editor.has_selection() {
+                                    // Clear selection first
+                                    editor.clear_selection();
+                                    needs_full_redraw = true;
+                                } else if editor.is_modified() {
+                                    // Has unsaved changes - prompt for confirmation
+                                    if let Some(window_index) = crate::gui::window_manager::get_focused_window_index() {
+                                        start_close_confirm(window_index);
+                                        needs_full_redraw = true;
+                                    }
+                                } else {
+                                    // No unsaved changes - close immediately
+                                    crate::gui::window_manager::close_focused_window();
+                                    needs_full_redraw = true;
+                                }
+                            }
+                        }
+                        // Check for Ctrl+S (save)
+                        else {
+                            let is_ctrl = (modifiers & (MOD_LEFT_CTRL | MOD_RIGHT_CTRL)) != 0;
+
+                            if is_ctrl && key == 30 { // KEY_A = 30 in evdev (Ctrl+A)
                             // Handle select all
                             if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                 editor.select_all();
@@ -577,19 +612,30 @@ pub fn test_input_events() -> (bool, bool) {
                                 }
                             }
                         }
+                        } // Close the else block for non-ESC keys
                     }
                 } else if let Some(terminal_id) = crate::gui::window_manager::get_focused_terminal_id() {
-                    // VirtIO keyboard uses Linux evdev codes
-                    if let Some(ascii) = evdev_to_ascii(key, modifiers) {
-                        // Pass input to the focused terminal's shell
-                        if let Some(shell) = crate::apps::shell::get_shell(terminal_id) {
-                            shell.handle_char(ascii);
+                    // Check for ESC to close terminal
+                    if key == 1 { // KEY_ESC = 1 in evdev
+                        crate::gui::window_manager::close_focused_window();
+                        needs_full_redraw = true;
+                    } else {
+                        // VirtIO keyboard uses Linux evdev codes
+                        if let Some(ascii) = evdev_to_ascii(key, modifiers) {
+                            // Pass input to the focused terminal's shell
+                            if let Some(shell) = crate::apps::shell::get_shell(terminal_id) {
+                                shell.handle_char(ascii);
+                            }
+                            needs_full_redraw = true; // Keyboard input requires full redraw
                         }
-                        needs_full_redraw = true; // Keyboard input requires full redraw
                     }
                 } else if let Some(explorer_id) = crate::gui::window_manager::get_focused_file_explorer_id() {
                     // File explorer keyboard navigation
                     match key {
+                        1 => { // KEY_ESC - close file explorer
+                            crate::gui::window_manager::close_focused_window();
+                            needs_full_redraw = true;
+                        }
                         103 => { // KEY_UP
                             crate::gui::widgets::file_explorer::move_selection_up(explorer_id);
                             needs_full_redraw = true;
@@ -654,6 +700,10 @@ pub fn test_input_events() -> (bool, bool) {
                 } else if let Some(snake_id) = crate::gui::window_manager::get_focused_snake_id() {
                     // Snake game keyboard controls
                     match key {
+                        1 => { // KEY_ESC - close snake game
+                            crate::gui::window_manager::close_focused_window();
+                            needs_full_redraw = true;
+                        }
                         103 => { // KEY_UP
                             if let Some(game) = crate::apps::snake::get_snake_game(snake_id) {
                                 game.set_direction(crate::apps::snake::Direction::Up);
@@ -692,6 +742,10 @@ pub fn test_input_events() -> (bool, bool) {
 
                     // Handle arrow keys for URL input
                     match key {
+                        1 => { // KEY_ESC - close browser
+                            crate::gui::window_manager::close_focused_window();
+                            needs_full_redraw = true;
+                        }
                         105 => { // KEY_LEFT
                             crate::gui::widgets::browser::handle_arrow_key(
                                 browser_id,
@@ -731,6 +785,39 @@ pub fn test_input_events() -> (bool, bool) {
                                 crate::gui::widgets::browser::handle_key(browser_id, ascii as char, is_ctrl, is_shift);
                                 needs_full_redraw = true;
                             }
+                        }
+                    }
+                } else {
+                    // No specific window focused - check for ESC to close any focused window
+                    if key == 1 { // KEY_ESC = 1 in evdev
+                        // Close the focused window (if any)
+                        if let Some(editor_id) = crate::gui::window_manager::get_focused_editor_id() {
+                            // Check if editor has selection - clear it first, don't close
+                            if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
+                                if editor.has_selection() {
+                                    editor.clear_selection();
+                                    needs_full_redraw = true;
+                                } else if editor.is_modified() {
+                                    // Editor has unsaved changes - prompt for confirmation
+                                    if let Some(window_index) = crate::gui::window_manager::get_focused_window_index() {
+                                        start_close_confirm(window_index);
+                                        needs_full_redraw = true;
+                                    }
+                                } else {
+                                    // No unsaved changes - close immediately
+                                    crate::gui::window_manager::close_focused_window();
+                                    needs_full_redraw = true;
+                                }
+                            }
+                        } else if crate::gui::window_manager::get_focused_browser_id().is_some() {
+                            // Browser might have URL selection - let it handle ESC first
+                            // For now, just close the window
+                            crate::gui::window_manager::close_focused_window();
+                            needs_full_redraw = true;
+                        } else if crate::gui::window_manager::has_any_focused_window() {
+                            // Any other focused window - close it
+                            crate::gui::window_manager::close_focused_window();
+                            needs_full_redraw = true;
                         }
                     }
                 }
@@ -831,6 +918,9 @@ static mut RENAME_OLD_FILENAME: Option<String> = None;
 
 /// Delete confirmation state (stores filename to delete)
 static mut DELETE_CONFIRM_FILENAME: Option<String> = None;
+
+/// Close confirmation state (stores window index to close if confirmed)
+static mut CLOSE_CONFIRM_WINDOW: Option<usize> = None;
 
 /// Status message to show in menu bar
 static mut MENU_STATUS_MESSAGE: Option<String> = None;
@@ -1066,6 +1156,37 @@ pub fn confirm_delete_file() {
                 }
             }
         }
+    }
+}
+
+/// Start prompting for close confirmation
+pub fn start_close_confirm(window_index: usize) {
+    unsafe {
+        CLOSE_CONFIRM_WINDOW = Some(window_index);
+        set_menu_status("Close without saving? (y/n)");
+    }
+}
+
+/// Check if we're in close confirmation mode
+pub fn is_confirming_close() -> bool {
+    unsafe { CLOSE_CONFIRM_WINDOW.is_some() }
+}
+
+/// Cancel close confirmation
+pub fn cancel_close_confirm() {
+    unsafe {
+        CLOSE_CONFIRM_WINDOW = None;
+        clear_menu_status();
+    }
+}
+
+/// Confirm close and close the window
+pub fn confirm_close_window() {
+    unsafe {
+        if let Some(window_index) = CLOSE_CONFIRM_WINDOW.take() {
+            crate::gui::window_manager::close_window_by_index(window_index);
+        }
+        clear_menu_status();
     }
 }
 
