@@ -607,11 +607,9 @@ impl Browser {
         match &node.node_type {
             NodeType::Element(elem) => {
                 if elem.tag_name == "body" {
-                    // Found the body! Layout its children
+                    // Found the body! Layout it (which will recursively layout its children)
                     crate::kernel::uart_write_string("find_and_layout_body: Found <body> element\r\n");
-                    for child in &node.children {
-                        self.layout_node(child, x, y, max_width, &Color::BLACK, false, false, 2, "");
-                    }
+                    self.layout_node(node, x, y, max_width, &Color::BLACK, false, false, 2, "");
                     return;
                 }
                 // Not body, recurse into children to find it
