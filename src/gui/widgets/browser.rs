@@ -994,10 +994,22 @@ impl Browser {
     }
 
     /// Handle scroll
-    pub fn handle_scroll(&mut self, delta: i32) {
+    pub fn handle_scroll(&mut self, delta: i32, win_height: usize) {
+        // Calculate total content height
+        let content_height = win_height.saturating_sub(35); // Address bar is 35px
+        let max_content_y = self.layout.iter()
+            .map(|box_| box_.y + box_.height)
+            .max()
+            .unwrap_or(0);
+
+        // Calculate maximum scroll offset (don't scroll past the end)
+        let max_scroll = max_content_y.saturating_sub(content_height);
+
         if delta > 0 {
-            self.scroll_offset = self.scroll_offset.saturating_add(20);
+            // Scroll down - clamp to max
+            self.scroll_offset = (self.scroll_offset.saturating_add(20)).min(max_scroll);
         } else {
+            // Scroll up - clamp to 0
             self.scroll_offset = self.scroll_offset.saturating_sub(20);
         }
     }
