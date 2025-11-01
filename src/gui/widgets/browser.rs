@@ -4,6 +4,7 @@
 use crate::gui::html_parser::{Parser, Node, NodeType, ElementData};
 use crate::gui::framebuffer::FONT_8X8;
 use crate::gui::widgets::text_input::TextInput;
+use crate::gui::bmp_decoder::BmpImage;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::format;
@@ -13,6 +14,24 @@ static mut BROWSERS: Vec<Browser> = Vec::new();
 
 const CHAR_WIDTH: usize = 8;
 const CHAR_HEIGHT: usize = 8;
+
+/// Find the end of HTTP headers in binary data
+/// Returns (start_of_separator, length_of_separator)
+fn find_header_end(data: &[u8]) -> Option<(usize, usize)> {
+    // Look for \r\n\r\n
+    for i in 0..data.len().saturating_sub(3) {
+        if data[i] == b'\r' && data[i+1] == b'\n' && data[i+2] == b'\r' && data[i+3] == b'\n' {
+            return Some((i, 4));
+        }
+    }
+    // Look for \n\n
+    for i in 0..data.len().saturating_sub(1) {
+        if data[i] == b'\n' && data[i+1] == b'\n' {
+            return Some((i, 2));
+        }
+    }
+    None
+}
 
 /// Simple color structure
 #[derive(Clone, Copy, Debug)]
@@ -48,6 +67,8 @@ pub struct LayoutBox {
     pub bold: bool,
     pub italic: bool,
     pub element_id: String, // HTML element ID attribute
+    pub is_image: bool,
+    pub image_data: Option<BmpImage>,
 }
 
 pub struct Browser {
@@ -561,6 +582,420 @@ impl Browser {
         }
     }
 
+    /// Make HTTP GET request for binary data (images)
+    fn http_get_binary(&self, host: &str, port: u16, path: &str) -> Option<Vec<u8>> {
+        unsafe {
+            crate::kernel::uart_write_string("http_get_binary: Starting\r\n");
+
+            // Get network device
+            let devices = match crate::kernel::NET_DEVICES.as_mut() {
+                Some(d) if !d.is_empty() => d,
+                _ => {
+                    crate::kernel::uart_write_string("http_get_binary: No network device\r\n");
+                    return None;
+                }
+            };
+
+            let our_mac = devices[0].mac_address();
+            let our_ip = crate::kernel::OUR_IP;
+            let gateway_mac = [0x52, 0x55, 0x0a, 0x00, 0x02, 0x02];
+
+            // Step 1: Resolve domain name to IP (or parse if already an IP)
+            let server_ip = if let Some(ip) = crate::system::net::network::parse_ip(host) {
+                ip
+            } else {
+                // DNS resolution (simplified - reuse from http_get)
+                let dns_server = [8, 8, 8, 8];
+                static mut BROWSER_DNS_QUERY_ID_BIN: u16 = 300;
+                let query_id = BROWSER_DNS_QUERY_ID_BIN;
+                BROWSER_DNS_QUERY_ID_BIN = BROWSER_DNS_QUERY_ID_BIN.wrapping_add(1);
+
+                let dns_query = crate::system::net::dns::build_dns_query(
+                    host, crate::system::net::dns::DNS_TYPE_A, query_id);
+                let udp_packet = crate::system::net::network::build_udp(
+                    our_ip, dns_server, 12345, 53, &dns_query);
+                let ip_packet = crate::system::net::network::build_ipv4(
+                    our_ip, dns_server,
+                    crate::system::net::network::IP_PROTO_UDP,
+                    &udp_packet, query_id);
+                let eth_frame = crate::system::net::network::build_ethernet(
+                    gateway_mac, our_mac, crate::system::net::network::ETHERTYPE_IPV4, &ip_packet);
+
+                devices[0].transmit(&eth_frame).ok()?;
+                let _ = devices[0].add_receive_buffers(16);
+
+                // Wait for DNS response
+                let mut resolved_ip = None;
+                for _ in 0..2000 {
+                    let mut rx_buffer = [0u8; 1526];
+                    if let Ok(len) = devices[0].receive(&mut rx_buffer) {
+                        if let Some((frame, payload)) = crate::system::net::network::parse_ethernet(&rx_buffer[..len]) {
+                            let ethertype = crate::system::net::network::be16_to_cpu(frame.ethertype);
+                            if ethertype == crate::system::net::network::ETHERTYPE_ARP {
+                                if let Some(arp) = crate::system::net::network::parse_arp(payload) {
+                                    if crate::system::net::network::be16_to_cpu(arp.operation) == crate::system::net::network::ARP_REQUEST && arp.target_ip == our_ip {
+                                        let arp_reply = crate::system::net::network::build_arp_reply(
+                                            our_mac, our_ip, arp.sender_mac, arp.sender_ip);
+                                        let _ = devices[0].transmit(&arp_reply);
+                                    }
+                                }
+                            } else if ethertype == crate::system::net::network::ETHERTYPE_IPV4 {
+                                if let Some((ip_hdr, ip_payload)) = crate::system::net::network::parse_ipv4(payload) {
+                                    if ip_hdr.protocol == crate::system::net::network::IP_PROTO_UDP {
+                                        if let Some((udp_hdr, udp_payload)) = crate::system::net::network::parse_udp(ip_payload) {
+                                            if crate::system::net::network::be16_to_cpu(udp_hdr.src_port) == 53 {
+                                                if let Some(addresses) = crate::system::net::dns::parse_dns_response(udp_payload) {
+                                                    if !addresses.is_empty() {
+                                                        resolved_ip = Some(addresses[0]);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        crate::kernel::drivers::timer::delay_ms(1);
+                    }
+                }
+                resolved_ip?
+            };
+
+            // Step 2: Establish TCP connection
+            static mut BROWSER_LOCAL_PORT_BIN: u16 = 61000;
+            let local_port = BROWSER_LOCAL_PORT_BIN;
+            BROWSER_LOCAL_PORT_BIN = BROWSER_LOCAL_PORT_BIN.wrapping_add(1);
+
+            let mut conn = crate::system::net::tcp::TcpConnection::new(
+                our_ip, server_ip, local_port, port);
+
+            conn.connect(&mut devices[0], gateway_mac, our_mac).ok()?;
+
+            // Wait for SYN-ACK
+            let mut connection_established = false;
+            for _ in 0..2000 {
+                let mut rx_buffer = [0u8; 1526];
+                if let Ok(len) = devices[0].receive(&mut rx_buffer) {
+                    if let Some((frame, payload)) = crate::system::net::network::parse_ethernet(&rx_buffer[..len]) {
+                        let ethertype = crate::system::net::network::be16_to_cpu(frame.ethertype);
+                        if ethertype == crate::system::net::network::ETHERTYPE_ARP {
+                            if let Some(arp) = crate::system::net::network::parse_arp(payload) {
+                                if crate::system::net::network::be16_to_cpu(arp.operation) == crate::system::net::network::ARP_REQUEST && arp.target_ip == our_ip {
+                                    let arp_reply = crate::system::net::network::build_arp_reply(
+                                        our_mac, our_ip, arp.sender_mac, arp.sender_ip);
+                                    let _ = devices[0].transmit(&arp_reply);
+                                }
+                            }
+                        } else if ethertype == crate::system::net::network::ETHERTYPE_IPV4 {
+                            if let Some((ip_hdr, ip_payload)) = crate::system::net::network::parse_ipv4(payload) {
+                                if ip_hdr.protocol == crate::system::net::network::IP_PROTO_TCP {
+                                    if let Some((tcp_hdr, tcp_data)) = crate::system::net::network::parse_tcp(ip_payload) {
+                                        if crate::system::net::network::be16_to_cpu(tcp_hdr.dst_port) == local_port {
+                                            if conn.handle_segment(&tcp_hdr, tcp_data).is_ok() {
+                                                if conn.state == crate::system::net::tcp::TcpState::Established {
+                                                    connection_established = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    crate::kernel::drivers::timer::delay_ms(1);
+                }
+            }
+
+            if !connection_established {
+                return None;
+            }
+
+            conn.send_ack(&mut devices[0], gateway_mac, our_mac).ok()?;
+
+            // Step 3: Send HTTP GET request
+            let http_request = alloc::format!(
+                "GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                path, host
+            );
+
+            conn.send_data(&mut devices[0], gateway_mac, our_mac, http_request.as_bytes()).ok()?;
+
+            // Step 4: Receive binary data
+            let mut response = Vec::new();
+            let mut no_data_count = 0;
+            let mut connection_closed_by_server = false;
+            let mut fin_already_acked = false;
+            let mut content_length: Option<usize> = None;
+            let mut headers_complete = false;
+            let mut header_len = 0;
+            let mut expected_seq = conn.ack_num; // Track expected next sequence number
+
+            for iteration in 0..10000 {
+                let mut rx_buffer = [0u8; 1526];
+                if let Ok(len) = devices[0].receive(&mut rx_buffer) {
+                    no_data_count = 0;
+
+                    // Replenish receive buffers after EVERY packet to keep queue full
+                    // This is critical for large file downloads
+                    if iteration % 5 == 0 {
+                        match devices[0].add_receive_buffers(8) {
+                            Ok(_) => {
+                                if iteration % 20 == 0 {
+                                    crate::kernel::uart_write_string(&alloc::format!(
+                                        "http_get_binary: Successfully added RX buffers at iteration {}\r\n", iteration
+                                    ));
+                                }
+                            }
+                            Err(_) => {
+                                crate::kernel::uart_write_string(&alloc::format!(
+                                    "http_get_binary: FAILED to add RX buffers at iteration {}\r\n", iteration
+                                ));
+                            }
+                        }
+                    }
+
+                    if let Some((frame, payload)) = crate::system::net::network::parse_ethernet(&rx_buffer[..len]) {
+                        let ethertype = crate::system::net::network::be16_to_cpu(frame.ethertype);
+                        if ethertype == crate::system::net::network::ETHERTYPE_ARP {
+                            if let Some(arp) = crate::system::net::network::parse_arp(payload) {
+                                if crate::system::net::network::be16_to_cpu(arp.operation) == crate::system::net::network::ARP_REQUEST && arp.target_ip == our_ip {
+                                    let arp_reply = crate::system::net::network::build_arp_reply(
+                                        our_mac, our_ip, arp.sender_mac, arp.sender_ip);
+                                    let _ = devices[0].transmit(&arp_reply);
+                                }
+                            }
+                        } else if ethertype == crate::system::net::network::ETHERTYPE_IPV4 {
+                            if let Some((ip_hdr, ip_payload)) = crate::system::net::network::parse_ipv4(payload) {
+                                if ip_hdr.protocol == crate::system::net::network::IP_PROTO_TCP {
+                                    if let Some((tcp_hdr, tcp_data)) = crate::system::net::network::parse_tcp(ip_payload) {
+                                        if crate::system::net::network::be16_to_cpu(tcp_hdr.dst_port) == local_port {
+                                            let flags = u16::from_be(tcp_hdr.data_offset_flags) & 0x1FF;
+                                            let has_fin = flags & crate::system::net::network::TCP_FLAG_FIN != 0;
+
+                                            // Debug: log raw TCP data size
+                                            if !tcp_data.is_empty() {
+                                                crate::kernel::uart_write_string(&alloc::format!(
+                                                    "http_get_binary: RAW tcp_data.len()={}, has_fin={}\r\n",
+                                                    tcp_data.len(), has_fin
+                                                ));
+                                            }
+
+                                            let mut need_ack = false;
+                                            if !tcp_data.is_empty() {
+                                                // Check TCP sequence number for out-of-order detection
+                                                let tcp_seq = u32::from_be(tcp_hdr.seq_num);
+
+                                                if tcp_seq != expected_seq {
+                                                    crate::kernel::uart_write_string(&alloc::format!(
+                                                        "http_get_binary: OUT OF ORDER! Expected seq {}, got seq {}, data len {}\r\n",
+                                                        expected_seq, tcp_seq, tcp_data.len()
+                                                    ));
+                                                    // Skip out-of-order packets for now
+                                                    continue;
+                                                }
+
+                                                // Only filter null bytes BEFORE headers are complete
+                                                // (spurious TCP packets sent before HTTP response)
+                                                let should_filter = !headers_complete && tcp_data.iter().all(|&b| b == 0);
+                                                if should_filter {
+                                                    crate::kernel::uart_write_string(&alloc::format!(
+                                                        "http_get_binary: WARNING: Ignoring packet with {} null bytes before headers (NOT ACKing)\r\n",
+                                                        tcp_data.len()
+                                                    ));
+                                                    // Don't add null bytes and DON'T ACK them
+                                                } else {
+                                                    // Append binary data
+                                                    response.extend_from_slice(tcp_data);
+                                                    expected_seq = expected_seq.wrapping_add(tcp_data.len() as u32);
+
+                                                    crate::kernel::uart_write_string(&alloc::format!(
+                                                        "http_get_binary: Received {} bytes, total now: {}\r\n",
+                                                        tcp_data.len(), response.len()
+                                                    ));
+
+                                                // Try to parse Content-Length from headers if not done yet
+                                                if !headers_complete {
+                                                    // Look for end of headers
+                                                    if let Some((header_end, sep_len)) = find_header_end(&response) {
+                                                        headers_complete = true;
+                                                        header_len = header_end + sep_len;
+
+                                                        // Parse Content-Length
+                                                        if let Ok(headers_str) = core::str::from_utf8(&response[..header_end]) {
+                                                            for line in headers_str.lines() {
+                                                                if line.to_lowercase().starts_with("content-length:") {
+                                                                    if let Some(len_str) = line.split(':').nth(1) {
+                                                                        if let Ok(len) = len_str.trim().parse::<usize>() {
+                                                                            content_length = Some(len);
+                                                                            crate::kernel::uart_write_string(&alloc::format!(
+                                                                                "http_get_binary: Content-Length = {}\r\n", len
+                                                                            ));
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                conn.ack_num = conn.ack_num.wrapping_add(tcp_data.len() as u32);
+                                                need_ack = true;
+
+                                                // Check if we've received all expected data
+                                                if let Some(expected_len) = content_length {
+                                                    if headers_complete {
+                                                        let body_len = response.len() - header_len;
+                                                        if body_len >= expected_len {
+                                                            crate::kernel::uart_write_string(&alloc::format!(
+                                                                "http_get_binary: Received complete file ({}/{} bytes)\r\n",
+                                                                body_len, expected_len
+                                                            ));
+                                                            // Send ACK first, then break
+                                                            let _ = conn.send_ack(&mut devices[0], gateway_mac, our_mac);
+                                                            need_ack = false; // Already sent
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                                }  // End of else block (non-null data)
+                                            }
+
+                                            if has_fin && !fin_already_acked {
+                                                crate::kernel::uart_write_string("http_get_binary: Received FIN\r\n");
+                                                conn.ack_num = conn.ack_num.wrapping_add(1);
+                                                connection_closed_by_server = true;
+                                                fin_already_acked = true;
+                                                need_ack = true;
+                                            } else if has_fin && !tcp_data.is_empty() {
+                                                need_ack = true;
+                                            }
+
+                                            if need_ack {
+                                                crate::kernel::uart_write_string(&alloc::format!(
+                                                    "http_get_binary: Sending ACK for ack_num={}\r\n", conn.ack_num
+                                                ));
+                                                let _ = conn.send_ack(&mut devices[0], gateway_mac, our_mac);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    no_data_count += 1;
+
+                    // Check if we have all data based on Content-Length
+                    if let Some(expected_len) = content_length {
+                        if headers_complete {
+                            let body_len = response.len() - header_len;
+                            if body_len >= expected_len {
+                                crate::kernel::uart_write_string("http_get_binary: Have all expected data, breaking\r\n");
+                                break;
+                            }
+                            // Log progress every 100 iterations when waiting for more data
+                            if no_data_count % 100 == 0 {
+                                crate::kernel::uart_write_string(&alloc::format!(
+                                    "http_get_binary: Waiting for more data... {}/{} bytes ({} iterations)\r\n",
+                                    body_len, expected_len, no_data_count
+                                ));
+                            }
+                        }
+                    }
+
+                    // Much longer timeout for binary files (20 seconds)
+                    if no_data_count > 20000 && !response.is_empty() {
+                        crate::kernel::uart_write_string(&alloc::format!(
+                            "http_get_binary: Timeout after {}ms\r\n", no_data_count
+                        ));
+                        break;
+                    }
+                    // Don't break on FIN until we've checked we have all data
+                    if connection_closed_by_server && content_length.is_some() && headers_complete {
+                        let body_len = response.len() - header_len;
+                        if body_len >= content_length.unwrap() {
+                            crate::kernel::uart_write_string("http_get_binary: FIN received and have all data\r\n");
+                            break;
+                        }
+                    }
+                    crate::kernel::drivers::timer::delay_ms(1);
+                }
+            }
+
+            // Close connection
+            if conn.state == crate::system::net::tcp::TcpState::Established {
+                let _ = conn.close(&mut devices[0], gateway_mac, our_mac);
+                for _ in 0..100 {
+                    let mut rx_buffer = [0u8; 1526];
+                    if let Ok(len) = devices[0].receive(&mut rx_buffer) {
+                        if let Some((frame, payload)) = crate::system::net::network::parse_ethernet(&rx_buffer[..len]) {
+                            if crate::system::net::network::be16_to_cpu(frame.ethertype) == crate::system::net::network::ETHERTYPE_IPV4 {
+                                if let Some((ip_hdr, ip_payload)) = crate::system::net::network::parse_ipv4(payload) {
+                                    if ip_hdr.protocol == crate::system::net::network::IP_PROTO_TCP {
+                                        if let Some((tcp_hdr, tcp_data)) = crate::system::net::network::parse_tcp(ip_payload) {
+                                            if crate::system::net::network::be16_to_cpu(tcp_hdr.dst_port) == local_port {
+                                                let _ = conn.handle_segment(&tcp_hdr, tcp_data);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        crate::kernel::drivers::timer::delay_ms(1);
+                    }
+                }
+            }
+
+            // Drain receive queue
+            let start_time = crate::kernel::drivers::timer::get_time_ms();
+            let mut no_packet_count = 0;
+            while crate::kernel::drivers::timer::get_time_ms() - start_time < 200 {
+                let mut rx_buffer = [0u8; 1526];
+                if let Ok(_) = devices[0].receive(&mut rx_buffer) {
+                    no_packet_count = 0;
+                } else {
+                    no_packet_count += 1;
+                    if no_packet_count > 5 {
+                        break;
+                    }
+                    crate::kernel::drivers::timer::delay_ms(2);
+                }
+            }
+
+            let _ = devices[0].add_receive_buffers(8);
+
+            crate::kernel::uart_write_string(&alloc::format!(
+                "http_get_binary: Total response size: {} bytes\r\n", response.len()
+            ));
+
+            // Extract body from HTTP response
+            if let Some((body_start, sep_len)) = find_header_end(&response) {
+                let body = response[body_start + sep_len..].to_vec();
+                crate::kernel::uart_write_string(&alloc::format!(
+                    "http_get_binary: Header ends at byte {}, body starts at {}, body length={}\r\n",
+                    body_start, body_start + sep_len, body.len()
+                ));
+
+                // Debug: show first 10 bytes of body
+                if body.len() >= 10 {
+                    crate::kernel::uart_write_string(&alloc::format!(
+                        "http_get_binary: Body first 10 bytes: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}\r\n",
+                        body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7], body[8], body[9]
+                    ));
+                }
+                Some(body)
+            } else {
+                crate::kernel::uart_write_string("http_get_binary: No header separator found, returning full response\r\n");
+                Some(response)
+            }
+        }
+    }
+
     /// Extract title from DOM tree
     fn extract_title(&self, node: &Node) -> Option<String> {
         match &node.node_type {
@@ -747,6 +1182,8 @@ impl Browser {
                         bold,
                         italic,
                         element_id: element_id.to_string(),
+                        is_image: false,
+                        image_data: None,
                     });
 
                     current_x += word_width + char_width;
@@ -842,11 +1279,82 @@ impl Browser {
                     bold: false,
                     italic: false,
                     element_id: element_id.to_string(),
+                    is_image: false,
+                    image_data: None,
                 });
 
                 // Add spacing after
                 current_y += CHAR_HEIGHT * font_size + 4;
                 return (x, current_y);
+            }
+            "img" => {
+                // Image tag - fetch and display image
+                if let Some(src) = elem.attributes.get("src") {
+                    crate::kernel::uart_write_string(&alloc::format!("layout_element: Found <img src=\"{}\">\r\n", src));
+
+                    // Parse the image URL (resolve relative URLs)
+                    let img_url = if src.starts_with("http://") || src.starts_with("https://") {
+                        src.clone()
+                    } else if src.starts_with('/') {
+                        // Absolute path - use current host
+                        let (host, port, _) = self.parse_url(&self.url);
+                        alloc::format!("http://{}:{}{}", host, port, src)
+                    } else {
+                        // Relative path - append to current URL's directory
+                        let base_url = if let Some(last_slash) = self.url.rfind('/') {
+                            &self.url[..last_slash]
+                        } else {
+                            &self.url
+                        };
+                        alloc::format!("{}/{}", base_url, src)
+                    };
+
+                    crate::kernel::uart_write_string(&alloc::format!("layout_element: Fetching image from: {}\r\n", img_url));
+
+                    // Parse URL and fetch image
+                    let (host, port, path) = self.parse_url(&img_url);
+                    if let Some(image_data) = self.http_get_binary(&host, port, &path) {
+                        crate::kernel::uart_write_string(&alloc::format!("layout_element: Fetched {} bytes\r\n", image_data.len()));
+
+                        // Decode BMP image
+                        if let Some(bmp) = crate::gui::bmp_decoder::decode_bmp(&image_data) {
+                            crate::kernel::uart_write_string(&alloc::format!("layout_element: Decoded BMP {}x{}\r\n", bmp.width, bmp.height));
+
+                            // Add spacing before image if needed
+                            if !self.layout.is_empty() {
+                                current_y += 4;
+                            }
+
+                            // Create layout box for image
+                            self.layout.push(LayoutBox {
+                                x: current_x,
+                                y: current_y,
+                                width: bmp.width as usize,
+                                height: bmp.height as usize,
+                                text: String::new(),
+                                color: Color::BLACK,
+                                font_size,
+                                is_link: false,
+                                link_url: String::new(),
+                                bold: false,
+                                italic: false,
+                                element_id: element_id.to_string(),
+                                is_image: true,
+                                image_data: Some(bmp),
+                            });
+
+                            // Move to next line after image
+                            current_y += self.layout.last().unwrap().height + 4;
+                            return (x, current_y);
+                        } else {
+                            crate::kernel::uart_write_string("layout_element: Failed to decode BMP\r\n");
+                        }
+                    } else {
+                        crate::kernel::uart_write_string("layout_element: Failed to fetch image\r\n");
+                    }
+                }
+                // If image fetch/decode failed, just continue
+                return (current_x, current_y);
             }
             "a" => {
                 // Hyperlink - render children with link color
@@ -927,6 +1435,8 @@ impl Browser {
                         bold,
                         italic,
                         element_id: element_id.to_string(),
+                        is_image: false,
+                        image_data: None,
                     });
 
                     current_y = new_y + CHAR_HEIGHT * font_size + 2;
@@ -1020,25 +1530,48 @@ impl Browser {
                 break;
             }
 
-            // Draw text with underline for links
-            self.draw_text(
-                fb,
-                fb_width,
-                fb_height,
-                win_x + layout_box.x,
-                content_y + y,
-                &layout_box.text,
-                &layout_box.color,
-                layout_box.font_size,
-            );
+            // Check if this is an image or text
+            if layout_box.is_image {
+                // Draw image
+                if let Some(ref img) = layout_box.image_data {
+                    // Render image by flipping vertically (BMP pixels[0] = top, but render bottom-up)
+                    for img_y in 0..img.height as usize {
+                        for img_x in 0..img.width as usize {
+                            let fb_x = win_x + layout_box.x + img_x;
+                            let fb_y = content_y + y + img_y;
 
-            // Underline links
-            if layout_box.is_link {
-                for x in 0..layout_box.width {
-                    let fb_x = win_x + layout_box.x + x;
-                    let fb_y = content_y + y + layout_box.height;
-                    if fb_x < fb_width && fb_y < fb_height {
-                        fb[fb_y * fb_width + fb_x] = layout_box.color.to_u32();
+                            if fb_x < fb_width && fb_y < fb_height {
+                                // Flip vertically: bottom row on screen gets pixels[0], top row gets pixels[last]
+                                let flipped_y = img.height as usize - 1 - img_y;
+                                let pixel_idx = flipped_y * img.width as usize + img_x;
+                                if pixel_idx < img.pixels.len() {
+                                    fb[fb_y * fb_width + fb_x] = img.pixels[pixel_idx];
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Draw text with underline for links
+                self.draw_text(
+                    fb,
+                    fb_width,
+                    fb_height,
+                    win_x + layout_box.x,
+                    content_y + y,
+                    &layout_box.text,
+                    &layout_box.color,
+                    layout_box.font_size,
+                );
+
+                // Underline links
+                if layout_box.is_link {
+                    for x in 0..layout_box.width {
+                        let fb_x = win_x + layout_box.x + x;
+                        let fb_y = content_y + y + layout_box.height;
+                        if fb_x < fb_width && fb_y < fb_height {
+                            fb[fb_y * fb_width + fb_x] = layout_box.color.to_u32();
+                        }
                     }
                 }
             }
