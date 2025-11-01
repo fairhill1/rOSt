@@ -1,6 +1,6 @@
 # rOSt - Rust ARM64 Operating System
 
-**Last Updated:** 2025-11-01 (Added DNS resolver with UDP support!)
+**Last Updated:** 2025-11-01 (Added web browser with full HTTP client and reorganized codebase!)
 
 ## What Works
 
@@ -27,6 +27,22 @@
 - Scrolling support for large file lists
 - Hardware-independent double-click detection (500ms)
 
+✅ **Web Browser**
+- Full graphical web browser with HTTP/1.0 client
+- HTML parser supporting common tags (h1-h6, p, a, ul, ol, li, div, br, b, i)
+- DOM tree rendering with text layout engine
+- Scaled fonts: h1 (40px), h2 (32px), h3 (24px), body text (16px)
+- Modern URL address bar with focus/unfocus visual states
+- Click to position cursor, drag to select text in URL bar
+- Ctrl+L to focus address bar for typing URLs
+- Clickable hyperlinks with blue underlined styling
+- Back/Forward navigation with history
+- Integrated DNS resolution for domain names
+- TCP connection management with 3-way handshake
+- Multi-packet HTTP response handling
+- Successfully fetches and renders pages from HTTP servers
+- Shared OS-wide clipboard (Ctrl+A, C, X, V)
+
 ✅ **Full Persistent Filesystem with Interactive Shell**
 - Create, read, write, delete, rename files that survive reboots
 - Interactive shell: `ls`, `cat`, `create`, `rm`, `rename/mv`, `write`, `clear`, `help`
@@ -46,12 +62,15 @@
 
 ✅ **Networking (VirtIO-Net)**
 - Full VirtIO 1.0 network device driver with modern virtio features
-- Complete network protocol stack: Ethernet, ARP, IPv4, ICMP, UDP
-- Ping support - test connectivity to external hosts (e.g., `ping 8.8.8.8`)
+- Complete network protocol stack: Ethernet, ARP, IPv4, ICMP, UDP, TCP
+- TCP connection state machine (CLOSED, SYN-SENT, ESTABLISHED, FIN-WAIT, TIME-WAIT)
+- TCP 3-way handshake (SYN, SYN-ACK, ACK) and proper connection teardown
+- HTTP/1.0 client for fetching web pages
 - DNS resolver - resolve domain names to IP addresses (e.g., `nslookup google.com`)
+- Ping support - test connectivity to external hosts (e.g., `ping 8.8.8.8`)
 - ARP request/reply handling for MAC address resolution
 - Packet transmission and reception working via QEMU user-mode networking
-- Network commands: `ping <ip>`, `nslookup <domain>`, `ifconfig`, `arp`
+- Network commands: `ping <ip>`, `nslookup <domain>`, `http <url>`, `ifconfig`, `arp`
 - Uses Google DNS (8.8.8.8) for domain resolution
 - Configuration: IP 10.0.2.15, Gateway 10.0.2.2, MAC 52:54:00:12:34:56
 
@@ -112,6 +131,7 @@ qemu-system-aarch64 \
 - **Terminal** - Opens a new terminal window with interactive shell
 - **Editor** - Opens a new blank text editor
 - **Files** - Opens file explorer to browse/manage files
+- **Browser** - Opens web browser for HTTP browsing
 - **About** - Shows OS information
 
 **Window Controls:**
@@ -133,6 +153,15 @@ qemu-system-aarch64 \
 - Ctrl+C/X/V: Copy/Cut/Paste
 - Ctrl+Z/Y: Undo/Redo
 
+**Web Browser:**
+- Type URL in address bar and press Enter to navigate
+- Ctrl+L to focus address bar
+- Click and drag to select URL text
+- Click hyperlinks to follow them
+- Use Back/Forward buttons to navigate history
+- Supports both IP addresses (10.0.2.2:8888) and domain names (example.com)
+- Special URL: about: shows browser information
+
 ## Shell Commands (Terminal Window)
 
 ```
@@ -146,6 +175,7 @@ rename <old> <new>      - Rename a file (or use 'mv')
 clear                   - Clear screen
 ping <ip>               - Ping an IP address (e.g., ping 8.8.8.8)
 nslookup <domain>       - Resolve domain to IP (e.g., nslookup google.com)
+http <url>              - HTTP GET request (e.g., http example.com or http 10.0.2.2:8888)
 ifconfig                - Show network configuration
 arp                     - Show ARP cache
 ```
@@ -175,36 +205,52 @@ arp                     - Show ARP cache
 - **Sectors 3-10:** Reserved
 - **Sectors 11+:** File data
 
-## Core Files
+## Codebase Structure
 
-### GUI & Window Management
-- `src/kernel/window_manager.rs` - Tiling window manager with menu bar
-- `src/kernel/editor.rs` - Full-featured text editor with mouse selection
-- `src/kernel/file_explorer.rs` - Visual file browser with keyboard/mouse navigation
-- `src/kernel/console.rs` - Multi-instance terminal/console support
-- `src/kernel/framebuffer.rs` - Double-buffered rendering system
+The codebase is organized into logical modules for scalability and maintainability:
 
-### VirtIO Drivers
-- `src/kernel/virtio_gpu.rs` - VirtIO GPU driver with hardware cursor
-- `src/kernel/virtio_input.rs` - Keyboard/mouse input driver (evdev codes)
-- `src/kernel/virtio_blk.rs` - Block device driver
-- `src/kernel/virtio_net.rs` - VirtIO network device driver (modern VirtIO 1.0)
+### `src/kernel/` - Core Kernel
+- `mod.rs` - Kernel initialization and main loop
+- `memory.rs` - Memory management
+- `dtb.rs` - Device Tree parser
 
-### Networking
-- `src/kernel/network.rs` - Network protocol stack (Ethernet, ARP, IPv4, ICMP, UDP)
-- `src/kernel/dns.rs` - DNS resolver (A record queries, domain name encoding/decoding)
+### `src/kernel/drivers/` - Hardware Drivers
+- `pci.rs` - PCI configuration and device enumeration
+- `timer.rs` - ARM Generic Timer (microsecond-precision timing)
+- `rtc.rs` - PL031 Real-Time Clock driver
+- `input_events.rs` - Input event handling and routing (keyboard/mouse events)
+- **`virtio/`** - VirtIO device drivers (modern VirtIO 1.0)
+  - `gpu.rs` - GPU driver with hardware cursor
+  - `input.rs` - Keyboard and mouse input drivers
+  - `blk.rs` - Block storage driver
+  - `net.rs` - Network device driver
 
-### Filesystem & Storage
-- `src/kernel/filesystem.rs` - SimpleFS implementation
-- `src/kernel/shell.rs` - Interactive shell for terminal windows
+### `src/system/` - System Services
+- **`fs/`** - Filesystem subsystem
+  - `filesystem.rs` - SimpleFS implementation (persistent storage)
+- **`net/`** - Network stack
+  - `network.rs` - Protocol stack (Ethernet, ARP, IPv4, ICMP, UDP, TCP)
+  - `dns.rs` - DNS resolver (A record queries, domain encoding/decoding)
+  - `tcp.rs` - TCP connection state machine and management
 
-### System
-- `src/kernel/timer.rs` - ARM Generic Timer for hardware-independent timing
-- `src/kernel/rtc.rs` - PL031 Real-Time Clock driver
-- `src/kernel/usb_hid.rs` - Input event handling and routing
-- `src/kernel/dtb.rs` - Device Tree parser
-- `src/kernel/pci.rs` - PCI configuration
-- `src/kernel/mod.rs` - Kernel init and main loop
+### `src/gui/` - GUI Subsystem
+- `framebuffer.rs` - Double-buffered rendering system
+- `window_manager.rs` - Tiling window manager with menu bar
+- `html_parser.rs` - HTML parser for web browser
+- `clipboard.rs` - Shared OS-wide clipboard
+- **`widgets/`** - Reusable GUI components
+  - `browser.rs` - Web browser with HTTP client
+  - `editor.rs` - Text editor with syntax highlighting
+  - `console.rs` - Terminal/console widget
+  - `file_explorer.rs` - File browser widget
+  - `text_input.rs` - Single-line text input widget (cursor, selection, copy/paste)
+
+### `src/apps/` - User Applications
+- `shell.rs` - Interactive shell with filesystem and network commands
+- `snake.rs` - Snake game
+
+### Boot
+- `src/uefi_boot.rs` - UEFI bootloader entry point
 
 ## Critical Gotchas
 
@@ -224,6 +270,19 @@ arp                     - Show ARP cache
 1. **Static storage:** Block devices stored in static `BLOCK_DEVICES` to avoid dangling pointers
 2. **Device index:** Shell stores device index, not pointer
 
+### Module Organization
+1. **Import paths:** After codebase reorganization, imports use new paths:
+   - Old: `use crate::kernel::virtio_net::*;`
+   - New: `use crate::kernel::drivers::virtio::net::*;`
+2. **Grouped modules:** Related functionality is now in subdirectories (drivers/, system/, gui/, apps/)
+3. **Logical boundaries:** Clear separation between hardware (drivers), services (system), UI (gui), and applications (apps)
+
+### Networking & Browser
+1. **QEMU user-mode networking:** Use 10.0.2.x range for IP addressing (10.0.2.15 for guest, 10.0.2.2 for gateway)
+2. **Multi-packet responses:** HTTP responses may arrive in multiple TCP segments - accumulate until complete
+3. **ARM Timer for delays:** Always use timer.rs functions for delays, never nop loops (CPU speed dependent)
+4. **RX buffer management:** Always replenish receive buffers after processing packets to prevent queue exhaustion
+
 ## Development History
 
 ### Major Milestones
@@ -236,6 +295,13 @@ arp                     - Show ARP cache
 7. **Text Editor** - Full-featured editor with mouse selection, undo/redo, clipboard
 8. **File Explorer** - Visual file browser with keyboard/mouse navigation
 9. **ARM Generic Timer** - Hardware-independent timing for double-click detection
+10. **VirtIO-Net & Network Stack** - Complete protocol stack (Ethernet, ARP, IPv4, ICMP, UDP)
+11. **DNS Resolver** - Domain name resolution with UDP
+12. **TCP Protocol** - Full TCP state machine with 3-way handshake
+13. **HTTP Client** - HTTP/1.0 client for fetching web pages
+14. **Web Browser** - Graphical browser with HTML parser, DOM rendering, and HTTP integration
+15. **Reusable Components** - TextInput widget and shared clipboard for OS-wide consistency
+16. **Codebase Reorganization** - Modular architecture (drivers, system, gui, apps) for scalability
 
 ### Key Fixes
 - **File persistence:** VirtIO test was overwriting sector 1 (file table) - moved to sector 1000
@@ -244,6 +310,10 @@ arp                     - Show ARP cache
 - **Stack overflow:** 512-byte buffers on stack caused hangs - switched to static buffers
 - **Legacy VirtIO:** Legacy devices (0x1001) hang - now only uses modern (0x1042)
 - **Double-click timing:** Frame counter was hardware-dependent (7220 frames/sec!) - switched to ARM Generic Timer for consistent 500ms threshold
+- **Network timing:** CPU cycle delays (nop loops) were unreliable - replaced with ARM Generic Timer for proper microsecond-precision delays
+- **TCP FIN handling:** Duplicate ACKs were corrupting connection state - added proper FIN handling logic
+- **HTML corruption:** Spurious null-byte TCP packets were corrupting rendered pages - added filtering
+- **RX queue exhaustion:** Network receive buffers weren't replenished - added proper buffer management
 
 ## Resources
 
