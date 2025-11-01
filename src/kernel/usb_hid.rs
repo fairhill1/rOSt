@@ -689,10 +689,50 @@ pub fn test_input_events() -> (bool, bool) {
                     }
                 } else if let Some(browser_id) = crate::kernel::window_manager::get_focused_browser_id() {
                     // Browser keyboard navigation
-                    if let Some(ascii) = evdev_to_ascii(key, modifiers) {
-                        let is_ctrl = (modifiers & 0x01) != 0 || (modifiers & 0x10) != 0;
-                        crate::kernel::browser::handle_key(browser_id, ascii as char, is_ctrl);
-                        needs_full_redraw = true;
+                    let is_shift = (modifiers & (MOD_LEFT_SHIFT | MOD_RIGHT_SHIFT)) != 0;
+
+                    // Handle arrow keys for URL input
+                    match key {
+                        105 => { // KEY_LEFT
+                            crate::kernel::browser::handle_arrow_key(
+                                browser_id,
+                                crate::kernel::text_input::ArrowKey::Left,
+                                is_shift
+                            );
+                            needs_full_redraw = true;
+                        }
+                        106 => { // KEY_RIGHT
+                            crate::kernel::browser::handle_arrow_key(
+                                browser_id,
+                                crate::kernel::text_input::ArrowKey::Right,
+                                is_shift
+                            );
+                            needs_full_redraw = true;
+                        }
+                        102 => { // KEY_HOME
+                            crate::kernel::browser::handle_arrow_key(
+                                browser_id,
+                                crate::kernel::text_input::ArrowKey::Home,
+                                is_shift
+                            );
+                            needs_full_redraw = true;
+                        }
+                        107 => { // KEY_END
+                            crate::kernel::browser::handle_arrow_key(
+                                browser_id,
+                                crate::kernel::text_input::ArrowKey::End,
+                                is_shift
+                            );
+                            needs_full_redraw = true;
+                        }
+                        _ => {
+                            // Regular keyboard input
+                            if let Some(ascii) = evdev_to_ascii(key, modifiers) {
+                                let is_ctrl = (modifiers & (MOD_LEFT_CTRL | MOD_RIGHT_CTRL)) != 0;
+                                crate::kernel::browser::handle_key(browser_id, ascii as char, is_ctrl, is_shift);
+                                needs_full_redraw = true;
+                            }
+                        }
                     }
                 }
             }

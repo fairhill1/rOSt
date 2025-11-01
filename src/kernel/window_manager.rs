@@ -710,6 +710,22 @@ impl WindowManager {
                     }
                     return false;
                 }
+            } else if self.windows[i].content == WindowContent::Browser && self.windows[i].is_focused {
+                // Check if we're dragging in a browser window
+                let (cx, cy, cw, ch) = self.windows[i].get_content_bounds();
+                // Allow dragging in browser for URL input selection
+                if x >= cx && x < cx + cw as i32 && y >= cy && y < cy + ch as i32 {
+                    let instance_id = self.windows[i].instance_id;
+                    return crate::kernel::browser::handle_mouse_drag(
+                        instance_id,
+                        x as usize,
+                        y as usize,
+                        cx as usize,
+                        cy as usize,
+                        cw as usize,
+                        ch as usize
+                    );
+                }
             }
         }
         false
@@ -717,12 +733,14 @@ impl WindowManager {
 
     /// Handle mouse up (button release)
     pub fn handle_mouse_up(&mut self, _x: i32, _y: i32) {
-        // End selection in all editors
+        // End selection in all editors and browsers
         for window in &self.windows {
             if window.content == WindowContent::Editor {
                 if let Some(editor) = crate::kernel::editor::get_editor(window.instance_id) {
                     editor.handle_mouse_up();
                 }
+            } else if window.content == WindowContent::Browser {
+                crate::kernel::browser::handle_mouse_up(window.instance_id);
             }
         }
     }
