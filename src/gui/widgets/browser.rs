@@ -339,6 +339,7 @@ impl Browser {
             let mut no_data_count = 0;
             let mut connection_closed_by_server = false;
             let mut fin_already_acked = false;  // Track if we've already ACKed the FIN
+            let mut content_length: Option<usize> = None;
             for _ in 0..10000 {  // Increased iterations
                 let mut rx_buffer = [0u8; 1526];
                 if let Ok(len) = devices[0].receive(&mut rx_buffer) {
@@ -384,6 +385,20 @@ impl Browser {
                                                     if let Ok(text) = core::str::from_utf8(tcp_data) {
                                                         response.push_str(text);
                                                         crate::kernel::uart_write_string(&alloc::format!("http_get: Added {} bytes data, total now: {}\r\n", tcp_data.len(), response.len()));
+
+                                                        // Try to parse Content-Length from headers if we haven't yet
+                                                        if content_length.is_none() && response.contains("\r\n\r\n") {
+                                                            for line in response.lines() {
+                                                                if line.to_lowercase().starts_with("content-length:") {
+                                                                    if let Some(len_str) = line.split(':').nth(1) {
+                                                                        if let Ok(len) = len_str.trim().parse::<usize>() {
+                                                                            content_length = Some(len);
+                                                                            crate::kernel::uart_write_string(&alloc::format!("http_get: Parsed Content-Length: {}\r\n", len));
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
                                                     } else {
                                                         crate::kernel::uart_write_string(&alloc::format!("http_get: WARNING: Skipped {} bytes (invalid UTF-8)\r\n", tcp_data.len()));
                                                     }
@@ -425,10 +440,22 @@ impl Browser {
                     }
                 } else {
                     no_data_count += 1;
-                    // Increase timeout threshold significantly (3000 iterations instead of 500)
-                    // Only break after receiving no data for a while AND we have some response
-                    if no_data_count > 3000 && !response.is_empty() {
-                        crate::kernel::uart_write_string(&alloc::format!("http_get: Timeout after {} iterations with no data\r\n", no_data_count));
+
+                    // Check if we have all the data based on Content-Length
+                    if let Some(expected_len) = content_length {
+                        if let Some(body_start) = response.find("\r\n\r\n") {
+                            let body_len = response.len() - (body_start + 4);
+                            if body_len >= expected_len {
+                                crate::kernel::uart_write_string(&alloc::format!("http_get: Received complete response ({}/{} bytes of body)\r\n", body_len, expected_len));
+                                break;
+                            }
+                        }
+                    }
+
+                    // If we have data and no new packets for a while, break
+                    // Use longer timeout (2000ms) to wait for body packets
+                    if no_data_count > 2000 && !response.is_empty() {
+                        crate::kernel::uart_write_string(&alloc::format!("http_get: Timeout after {} iterations with no data (have {} bytes)\r\n", no_data_count, response.len()));
                         break;
                     }
                     // If server closed connection and we haven't received new data in a while, break
