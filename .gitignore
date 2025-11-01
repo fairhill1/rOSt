@@ -5,9 +5,13 @@ Cargo.lock
 # UEFI disk directory (contains built binaries)
 /uefi_disk/
 
+# Persistent disk images
+test_disk.img
+
 # IDE files
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 
