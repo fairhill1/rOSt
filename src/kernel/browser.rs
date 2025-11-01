@@ -653,7 +653,9 @@ impl Browser {
         let is_block = matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "br");
         if is_block && !self.layout.is_empty() {
             current_x = x;
-            current_y = self.layout.last().map(|b| b.y + b.height + 4).unwrap_or(y);
+            // Use whichever is lower on page: explicit spacing from parent (y) or default spacing
+            let default_y = self.layout.last().map(|b| b.y + b.height + 4).unwrap_or(y);
+            current_y = default_y.max(y);
         }
 
         // Determine color, style, and font size
@@ -696,8 +698,8 @@ impl Browser {
                 return (current_x, current_y);
             }
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-                // Headings - larger font size
-                current_y += 8; // Extra spacing before heading
+                // Headings - larger font size with proportional spacing
+                current_y += font_size * CHAR_HEIGHT; // Extra spacing before heading (scales with size)
 
                 for child in &node.children {
                     let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic, font_size);
@@ -705,7 +707,8 @@ impl Browser {
                     current_y = new_y;
                 }
 
-                current_y += 8; // Extra spacing after heading
+                // Add height of the text + spacing after (2x for text height + bottom spacing)
+                current_y += 2 * font_size * CHAR_HEIGHT;
                 return (x, current_y);
             }
             "ul" | "ol" => {
