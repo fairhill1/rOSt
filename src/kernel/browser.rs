@@ -523,7 +523,7 @@ impl Browser {
 
         // Layout the DOM tree
         crate::kernel::uart_write_string("load_html: Starting layout\r\n");
-        self.layout_node(&dom, 10, 50, 1000, &Color::BLACK, false, false);
+        self.layout_node(&dom, 10, 50, 1000, &Color::BLACK, false, false, 1);
 
         crate::kernel::uart_write_string(&alloc::format!("load_html: Layout complete, {} layout boxes created\r\n", self.layout.len()));
 
@@ -581,6 +581,7 @@ impl Browser {
         color: &Color,
         bold: bool,
         italic: bool,
+        font_size: usize,
     ) -> (usize, usize) {
         match &node.node_type {
             NodeType::Text(text) => {
@@ -592,8 +593,8 @@ impl Browser {
                 let words: Vec<&str> = text.split_whitespace().collect();
                 let mut current_x = x;
                 let mut current_y = y;
-                let char_width = CHAR_WIDTH;
-                let char_height = CHAR_HEIGHT;
+                let char_width = CHAR_WIDTH * font_size;
+                let char_height = CHAR_HEIGHT * font_size;
 
                 for word in words {
                     let word_width = word.len() * char_width;
@@ -612,7 +613,7 @@ impl Browser {
                         height: char_height,
                         text: word.to_string() + " ",
                         color: *color,
-                        font_size: 1,
+                        font_size,
                         is_link: false,
                         link_url: String::new(),
                         bold,
@@ -625,7 +626,7 @@ impl Browser {
                 (current_x, current_y)
             }
             NodeType::Element(elem) => {
-                self.layout_element(node, elem, x, y, max_width, color, bold, italic)
+                self.layout_element(node, elem, x, y, max_width, color, bold, italic, font_size)
             }
         }
     }
@@ -641,6 +642,7 @@ impl Browser {
         parent_color: &Color,
         parent_bold: bool,
         parent_italic: bool,
+        parent_font_size: usize,
     ) -> (usize, usize) {
         let tag = elem.tag_name.as_str();
 
@@ -654,10 +656,19 @@ impl Browser {
             current_y = self.layout.last().map(|b| b.y + b.height + 4).unwrap_or(y);
         }
 
-        // Determine color and style
+        // Determine color, style, and font size
         let color = parent_color;
         let bold = parent_bold || matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "b" | "strong");
         let italic = parent_italic || matches!(tag, "i" | "em");
+        let font_size = match tag {
+            "h1" => 3,
+            "h2" => 2,
+            "h3" => 2,
+            "h4" => 1,
+            "h5" => 1,
+            "h6" => 1,
+            _ => parent_font_size,
+        };
 
         // Handle special tags
         match tag {
@@ -671,7 +682,7 @@ impl Browser {
 
                 for child in &node.children {
                     let start_idx = self.layout.len();
-                    let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, &link_color, bold, italic);
+                    let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, &link_color, bold, italic, font_size);
 
                     // Mark all boxes created for this link
                     for i in start_idx..self.layout.len() {
@@ -689,7 +700,7 @@ impl Browser {
                 current_y += 8; // Extra spacing before heading
 
                 for child in &node.children {
-                    let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic);
+                    let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic, font_size);
                     current_x = new_x;
                     current_y = new_y;
                 }
@@ -706,19 +717,20 @@ impl Browser {
                     self.layout.push(LayoutBox {
                         x: current_x,
                         y: current_y,
-                        width: bullet.len() * CHAR_WIDTH,
-                        height: CHAR_HEIGHT,
+                        width: bullet.len() * CHAR_WIDTH * font_size,
+                        height: CHAR_HEIGHT * font_size,
                         text: bullet.to_string(),
                         color: *color,
-                        font_size: 1,
+                        font_size,
                         is_link: false,
                         link_url: String::new(),
                         bold,
                         italic,
                     });
 
-                    let (_, new_y) = self.layout_node(child, current_x + bullet.len() * CHAR_WIDTH + 8, current_y, max_width - bullet.len() * CHAR_WIDTH - 8, color, bold, italic);
-                    current_y = new_y + CHAR_HEIGHT + 2;
+                    let bullet_width = bullet.len() * CHAR_WIDTH * font_size;
+                    let (_, new_y) = self.layout_node(child, current_x + bullet_width + 8, current_y, max_width - bullet_width - 8, color, bold, italic, font_size);
+                    current_y = new_y + CHAR_HEIGHT * font_size + 2;
                 }
                 return (x, current_y);
             }
@@ -727,14 +739,14 @@ impl Browser {
 
         // Render children
         for child in &node.children {
-            let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic);
+            let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic, font_size);
             current_x = new_x;
             current_y = new_y;
         }
 
         // Block elements end with newline
         if is_block {
-            (x, current_y + CHAR_HEIGHT + 2)
+            (x, current_y + CHAR_HEIGHT * font_size + 2)
         } else {
             (current_x, current_y)
         }
@@ -770,13 +782,13 @@ impl Browser {
         } else {
             alloc::format!("URL: {}", self.url)
         };
-        self.draw_text(fb, fb_width, fb_height, win_x + 10, win_y + 10, &addr_text, &Color::BLACK);
+        self.draw_text(fb, fb_width, fb_height, win_x + 10, win_y + 10, &addr_text, &Color::BLACK, 1);
 
         // Back button
-        self.draw_text(fb, fb_width, fb_height, win_x + win_width - 80, win_y + 10, "[<]", &Color::new(100, 100, 100));
+        self.draw_text(fb, fb_width, fb_height, win_x + win_width - 80, win_y + 10, "[<]", &Color::new(100, 100, 100), 1);
 
         // Forward button
-        self.draw_text(fb, fb_width, fb_height, win_x + win_width - 50, win_y + 10, "[>]", &Color::new(100, 100, 100));
+        self.draw_text(fb, fb_width, fb_height, win_x + win_width - 50, win_y + 10, "[>]", &Color::new(100, 100, 100), 1);
 
         // Content area
         let content_y = win_y + 35;
@@ -802,6 +814,7 @@ impl Browser {
                 content_y + y,
                 &layout_box.text,
                 &layout_box.color,
+                layout_box.font_size,
             );
 
             // Underline links
@@ -818,24 +831,30 @@ impl Browser {
     }
 
     /// Draw text
-    fn draw_text(&self, fb: &mut [u32], fb_width: usize, fb_height: usize, x: usize, y: usize, text: &str, color: &Color) {
+    fn draw_text(&self, fb: &mut [u32], fb_width: usize, fb_height: usize, x: usize, y: usize, text: &str, color: &Color, font_size: usize) {
         let mut current_x = x;
         for ch in text.chars() {
             if ch.is_ascii() {
                 let glyph = FONT_8X8[ch as usize];
+                // Scale the 8x8 bitmap by font_size
                 for row in 0..8 {
                     for col in 0..8 {
                         if (glyph[row] & (1 << (7 - col))) != 0 {
-                            let fb_x = current_x + col;
-                            let fb_y = y + row;
-                            if fb_x < fb_width && fb_y < fb_height {
-                                fb[fb_y * fb_width + fb_x] = color.to_u32();
+                            // Draw a font_size x font_size block for each pixel in the glyph
+                            for dy in 0..font_size {
+                                for dx in 0..font_size {
+                                    let fb_x = current_x + col * font_size + dx;
+                                    let fb_y = y + row * font_size + dy;
+                                    if fb_x < fb_width && fb_y < fb_height {
+                                        fb[fb_y * fb_width + fb_x] = color.to_u32();
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-            current_x += CHAR_WIDTH;
+            current_x += CHAR_WIDTH * font_size;
         }
     }
 
