@@ -82,9 +82,32 @@ impl Parser {
     /// Parse a single node (element or text)
     fn parse_node(&mut self) -> Node {
         if self.current_char() == '<' {
+            // Skip DOCTYPE and comments
+            if self.starts_with("<!") {
+                self.skip_doctype_or_comment();
+                // After skipping, try parsing the next node
+                if !self.eof() {
+                    return self.parse_node();
+                } else {
+                    return Node::new_text("");
+                }
+            }
             self.parse_element()
         } else {
             self.parse_text()
+        }
+    }
+
+    /// Skip DOCTYPE declarations and HTML comments
+    fn skip_doctype_or_comment(&mut self) {
+        if self.starts_with("<!") {
+            // Skip until we find '>'
+            while !self.eof() && self.current_char() != '>' {
+                self.consume_char();
+            }
+            if !self.eof() {
+                self.consume_char(); // consume the '>'
+            }
         }
     }
 
