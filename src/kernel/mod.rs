@@ -77,6 +77,15 @@ pub fn get_time_ms() -> u64 {
     drivers::timer::get_time_ms()
 }
 
+// Flush a partial region of the framebuffer to GPU (for menu bar updates, etc.)
+pub fn flush_display_partial(x: u32, y: u32, width: u32, height: u32) {
+    unsafe {
+        if let Some(ref mut gpu) = GPU_DRIVER {
+            let _ = gpu.flush_display_partial(x, y, width, height);
+        }
+    }
+}
+
 // Simple hex printing for debug
 fn print_hex_simple(n: u64) {
     let hex_chars = b"0123456789ABCDEF";

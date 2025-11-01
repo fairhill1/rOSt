@@ -665,8 +665,12 @@ impl VirtioGpuDriver {
         let notify_off = self.controlq_notify_off;
         self.notify_queue(0, notify_off);
 
-        // Wait for response
-        for i in 0..1000000 {
+        // Wait for response (with timeout)
+        let start_time = crate::kernel::drivers::timer::get_time_us();
+        let timeout_us = 100_000; // 100ms timeout
+        let mut iterations = 0u32;
+
+        loop {
             let controlq = self.controlq.as_mut().ok_or("Control queue not initialized")?;
             if let Some((used_idx, _len)) = controlq.get_used_buffer() {
                 if used_idx == desc_idx {
@@ -688,9 +692,18 @@ impl VirtioGpuDriver {
                 }
             }
 
-            // Print progress every 100000 iterations
-            if i % 100000 == 0 && i > 0 {
-                crate::kernel::uart_write_string(".");
+            // Check timeout
+            let elapsed = crate::kernel::drivers::timer::get_time_us() - start_time;
+            if elapsed > timeout_us {
+                break;
+            }
+
+            // Progressive delay: spin fast initially, then add small delays
+            // Most GPU commands complete in <100us, so check quickly at first
+            iterations += 1;
+            if iterations > 100 {
+                // After 100 fast checks, add a tiny delay to reduce CPU waste
+                crate::kernel::drivers::timer::delay_us(1);
             }
         }
 
@@ -1230,6 +1243,13 @@ impl VirtioGpuDriver {
     pub fn flush_display(&mut self) -> Result<(), &'static str> {
         self.transfer_to_host_2d(self.framebuffer_resource_id, 0, 0, self.width, self.height)?;
         self.flush_resource(self.framebuffer_resource_id, 0, 0, self.width, self.height)?;
+        Ok(())
+    }
+
+    // Flush only a partial region of the framebuffer (much faster for small updates)
+    pub fn flush_display_partial(&mut self, x: u32, y: u32, width: u32, height: u32) -> Result<(), &'static str> {
+        self.transfer_to_host_2d(self.framebuffer_resource_id, x, y, width, height)?;
+        self.flush_resource(self.framebuffer_resource_id, x, y, width, height)?;
         Ok(())
     }
 }
