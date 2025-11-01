@@ -796,11 +796,17 @@ pub fn test_input_events() -> (bool, bool) {
                 }
                 // Handle mouse wheel scrolling in focused browser
                 else if let Some(browser_id) = crate::gui::window_manager::get_focused_browser_id() {
-                    if let Some(browser) = crate::gui::widgets::browser::get_browser(browser_id) {
-                        // Negative delta = scroll up, positive = scroll down
-                        browser.handle_scroll(-delta as i32);
+                    // Get the browser window height
+                    let browsers = crate::gui::window_manager::get_all_browsers();
+                    let browser_window = browsers.iter().find(|(id, _, _, _, _)| *id == browser_id);
+
+                    if let Some((_, _, _, _, height)) = browser_window {
+                        if let Some(browser) = crate::gui::widgets::browser::get_browser(browser_id) {
+                            // Negative delta = scroll up, positive = scroll down
+                            browser.handle_scroll(-delta as i32, *height as usize);
+                        }
+                        needs_full_redraw = true;
                     }
-                    needs_full_redraw = true;
                 }
             }
         }
