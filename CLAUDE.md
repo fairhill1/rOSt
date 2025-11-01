@@ -1,6 +1,6 @@
 # rOSt - Rust ARM64 Operating System
 
-**Last Updated:** 2025-11-01 (Added web browser with full HTTP client and reorganized codebase!)
+**Last Updated:** 2025-11-01 (Added BMP image support to web browser!)
 
 ## What Works
 
@@ -29,8 +29,9 @@
 
 ✅ **Web Browser**
 - Full graphical web browser with HTTP/1.0 client
-- HTML parser supporting common tags (h1-h6, p, a, ul, ol, li, div, br, b, i)
+- HTML parser supporting common tags (h1-h6, p, a, ul, ol, li, div, br, b, i, img)
 - DOM tree rendering with text layout engine
+- BMP image decoder and renderer (24-bit uncompressed BMPs)
 - Scaled fonts: h1 (40px), h2 (32px), h3 (24px), body text (16px)
 - Modern URL address bar with focus/unfocus visual states
 - Click to position cursor, drag to select text in URL bar
@@ -38,9 +39,10 @@
 - Clickable hyperlinks with blue underlined styling
 - Back/Forward navigation with history
 - Integrated DNS resolution for domain names
-- TCP connection management with 3-way handshake
-- Multi-packet HTTP response handling
-- Successfully fetches and renders pages from HTTP servers
+- TCP connection management with 3-way handshake and sequence number tracking
+- Multi-packet HTTP response handling with out-of-order detection
+- Binary file downloads (images, etc.)
+- Successfully fetches and renders pages with images from HTTP servers
 - Shared OS-wide clipboard (Ctrl+A, C, X, V)
 
 ✅ **Full Persistent Filesystem with Interactive Shell**
@@ -237,6 +239,7 @@ The codebase is organized into logical modules for scalability and maintainabili
 - `framebuffer.rs` - Double-buffered rendering system
 - `window_manager.rs` - Tiling window manager with menu bar
 - `html_parser.rs` - HTML parser for web browser
+- `bmp_decoder.rs` - BMP image decoder (24-bit uncompressed)
 - `clipboard.rs` - Shared OS-wide clipboard
 - **`widgets/`** - Reusable GUI components
   - `browser.rs` - Web browser with HTTP client
@@ -302,6 +305,7 @@ The codebase is organized into logical modules for scalability and maintainabili
 14. **Web Browser** - Graphical browser with HTML parser, DOM rendering, and HTTP integration
 15. **Reusable Components** - TextInput widget and shared clipboard for OS-wide consistency
 16. **Codebase Reorganization** - Modular architecture (drivers, system, gui, apps) for scalability
+17. **BMP Image Support** - Full BMP decoder (24-bit) with binary HTTP downloads and TCP sequence number tracking for reliable image rendering
 
 ### Key Fixes
 - **File persistence:** VirtIO test was overwriting sector 1 (file table) - moved to sector 1000
@@ -314,6 +318,7 @@ The codebase is organized into logical modules for scalability and maintainabili
 - **TCP FIN handling:** Duplicate ACKs were corrupting connection state - added proper FIN handling logic
 - **HTML corruption:** Spurious null-byte TCP packets were corrupting rendered pages - added filtering
 - **RX queue exhaustion:** Network receive buffers weren't replenished - added proper buffer management
+- **TCP out-of-order packets:** Packets arriving out of sequence corrupted binary downloads (BMP images had harsh lines/wrong colors) - added TCP sequence number tracking to detect and skip out-of-order packets
 
 ## Resources
 

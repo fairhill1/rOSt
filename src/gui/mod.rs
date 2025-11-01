@@ -4,4 +4,5 @@ pub mod framebuffer;
 pub mod window_manager;
 pub mod clipboard;
 pub mod html_parser;
+pub mod bmp_decoder;
 pub mod widgets;
