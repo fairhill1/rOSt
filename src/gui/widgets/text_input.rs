@@ -538,29 +538,31 @@ impl TextInput {
         let text_x = x + 4;
         let text_y = y + ((height as i32 - CHAR_HEIGHT as i32) / 2).max(0);
 
-        // Normalize selection for rendering
-        let selection = if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
-            if start <= end {
-                Some((start, end))
+        // Draw selection highlight (only when focused)
+        if focused {
+            // Normalize selection for rendering
+            let selection = if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
+                if start <= end {
+                    Some((start, end))
+                } else {
+                    Some((end, start))
+                }
             } else {
-                Some((end, start))
-            }
-        } else {
-            None
-        };
+                None
+            };
 
-        // Draw selection highlight
-        if let Some((start, end)) = selection {
-            if start < end {
-                let sel_x = text_x + (start as i32 * CHAR_WIDTH as i32);
-                let sel_width = (end - start) as u32 * CHAR_WIDTH;
+            if let Some((start, end)) = selection {
+                if start < end {
+                    let sel_x = text_x + (start as i32 * CHAR_WIDTH as i32);
+                    let sel_width = (end - start) as u32 * CHAR_WIDTH;
 
-                for dy in 0..CHAR_HEIGHT {
-                    for dx in 0..sel_width {
-                        let px = sel_x + dx as i32;
-                        let py = text_y + dy as i32;
-                        if px >= 0 && py >= 0 {
-                            framebuffer::draw_pixel(px as u32, py as u32, COLOR_SELECTION);
+                    for dy in 0..CHAR_HEIGHT {
+                        for dx in 0..sel_width {
+                            let px = sel_x + dx as i32;
+                            let py = text_y + dy as i32;
+                            if px >= 0 && py >= 0 {
+                                framebuffer::draw_pixel(px as u32, py as u32, COLOR_SELECTION);
+                            }
                         }
                     }
                 }
@@ -582,17 +584,27 @@ impl TextInput {
             framebuffer::draw_string(char_x as u32, text_y as u32, s, COLOR_TEXT);
         }
 
-        // Draw cursor (if focused)
+        // Draw cursor (if focused and no active selection)
         if focused {
-            let cursor_x = text_x + (self.cursor_pos as i32 * CHAR_WIDTH as i32);
+            // Check if there's an active selection
+            let has_selection = if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
+                start != end
+            } else {
+                false
+            };
 
-            // Draw cursor as a vertical bar
-            for dy in 0..CHAR_HEIGHT {
-                for dx in 0..2 {
-                    let px = cursor_x + dx as i32;
-                    let py = text_y + dy as i32;
-                    if px >= 0 && py >= 0 && px < x + width as i32 {
-                        framebuffer::draw_pixel(px as u32, py as u32, COLOR_CURSOR);
+            // Only draw cursor if there's no selection
+            if !has_selection {
+                let cursor_x = text_x + (self.cursor_pos as i32 * CHAR_WIDTH as i32);
+
+                // Draw cursor as a vertical bar
+                for dy in 0..CHAR_HEIGHT {
+                    for dx in 0..2 {
+                        let px = cursor_x + dx as i32;
+                        let py = text_y + dy as i32;
+                        if px >= 0 && py >= 0 && px < x + width as i32 {
+                            framebuffer::draw_pixel(px as u32, py as u32, COLOR_CURSOR);
+                        }
                     }
                 }
             }
