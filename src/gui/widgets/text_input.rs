@@ -1,8 +1,8 @@
 // Reusable single-line text input widget for rOSt
 
-use crate::kernel::framebuffer;
+use crate::gui::framebuffer;
 extern crate alloc;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 
 const CHAR_WIDTH: u32 = 16;
 const CHAR_HEIGHT: u32 = 16;
@@ -260,21 +260,21 @@ impl TextInput {
     /// Copy selected text to clipboard
     pub fn copy(&self) {
         if let Some(text) = self.get_selected_text() {
-            crate::kernel::clipboard::copy(text);
+            crate::gui::clipboard::copy(text);
         }
     }
 
     /// Cut selected text to clipboard
     pub fn cut(&mut self) {
         if let Some(text) = self.get_selected_text() {
-            crate::kernel::clipboard::copy(text);
+            crate::gui::clipboard::copy(text);
             self.delete_selection();
         }
     }
 
     /// Paste text from clipboard
     pub fn paste(&mut self) {
-        if let Some(text) = crate::kernel::clipboard::paste() {
+        if let Some(text) = crate::gui::clipboard::paste() {
             // Delete selection first if there is one
             self.delete_selection();
 

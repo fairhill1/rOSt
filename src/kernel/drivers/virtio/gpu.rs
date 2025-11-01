@@ -1,9 +1,8 @@
 // VirtIO-GPU driver with hardware cursor support
 #![allow(dead_code)]
 
-use crate::kernel::pci::{PciDevice, find_device};
+use crate::kernel::drivers::pci::{PciDevice, find_device};
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{AtomicU32, Ordering};
 
 // VirtIO device IDs
 const VIRTIO_VENDOR_ID: u16 = 0x1AF4;

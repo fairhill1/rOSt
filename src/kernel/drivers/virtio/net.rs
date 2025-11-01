@@ -1,8 +1,7 @@
 // VirtIO Network Device Driver
 // Based on VirtIO 1.3 specification
 
-use crate::kernel::pci::{PciConfig, PciDevice};
-use crate::kernel::memory;
+use crate::kernel::drivers::pci::{PciConfig, PciDevice};
 use core::ptr;
 use alloc::vec::Vec;
 

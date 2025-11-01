@@ -1,8 +1,7 @@
 // VirtIO Block Device Driver
 // Based on VirtIO 1.0 specification and Stephen Brennan's implementation
 
-use crate::kernel::pci::{PciConfig, PciDevice};
-use crate::kernel::memory;
+use crate::kernel::drivers::pci::{PciConfig, PciDevice};
 use core::ptr;
 use alloc::vec::Vec;
 

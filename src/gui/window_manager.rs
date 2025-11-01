@@ -1,6 +1,6 @@
 // GUI Window Manager - Desktop environment with draggable windows
 
-use crate::kernel::framebuffer;
+use crate::gui::framebuffer;
 extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -332,7 +332,7 @@ impl WindowManager {
         }
 
         // Draw time in top right corner
-        let datetime = crate::kernel::rtc::get_datetime();
+        let datetime = crate::kernel::drivers::rtc::get_datetime();
         let time_str = datetime.format_time();
         let time_width = time_str.len() as u32 * CHAR_WIDTH;
         let time_x = self.screen_width.saturating_sub(time_width + 8); // 8px padding from right edge
@@ -340,25 +340,25 @@ impl WindowManager {
         framebuffer::draw_string(time_x, time_y, &time_str, COLOR_TEXT);
 
         // Check if we're in delete confirmation mode
-        if crate::kernel::usb_hid::is_confirming_delete() {
+        if crate::kernel::drivers::input_events::is_confirming_delete() {
             // Show delete confirmation prompt
-            if let Some(filename) = crate::kernel::usb_hid::get_delete_confirm_filename() {
+            if let Some(filename) = crate::kernel::drivers::input_events::get_delete_confirm_filename() {
                 let prompt_text = alloc::format!("Delete '{}'? (y/n)", filename);
                 framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &prompt_text, COLOR_TEXT);
             }
-        } else if crate::kernel::usb_hid::is_prompting_filename() {
+        } else if crate::kernel::drivers::input_events::is_prompting_filename() {
             // Show filename prompt instead of menu items
-            let is_rename = crate::kernel::usb_hid::is_renaming();
+            let is_rename = crate::kernel::drivers::input_events::is_renaming();
             let prompt_label = if is_rename { "Rename to: " } else { "Enter filename: " };
 
-            if let Some(filename) = crate::kernel::usb_hid::get_filename_prompt() {
+            if let Some(filename) = crate::kernel::drivers::input_events::get_filename_prompt() {
                 let prompt_text = alloc::format!("{}{}_", prompt_label, filename);
                 framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &prompt_text, COLOR_TEXT);
             } else {
                 let prompt_text = alloc::format!("{}_", prompt_label);
                 framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &prompt_text, COLOR_TEXT);
             }
-        } else if let Some(status_msg) = crate::kernel::usb_hid::get_menu_status() {
+        } else if let Some(status_msg) = crate::kernel::drivers::input_events::get_menu_status() {
             // Show status message instead of menu items
             framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &status_msg, COLOR_TEXT);
         } else {
@@ -473,20 +473,20 @@ impl WindowManager {
             // Delete the associated console/editor instance
             match window.content {
                 WindowContent::Terminal => {
-                    crate::kernel::shell::remove_shell(window.instance_id);
-                    crate::kernel::console::remove_console(window.instance_id);
+                    crate::apps::shell::remove_shell(window.instance_id);
+                    crate::gui::widgets::console::remove_console(window.instance_id);
                 },
                 WindowContent::Editor => {
-                    crate::kernel::editor::remove_editor(window.instance_id);
+                    crate::gui::widgets::editor::remove_editor(window.instance_id);
                 },
                 WindowContent::FileExplorer => {
-                    crate::kernel::file_explorer::remove_file_explorer(window.instance_id);
+                    crate::gui::widgets::file_explorer::remove_file_explorer(window.instance_id);
                 },
                 WindowContent::Snake => {
-                    crate::kernel::snake::remove_snake_game(window.instance_id);
+                    crate::apps::snake::remove_snake_game(window.instance_id);
                 },
                 WindowContent::Browser => {
-                    crate::kernel::browser::remove_browser(window.instance_id);
+                    crate::gui::widgets::browser::remove_browser(window.instance_id);
                 },
                 WindowContent::AboutDialog => {
                     // No instance to remove
@@ -523,25 +523,25 @@ impl WindowManager {
             // Create the requested window
             let (title, instance_id) = match window_type {
                 WindowContent::Terminal => {
-                    let id = crate::kernel::console::create_console();
+                    let id = crate::gui::widgets::console::create_console();
                     // Initialize shell for this terminal
-                    crate::kernel::shell::create_shell(id);
+                    crate::apps::shell::create_shell(id);
                     ("Terminal", id)
                 },
                 WindowContent::Editor => {
-                    let id = crate::kernel::editor::create_editor();
+                    let id = crate::gui::widgets::editor::create_editor();
                     ("Text Editor", id)
                 },
                 WindowContent::FileExplorer => {
-                    let id = crate::kernel::file_explorer::create_file_explorer();
+                    let id = crate::gui::widgets::file_explorer::create_file_explorer();
                     ("Files", id)
                 },
                 WindowContent::Snake => {
-                    let id = crate::kernel::snake::create_snake_game();
+                    let id = crate::apps::snake::create_snake_game();
                     ("Snake", id)
                 },
                 WindowContent::Browser => {
-                    let id = crate::kernel::browser::create_browser();
+                    let id = crate::gui::widgets::browser::create_browser();
                     ("Browser", id)
                 },
                 WindowContent::AboutDialog => {
@@ -571,7 +571,7 @@ impl WindowManager {
                         let relative_y = y - cy;
                         let instance_id = self.windows[i].instance_id;
 
-                        if let Some(editor) = crate::kernel::editor::get_editor(instance_id) {
+                        if let Some(editor) = crate::gui::widgets::editor::get_editor(instance_id) {
                             editor.handle_mouse_down(relative_x, relative_y);
                         }
                     }
@@ -587,8 +587,8 @@ impl WindowManager {
                         let instance_id = self.windows[i].instance_id;
                         let current_time = crate::kernel::get_time_ms();
 
-                        use crate::kernel::file_explorer::FileExplorerAction;
-                        let action = crate::kernel::file_explorer::handle_click(
+                        use crate::gui::widgets::file_explorer::FileExplorerAction;
+                        let action = crate::gui::widgets::file_explorer::handle_click(
                             instance_id,
                             relative_x,
                             relative_y,
@@ -600,7 +600,7 @@ impl WindowManager {
                             FileExplorerAction::OpenFile(filename) => {
                                 // Open file in a new editor window
                                 // Get filesystem from file explorer
-                                if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(instance_id) {
+                                if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(instance_id) {
                                     if let (Some(ref fs), Some(device_idx)) = (&explorer.filesystem, explorer.device_index) {
                                         // Get file info by listing all files
                                         let file_list = fs.list_files();
@@ -620,7 +620,7 @@ impl WindowManager {
                                                                 .unwrap_or(bytes_read);
 
                                                             if let Ok(text) = core::str::from_utf8(&buffer[..actual_len]) {
-                                                                let editor_id = crate::kernel::editor::create_editor_with_content(
+                                                                let editor_id = crate::gui::widgets::editor::create_editor_with_content(
                                                                     &filename,
                                                                     text
                                                                 );
@@ -637,25 +637,25 @@ impl WindowManager {
                                 }
                             },
                             FileExplorerAction::Refresh => {
-                                crate::kernel::file_explorer::refresh(instance_id);
+                                crate::gui::widgets::file_explorer::refresh(instance_id);
                             },
                             FileExplorerAction::DeleteFile => {
                                 // Get selected filename and start delete confirmation
-                                if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(instance_id) {
+                                if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(instance_id) {
                                     if let Some(filename) = explorer.get_selected_filename() {
-                                        crate::kernel::usb_hid::start_delete_confirm(&filename);
+                                        crate::kernel::drivers::input_events::start_delete_confirm(&filename);
                                     }
                                 }
                             },
                             FileExplorerAction::NewFile => {
                                 // Request filename from user via menu bar prompt
-                                crate::kernel::usb_hid::start_filename_prompt();
+                                crate::kernel::drivers::input_events::start_filename_prompt();
                             },
                             FileExplorerAction::RenameFile => {
                                 // Get selected filename and start rename prompt
-                                if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(instance_id) {
+                                if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(instance_id) {
                                     if let Some(filename) = explorer.get_selected_filename() {
-                                        crate::kernel::usb_hid::start_rename_prompt(&filename);
+                                        crate::kernel::drivers::input_events::start_rename_prompt(&filename);
                                     }
                                 }
                             },
@@ -673,7 +673,7 @@ impl WindowManager {
                     if x >= cx && x < cx + cw as i32 && y >= cy && y < cy + ch as i32 {
                         // Click is inside browser content area
                         let instance_id = self.windows[i].instance_id;
-                        crate::kernel::browser::handle_click(
+                        crate::gui::widgets::browser::handle_click(
                             instance_id,
                             x as usize,
                             y as usize,
@@ -705,7 +705,7 @@ impl WindowManager {
                     let relative_y = (y - cy).max(0).min(ch as i32 - 1);
                     let instance_id = self.windows[i].instance_id;
 
-                    if let Some(editor) = crate::kernel::editor::get_editor(instance_id) {
+                    if let Some(editor) = crate::gui::widgets::editor::get_editor(instance_id) {
                         return editor.handle_mouse_drag(relative_x, relative_y);
                     }
                     return false;
@@ -716,7 +716,7 @@ impl WindowManager {
                 // Allow dragging in browser for URL input selection
                 if x >= cx && x < cx + cw as i32 && y >= cy && y < cy + ch as i32 {
                     let instance_id = self.windows[i].instance_id;
-                    return crate::kernel::browser::handle_mouse_drag(
+                    return crate::gui::widgets::browser::handle_mouse_drag(
                         instance_id,
                         x as usize,
                         y as usize,
@@ -736,11 +736,11 @@ impl WindowManager {
         // End selection in all editors and browsers
         for window in &self.windows {
             if window.content == WindowContent::Editor {
-                if let Some(editor) = crate::kernel::editor::get_editor(window.instance_id) {
+                if let Some(editor) = crate::gui::widgets::editor::get_editor(window.instance_id) {
                     editor.handle_mouse_up();
                 }
             } else if window.content == WindowContent::Browser {
-                crate::kernel::browser::handle_mouse_up(window.instance_id);
+                crate::gui::widgets::browser::handle_mouse_up(window.instance_id);
             }
         }
     }

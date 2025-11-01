@@ -1,7 +1,6 @@
 // USB HID (Human Interface Device) Driver - Keyboard and Mouse Support
 
 extern crate alloc;
-use alloc::vec::Vec;
 use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use crate::kernel::uart_write_string;
@@ -434,21 +433,21 @@ pub fn test_input_events() -> (bool, bool) {
                             needs_full_redraw = true;
                         }
                     }
-                } else if let Some(editor_id) = crate::kernel::window_manager::get_focused_editor_id() {
+                } else if let Some(editor_id) = crate::gui::window_manager::get_focused_editor_id() {
                     // Check if we're prompting for a filename (old editor-specific code)
                     if false { // This branch is now dead code since we handle prompts globally above
                         // Handle filename input
                         if let Some(ascii) = evdev_to_ascii(key, modifiers) {
                             if ascii == b'\n' {
                                 // Enter pressed - finish the prompt and save
-                                if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                     finish_filename_prompt(editor);
                                 }
                                 needs_full_redraw = true;
                             } else if ascii == 27 { // ESC
                                 // Cancel the prompt
                                 cancel_filename_prompt();
-                                if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                     editor.set_status("Save cancelled");
                                 }
                                 needs_full_redraw = true;
@@ -467,43 +466,43 @@ pub fn test_input_events() -> (bool, bool) {
 
                         if is_ctrl && key == 30 { // KEY_A = 30 in evdev (Ctrl+A)
                             // Handle select all
-                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                            if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                 editor.select_all();
                             }
                             needs_full_redraw = true;
                         } else if is_ctrl && key == 31 { // KEY_S = 31 in evdev (Ctrl+S)
                             // Handle save in editor
-                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                            if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                 save_editor_file(editor);
                             }
                             needs_full_redraw = true;
                         } else if is_ctrl && key == 46 { // KEY_C = 46 in evdev (Ctrl+C)
                             // Handle copy
-                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                            if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                 editor.copy();
                             }
                             needs_full_redraw = true;
                         } else if is_ctrl && key == 45 { // KEY_X = 45 in evdev (Ctrl+X)
                             // Handle cut
-                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                            if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                 editor.cut();
                             }
                             needs_full_redraw = true;
                         } else if is_ctrl && key == 47 { // KEY_V = 47 in evdev (Ctrl+V)
                             // Handle paste
-                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                            if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                 editor.paste();
                             }
                             needs_full_redraw = true;
                         } else if is_ctrl && key == 44 { // KEY_Z = 44 in evdev (Ctrl+Z)
                             // Handle undo
-                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                            if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                 editor.undo();
                             }
                             needs_full_redraw = true;
                         } else if is_ctrl && key == 21 { // KEY_Y = 21 in evdev (Ctrl+Y)
                             // Handle redo
-                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                            if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                 editor.redo();
                             }
                             needs_full_redraw = true;
@@ -514,7 +513,7 @@ pub fn test_input_events() -> (bool, bool) {
                             // Arrow keys for editor navigation (Linux evdev codes)
                             match key {
                                 103 => { // KEY_UP
-                                    if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                    if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                         if is_shift {
                                             editor.move_up_select();
                                         } else {
@@ -524,7 +523,7 @@ pub fn test_input_events() -> (bool, bool) {
                                     needs_full_redraw = true;
                                 }
                                 108 => { // KEY_DOWN
-                                    if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                    if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                         if is_shift {
                                             editor.move_down_select();
                                         } else {
@@ -534,7 +533,7 @@ pub fn test_input_events() -> (bool, bool) {
                                     needs_full_redraw = true;
                                 }
                                 105 => { // KEY_LEFT
-                                    if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                    if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                         if is_shift {
                                             editor.move_left_select();
                                         } else {
@@ -544,7 +543,7 @@ pub fn test_input_events() -> (bool, bool) {
                                     needs_full_redraw = true;
                                 }
                                 106 => { // KEY_RIGHT
-                                    if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                    if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                         if is_shift {
                                             editor.move_right_select();
                                         } else {
@@ -557,7 +556,7 @@ pub fn test_input_events() -> (bool, bool) {
                                     // Regular text input (but not if Ctrl is held)
                                     if !is_ctrl {
                                         if let Some(ascii) = evdev_to_ascii(key, modifiers) {
-                                            if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                                            if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                                 if ascii == b'\n' {
                                                     // If there's a status message, clear it and consume the Enter
                                                     if get_menu_status().is_some() {
@@ -579,34 +578,34 @@ pub fn test_input_events() -> (bool, bool) {
                             }
                         }
                     }
-                } else if let Some(terminal_id) = crate::kernel::window_manager::get_focused_terminal_id() {
+                } else if let Some(terminal_id) = crate::gui::window_manager::get_focused_terminal_id() {
                     // VirtIO keyboard uses Linux evdev codes
                     if let Some(ascii) = evdev_to_ascii(key, modifiers) {
                         // Pass input to the focused terminal's shell
-                        if let Some(shell) = crate::kernel::shell::get_shell(terminal_id) {
+                        if let Some(shell) = crate::apps::shell::get_shell(terminal_id) {
                             shell.handle_char(ascii);
                         }
                         needs_full_redraw = true; // Keyboard input requires full redraw
                     }
-                } else if let Some(explorer_id) = crate::kernel::window_manager::get_focused_file_explorer_id() {
+                } else if let Some(explorer_id) = crate::gui::window_manager::get_focused_file_explorer_id() {
                     // File explorer keyboard navigation
                     match key {
                         103 => { // KEY_UP
-                            crate::kernel::file_explorer::move_selection_up(explorer_id);
+                            crate::gui::widgets::file_explorer::move_selection_up(explorer_id);
                             needs_full_redraw = true;
                         }
                         108 => { // KEY_DOWN
-                            crate::kernel::file_explorer::move_selection_down(explorer_id);
+                            crate::gui::widgets::file_explorer::move_selection_down(explorer_id);
                             needs_full_redraw = true;
                         }
                         28 => { // KEY_ENTER
-                            use crate::kernel::file_explorer::FileExplorerAction;
-                            let action = crate::kernel::file_explorer::open_selected(explorer_id);
+                            use crate::gui::widgets::file_explorer::FileExplorerAction;
+                            let action = crate::gui::widgets::file_explorer::open_selected(explorer_id);
 
                             match action {
                                 FileExplorerAction::OpenFile(filename) => {
                                     // Open file in a new editor window
-                                    if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(explorer_id) {
+                                    if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(explorer_id) {
                                         if let (Some(ref fs), Some(device_idx)) = (&explorer.filesystem, explorer.device_index) {
                                             // Get file info by listing all files
                                             let file_list = fs.list_files();
@@ -626,17 +625,17 @@ pub fn test_input_events() -> (bool, bool) {
                                                                     .unwrap_or(bytes_read);
 
                                                                 if let Ok(text) = core::str::from_utf8(&buffer[..actual_len]) {
-                                                                    let editor_id = crate::kernel::editor::create_editor_with_content(
+                                                                    let editor_id = crate::gui::widgets::editor::create_editor_with_content(
                                                                         &filename,
                                                                         text
                                                                     );
                                                                     let title = alloc::format!("Editor - {}", filename);
-                                                                    let window = crate::kernel::window_manager::Window::new(
+                                                                    let window = crate::gui::window_manager::Window::new(
                                                                         0, 0, 640, 480, &title,
-                                                                        crate::kernel::window_manager::WindowContent::Editor,
+                                                                        crate::gui::window_manager::WindowContent::Editor,
                                                                         editor_id
                                                                     );
-                                                                    crate::kernel::window_manager::add_window(window);
+                                                                    crate::gui::window_manager::add_window(window);
                                                                 }
                                                             }
                                                         }
@@ -652,75 +651,75 @@ pub fn test_input_events() -> (bool, bool) {
                         }
                         _ => {}
                     }
-                } else if let Some(snake_id) = crate::kernel::window_manager::get_focused_snake_id() {
+                } else if let Some(snake_id) = crate::gui::window_manager::get_focused_snake_id() {
                     // Snake game keyboard controls
                     match key {
                         103 => { // KEY_UP
-                            if let Some(game) = crate::kernel::snake::get_snake_game(snake_id) {
-                                game.set_direction(crate::kernel::snake::Direction::Up);
+                            if let Some(game) = crate::apps::snake::get_snake_game(snake_id) {
+                                game.set_direction(crate::apps::snake::Direction::Up);
                             }
                             needs_full_redraw = true;
                         }
                         108 => { // KEY_DOWN
-                            if let Some(game) = crate::kernel::snake::get_snake_game(snake_id) {
-                                game.set_direction(crate::kernel::snake::Direction::Down);
+                            if let Some(game) = crate::apps::snake::get_snake_game(snake_id) {
+                                game.set_direction(crate::apps::snake::Direction::Down);
                             }
                             needs_full_redraw = true;
                         }
                         105 => { // KEY_LEFT
-                            if let Some(game) = crate::kernel::snake::get_snake_game(snake_id) {
-                                game.set_direction(crate::kernel::snake::Direction::Left);
+                            if let Some(game) = crate::apps::snake::get_snake_game(snake_id) {
+                                game.set_direction(crate::apps::snake::Direction::Left);
                             }
                             needs_full_redraw = true;
                         }
                         106 => { // KEY_RIGHT
-                            if let Some(game) = crate::kernel::snake::get_snake_game(snake_id) {
-                                game.set_direction(crate::kernel::snake::Direction::Right);
+                            if let Some(game) = crate::apps::snake::get_snake_game(snake_id) {
+                                game.set_direction(crate::apps::snake::Direction::Right);
                             }
                             needs_full_redraw = true;
                         }
                         19 => { // KEY_R = 19 in evdev (R key to restart)
-                            if let Some(game) = crate::kernel::snake::get_snake_game(snake_id) {
+                            if let Some(game) = crate::apps::snake::get_snake_game(snake_id) {
                                 game.reset();
                             }
                             needs_full_redraw = true;
                         }
                         _ => {}
                     }
-                } else if let Some(browser_id) = crate::kernel::window_manager::get_focused_browser_id() {
+                } else if let Some(browser_id) = crate::gui::window_manager::get_focused_browser_id() {
                     // Browser keyboard navigation
                     let is_shift = (modifiers & (MOD_LEFT_SHIFT | MOD_RIGHT_SHIFT)) != 0;
 
                     // Handle arrow keys for URL input
                     match key {
                         105 => { // KEY_LEFT
-                            crate::kernel::browser::handle_arrow_key(
+                            crate::gui::widgets::browser::handle_arrow_key(
                                 browser_id,
-                                crate::kernel::text_input::ArrowKey::Left,
+                                crate::gui::widgets::text_input::ArrowKey::Left,
                                 is_shift
                             );
                             needs_full_redraw = true;
                         }
                         106 => { // KEY_RIGHT
-                            crate::kernel::browser::handle_arrow_key(
+                            crate::gui::widgets::browser::handle_arrow_key(
                                 browser_id,
-                                crate::kernel::text_input::ArrowKey::Right,
+                                crate::gui::widgets::text_input::ArrowKey::Right,
                                 is_shift
                             );
                             needs_full_redraw = true;
                         }
                         102 => { // KEY_HOME
-                            crate::kernel::browser::handle_arrow_key(
+                            crate::gui::widgets::browser::handle_arrow_key(
                                 browser_id,
-                                crate::kernel::text_input::ArrowKey::Home,
+                                crate::gui::widgets::text_input::ArrowKey::Home,
                                 is_shift
                             );
                             needs_full_redraw = true;
                         }
                         107 => { // KEY_END
-                            crate::kernel::browser::handle_arrow_key(
+                            crate::gui::widgets::browser::handle_arrow_key(
                                 browser_id,
-                                crate::kernel::text_input::ArrowKey::End,
+                                crate::gui::widgets::text_input::ArrowKey::End,
                                 is_shift
                             );
                             needs_full_redraw = true;
@@ -729,7 +728,7 @@ pub fn test_input_events() -> (bool, bool) {
                             // Regular keyboard input
                             if let Some(ascii) = evdev_to_ascii(key, modifiers) {
                                 let is_ctrl = (modifiers & (MOD_LEFT_CTRL | MOD_RIGHT_CTRL)) != 0;
-                                crate::kernel::browser::handle_key(browser_id, ascii as char, is_ctrl, is_shift);
+                                crate::gui::widgets::browser::handle_key(browser_id, ascii as char, is_ctrl, is_shift);
                                 needs_full_redraw = true;
                             }
                         }
@@ -741,13 +740,13 @@ pub fn test_input_events() -> (bool, bool) {
             }
             InputEvent::MouseMove { x_delta, y_delta } => {
                 // Move the cursor on screen
-                crate::kernel::framebuffer::move_cursor(x_delta, y_delta);
+                crate::gui::framebuffer::move_cursor(x_delta, y_delta);
 
                 // Check which menu button is hovered (if any)
-                let (cx, cy) = crate::kernel::framebuffer::get_cursor_pos();
+                let (cx, cy) = crate::gui::framebuffer::get_cursor_pos();
                 let hovered_button = if cy >= 0 && cy < 32 {
                     // In menu bar, determine which button
-                    crate::kernel::window_manager::get_hovered_menu_button(cx, cy)
+                    crate::gui::window_manager::get_hovered_menu_button(cx, cy)
                 } else {
                     None
                 };
@@ -764,7 +763,7 @@ pub fn test_input_events() -> (bool, bool) {
 
                 // If left mouse button is down, handle drag
                 if is_mouse_button_down() {
-                    let changed = crate::kernel::window_manager::handle_mouse_drag(cx, cy);
+                    let changed = crate::gui::window_manager::handle_mouse_drag(cx, cy);
                     if changed {
                         needs_full_redraw = true;
                     } else {
@@ -774,21 +773,21 @@ pub fn test_input_events() -> (bool, bool) {
             }
             InputEvent::MouseButton { button, pressed } => {
                 if button == 0 { // Left mouse button
-                    let (cx, cy) = crate::kernel::framebuffer::get_cursor_pos();
+                    let (cx, cy) = crate::gui::framebuffer::get_cursor_pos();
                     if pressed {
                         set_mouse_button_down(true);
-                        crate::kernel::window_manager::handle_mouse_down(cx, cy);
+                        crate::gui::window_manager::handle_mouse_down(cx, cy);
                     } else {
                         set_mouse_button_down(false);
-                        crate::kernel::window_manager::handle_mouse_up(cx, cy);
+                        crate::gui::window_manager::handle_mouse_up(cx, cy);
                     }
                     needs_full_redraw = true; // Clicks trigger a full redraw
                 }
             }
             InputEvent::MouseWheel { delta } => {
                 // Handle mouse wheel scrolling in focused editor
-                if let Some(editor_id) = crate::kernel::window_manager::get_focused_editor_id() {
-                    if let Some(editor) = crate::kernel::editor::get_editor(editor_id) {
+                if let Some(editor_id) = crate::gui::window_manager::get_focused_editor_id() {
+                    if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                         // Negative delta = scroll up, positive = scroll down
                         // Multiply by 3 for smoother scrolling
                         editor.scroll(-delta as i32 * 3);
@@ -911,7 +910,7 @@ pub fn get_filename_prompt() -> Option<String> {
 }
 
 /// Finish the filename prompt and save the file
-pub fn finish_filename_prompt(editor: &mut crate::kernel::editor::TextEditor) {
+pub fn finish_filename_prompt(editor: &mut crate::gui::widgets::editor::TextEditor) {
     unsafe {
         if let Some(filename) = FILENAME_PROMPT.take() {
             if !filename.is_empty() {
@@ -937,8 +936,8 @@ pub fn finish_filename_prompt_for_file_explorer() {
         if let Some(filename) = FILENAME_PROMPT.take() {
             if !filename.is_empty() {
                 // Get the focused file explorer
-                if let Some(explorer_id) = crate::kernel::window_manager::get_focused_file_explorer_id() {
-                    if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(explorer_id) {
+                if let Some(explorer_id) = crate::gui::window_manager::get_focused_file_explorer_id() {
+                    if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(explorer_id) {
                         if let (Some(ref mut fs), Some(device_idx)) = (&mut explorer.filesystem, explorer.device_index) {
                             if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
                                 if let Some(device) = devices.get_mut(device_idx) {
@@ -950,7 +949,7 @@ pub fn finish_filename_prompt_for_file_explorer() {
                                             let _ = fs.write_file(device, &filename, initial_content);
 
                                             // Refresh the file list
-                                            crate::kernel::file_explorer::refresh(explorer_id);
+                                            crate::gui::widgets::file_explorer::refresh(explorer_id);
                                         }
                                         Err(_e) => {
                                             // File creation failed (maybe duplicate name)
@@ -986,8 +985,8 @@ pub fn finish_rename_prompt_for_file_explorer() {
             if let Some(old_filename) = RENAME_OLD_FILENAME.take() {
                 if !new_filename.is_empty() {
                     // Get the focused file explorer
-                    if let Some(explorer_id) = crate::kernel::window_manager::get_focused_file_explorer_id() {
-                        if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(explorer_id) {
+                    if let Some(explorer_id) = crate::gui::window_manager::get_focused_file_explorer_id() {
+                        if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(explorer_id) {
                             if let (Some(ref mut fs), Some(device_idx)) = (&mut explorer.filesystem, explorer.device_index) {
                                 if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
                                     if let Some(device) = devices.get_mut(device_idx) {
@@ -995,8 +994,8 @@ pub fn finish_rename_prompt_for_file_explorer() {
                                         match fs.rename_file(device, &old_filename, &new_filename) {
                                             Ok(()) => {
                                                 // Refresh the file list and re-select the renamed file
-                                                crate::kernel::file_explorer::refresh(explorer_id);
-                                                crate::kernel::file_explorer::select_file_by_name(explorer_id, &new_filename);
+                                                crate::gui::widgets::file_explorer::refresh(explorer_id);
+                                                crate::gui::widgets::file_explorer::select_file_by_name(explorer_id, &new_filename);
                                             }
                                             Err(_e) => {
                                                 // Rename failed
@@ -1044,9 +1043,9 @@ pub fn confirm_delete_file() {
     unsafe {
         if let Some(filename) = DELETE_CONFIRM_FILENAME.take() {
             // Get the focused file explorer
-            if let Some(explorer_id) = crate::kernel::window_manager::get_focused_file_explorer_id() {
-                if crate::kernel::file_explorer::delete_selected(explorer_id) {
-                    crate::kernel::file_explorer::refresh(explorer_id);
+            if let Some(explorer_id) = crate::gui::window_manager::get_focused_file_explorer_id() {
+                if crate::gui::widgets::file_explorer::delete_selected(explorer_id) {
+                    crate::gui::widgets::file_explorer::refresh(explorer_id);
                 }
             }
         }
@@ -1054,9 +1053,7 @@ pub fn confirm_delete_file() {
 }
 
 /// Save the editor file to disk
-fn save_editor_file(editor: &mut crate::kernel::editor::TextEditor) {
-    use crate::kernel::filesystem;
-
+fn save_editor_file(editor: &mut crate::gui::widgets::editor::TextEditor) {
     // Check if we have a filename
     if let Some(_name) = editor.get_filename() {
         // File already has a name, save directly
@@ -1068,9 +1065,7 @@ fn save_editor_file(editor: &mut crate::kernel::editor::TextEditor) {
 }
 
 /// Internal function to save the editor file with a known filename
-fn save_editor_file_internal(editor: &mut crate::kernel::editor::TextEditor) {
-    use crate::kernel::filesystem;
-
+fn save_editor_file_internal(editor: &mut crate::gui::widgets::editor::TextEditor) {
     // Get the filename
     let filename = if let Some(name) = editor.get_filename() {
         name.to_string()
@@ -1084,21 +1079,21 @@ fn save_editor_file_internal(editor: &mut crate::kernel::editor::TextEditor) {
     let content_bytes = content.as_bytes();
 
     // Try to access filesystem through shell first, then file explorer as fallback
-    let fs_access = if let Some(shell) = crate::kernel::shell::get_shell(0) {
+    let fs_access = if let Some(shell) = crate::apps::shell::get_shell(0) {
         shell.filesystem.as_mut().zip(shell.device_index)
     } else {
         // No shell, try file explorer
-        if let Some(explorer_id) = crate::kernel::window_manager::get_focused_file_explorer_id() {
-            if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(explorer_id) {
+        if let Some(explorer_id) = crate::gui::window_manager::get_focused_file_explorer_id() {
+            if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(explorer_id) {
                 explorer.filesystem.as_mut().zip(explorer.device_index)
             } else {
                 None
             }
         } else {
             // Try any file explorer
-            let explorers = crate::kernel::file_explorer::get_all_file_explorers();
+            let explorers = crate::gui::widgets::file_explorer::get_all_file_explorers();
             if !explorers.is_empty() {
-                if let Some(explorer) = crate::kernel::file_explorer::get_file_explorer(explorers[0]) {
+                if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(explorers[0]) {
                     explorer.filesystem.as_mut().zip(explorer.device_index)
                 } else {
                     None
@@ -1174,7 +1169,7 @@ fn save_editor_file_internal(editor: &mut crate::kernel::editor::TextEditor) {
 
                                     // Update editor window title to show filename
                                     let window_title = alloc::format!("Text Editor - {}", filename);
-                                    crate::kernel::window_manager::set_editor_window_title(&window_title);
+                                    crate::gui::window_manager::set_editor_window_title(&window_title);
                                 }
                                 Err(e) => {
                                     let msg = alloc::format!("Error saving: {}", e);

@@ -1,9 +1,8 @@
 // TCP connection management
 // Simple TCP implementation for client-side connections
 
-use alloc::vec::Vec;
-use crate::kernel::virtio_net::VirtioNetDevice;
-use crate::kernel::network::*;
+use crate::kernel::drivers::virtio::net::VirtioNetDevice;
+use crate::system::net::network::*;
 
 /// TCP connection states
 #[derive(Debug, Clone, Copy, PartialEq)]

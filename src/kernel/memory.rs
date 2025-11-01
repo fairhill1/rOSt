@@ -1,7 +1,5 @@
 // Memory management for the kernel
 
-use core::mem::size_of;
-
 /// UEFI Memory Descriptor
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

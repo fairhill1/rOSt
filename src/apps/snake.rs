@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use crate::kernel::timer::get_time_us;
+use crate::kernel::drivers::timer::get_time_us;
 extern crate alloc;
 
 const GRID_SIZE: usize = 20; // 20x20 grid
