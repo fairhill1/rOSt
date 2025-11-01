@@ -156,6 +156,26 @@ pub fn swap_buffers() {
     }
 }
 
+/// Swap only a rectangular region from back buffer to front buffer
+pub fn swap_buffers_partial(x: u32, y: u32, width: u32, height: u32) {
+    unsafe {
+        if let Some(back) = BACK_BUFFER {
+            if !FRONT_BUFFER.is_null() {
+                // Copy only the specified region line by line
+                for row in y..(y + height).min(SCREEN_HEIGHT) {
+                    let offset = (row * SCREEN_STRIDE + x) as isize;
+                    let copy_width = width.min(SCREEN_STRIDE - x) as usize;
+                    core::ptr::copy_nonoverlapping(
+                        back.offset(offset),
+                        FRONT_BUFFER.offset(offset),
+                        copy_width
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Clear the screen with a color
 pub fn clear_screen(color: u32) {
     unsafe {

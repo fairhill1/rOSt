@@ -232,6 +232,7 @@ impl WindowManager {
             self.windows[0].y = available_y;
             self.windows[0].width = self.screen_width;
             self.windows[0].height = available_height;
+            self.windows[0].visible = true;
         } else if num_windows == 2 {
             // Two windows: 50/50 horizontal split
             let half_width = self.screen_width / 2;
@@ -240,11 +241,13 @@ impl WindowManager {
             self.windows[0].y = available_y;
             self.windows[0].width = half_width;
             self.windows[0].height = available_height;
+            self.windows[0].visible = true;
 
             self.windows[1].x = half_width as i32;
             self.windows[1].y = available_y;
             self.windows[1].width = half_width;
             self.windows[1].height = available_height;
+            self.windows[1].visible = true;
         } else if num_windows == 3 {
             // Three windows: split left side vertically
             // Layout:
@@ -261,18 +264,21 @@ impl WindowManager {
             self.windows[0].y = available_y;
             self.windows[0].width = half_width;
             self.windows[0].height = half_height;
+            self.windows[0].visible = true;
 
             // Window 1: full right side
             self.windows[1].x = half_width as i32;
             self.windows[1].y = available_y;
             self.windows[1].width = half_width;
             self.windows[1].height = available_height;
+            self.windows[1].visible = true;
 
             // Window 2: bottom-left
             self.windows[2].x = 0;
             self.windows[2].y = available_y + half_height as i32;
             self.windows[2].width = half_width;
             self.windows[2].height = half_height;
+            self.windows[2].visible = true;
         } else if num_windows >= 4 {
             // Four windows: 2x2 grid
             // Layout:
@@ -289,24 +295,28 @@ impl WindowManager {
             self.windows[0].y = available_y;
             self.windows[0].width = half_width;
             self.windows[0].height = half_height;
+            self.windows[0].visible = true;
 
             // Window 1: top-right
             self.windows[1].x = half_width as i32;
             self.windows[1].y = available_y;
             self.windows[1].width = half_width;
             self.windows[1].height = half_height;
+            self.windows[1].visible = true;
 
             // Window 2: bottom-left
             self.windows[2].x = 0;
             self.windows[2].y = available_y + half_height as i32;
             self.windows[2].width = half_width;
             self.windows[2].height = half_height;
+            self.windows[2].visible = true;
 
             // Window 3: bottom-right
             self.windows[3].x = half_width as i32;
             self.windows[3].y = available_y + half_height as i32;
             self.windows[3].width = half_width;
             self.windows[3].height = half_height;
+            self.windows[3].visible = true;
 
             // If there are more than 4 windows, only show the first 4
             // (hide the extras)
@@ -365,6 +375,9 @@ impl WindowManager {
             // Get cursor position for hover detection
             let (cursor_x, cursor_y) = framebuffer::get_cursor_pos();
 
+            // Check if at window limit (4 windows max)
+            let at_limit = self.windows.len() >= 4;
+
             // Draw menu items with borders and backgrounds
             let mut current_x = MENU_START_X;
             for item in MENU_ITEMS.iter() {
@@ -377,11 +390,20 @@ impl WindowManager {
                                   cursor_y >= item_y as i32 &&
                                   cursor_y < (item_y + MENU_ITEM_HEIGHT) as i32;
 
-                // Choose background color based on hover state
-                let bg_color = if is_hovering {
+                // Choose background color based on hover state and limit
+                let bg_color = if at_limit {
+                    0xFF2B2B2B // Darker gray when disabled
+                } else if is_hovering {
                     COLOR_MENU_ITEM_HOVER
                 } else {
                     COLOR_MENU_ITEM
+                };
+
+                // Choose text color based on limit
+                let text_color = if at_limit {
+                    0xFF666666 // Dim gray text when disabled
+                } else {
+                    COLOR_TEXT
                 };
 
                 // Draw menu item border
@@ -395,7 +417,7 @@ impl WindowManager {
                 // Draw menu item text (centered with padding)
                 let text_x = current_x + MENU_ITEM_PADDING_X;
                 let text_y = item_y + 4;
-                framebuffer::draw_string(text_x, text_y, item.label, COLOR_TEXT);
+                framebuffer::draw_string(text_x, text_y, item.label, text_color);
 
                 // Move to next position
                 current_x += item_width + MENU_ITEM_SPACING;
@@ -420,6 +442,11 @@ impl WindowManager {
     fn check_menu_click(&self, x: i32, y: i32) -> Option<WindowContent> {
         // Check if click is in menu bar area
         if y < 0 || y >= MENU_BAR_HEIGHT as i32 {
+            return None;
+        }
+
+        // Limit to 4 windows maximum
+        if self.windows.len() >= 4 {
             return None;
         }
 
@@ -1110,6 +1137,22 @@ pub fn get_all_snakes() -> Vec<(usize, i32, i32, u32, u32)> {
             wm.get_all_snakes()
         } else {
             Vec::new()
+        }
+    }
+}
+
+/// Render only the menu bar (for hover state changes - much faster than full redraw)
+pub fn render_menu_bar_only() {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            // Render menu bar to back buffer
+            wm.render_menu_bar();
+
+            // Copy only the menu bar region from back buffer to front buffer
+            framebuffer::swap_buffers_partial(0, 0, wm.screen_width, MENU_BAR_HEIGHT);
+
+            // Flush only the menu bar region to GPU
+            crate::kernel::flush_display_partial(0, 0, wm.screen_width, MENU_BAR_HEIGHT);
         }
     }
 }

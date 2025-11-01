@@ -754,8 +754,11 @@ pub fn test_input_events() -> (bool, bool) {
                 unsafe {
                     // Only trigger full redraw if hover state changed
                     if hovered_button != LAST_HOVERED_BUTTON {
-                        needs_full_redraw = true;
+                        // Don't trigger full redraw for just hover changes - too slow
+                        // Instead, just redraw the menu bar
+                        crate::gui::window_manager::render_menu_bar_only();
                         LAST_HOVERED_BUTTON = hovered_button;
+                        needs_cursor_redraw = true; // Just need cursor update, not full redraw
                     } else {
                         needs_cursor_redraw = true;
                     }
