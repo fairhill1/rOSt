@@ -701,7 +701,7 @@ impl Browser {
         let mut current_y = y;
 
         // Block-level elements start on new line
-        let is_block = matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "br");
+        let is_block = matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "br" | "hr");
         if is_block && !self.layout.is_empty() {
             current_x = x;
             // Use whichever is lower on page: explicit spacing from parent (y) or default spacing
@@ -727,6 +727,37 @@ impl Browser {
         match tag {
             "br" => {
                 return (x, current_y + CHAR_HEIGHT + 2);
+            }
+            "hr" => {
+                // Horizontal rule - draw a line across the page
+                // Add spacing before
+                if !self.layout.is_empty() {
+                    current_y += CHAR_HEIGHT + 4;
+                }
+
+                // Draw horizontal line using dashes
+                let line_width = max_width.saturating_sub(20); // Leave 10px margin on each side
+                let num_dashes = line_width / (CHAR_WIDTH * font_size);
+                let hr_line = alloc::format!("{}", "-".repeat(num_dashes));
+
+                self.layout.push(LayoutBox {
+                    x: x + 10,
+                    y: current_y,
+                    width: num_dashes * CHAR_WIDTH * font_size,
+                    height: CHAR_HEIGHT * font_size,
+                    text: hr_line,
+                    color: Color::new(128, 128, 128), // Gray
+                    font_size,
+                    is_link: false,
+                    link_url: String::new(),
+                    bold: false,
+                    italic: false,
+                    element_id: element_id.to_string(),
+                });
+
+                // Add spacing after
+                current_y += CHAR_HEIGHT * font_size + 4;
+                return (x, current_y);
             }
             "a" => {
                 // Hyperlink - render children with link color
@@ -821,7 +852,7 @@ impl Browser {
             // For block-level children (like nested lists), pass the base x position
             // For inline children (like text), pass current_x (continues on same line)
             let child_is_block = if let NodeType::Element(child_elem) = &child.node_type {
-                matches!(child_elem.tag_name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "br")
+                matches!(child_elem.tag_name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "br" | "hr")
             } else {
                 false
             };
