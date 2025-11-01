@@ -512,6 +512,15 @@ impl Browser {
             };
 
             crate::kernel::uart_write_string(&alloc::format!("http_get: Extracted body length: {}\r\n", result.as_ref().map(|s| s.len()).unwrap_or(0)));
+
+            // Debug: Print the actual body bytes to verify integrity
+            if let Some(ref body) = result {
+                crate::kernel::uart_write_string(&alloc::format!("http_get: Body first 100 chars: {}\r\n",
+                    if body.len() > 100 { &body[..100] } else { body }));
+                crate::kernel::uart_write_string(&alloc::format!("http_get: Body last 100 chars: {}\r\n",
+                    if body.len() > 100 { &body[body.len()-100..] } else { body }));
+            }
+
             crate::kernel::uart_write_string("http_get: Done!\r\n");
             result
         }
@@ -548,6 +557,10 @@ impl Browser {
         let dom = parser.parse();
 
         crate::kernel::uart_write_string("load_html: HTML parsed, clearing layout\r\n");
+
+        // Debug: Print DOM structure
+        self.debug_print_dom(&dom, 0);
+
         self.layout = Vec::new();
 
         // Extract page title from DOM
@@ -559,14 +572,57 @@ impl Browser {
             crate::gui::window_manager::set_browser_window_title(self.instance_id, &window_title);
         }
 
-        // Layout the DOM tree (skip <head> elements)
+        // Layout the DOM tree - search for <body> element
         crate::kernel::uart_write_string("load_html: Starting layout\r\n");
-        self.layout_node(&dom, 10, 10, 1000, &Color::BLACK, false, false, 2, "");
+
+        // Find and layout the <body> element (it might be nested in malformed HTML)
+        self.find_and_layout_body(&dom, 10, 10, 1000);
 
         crate::kernel::uart_write_string(&alloc::format!("load_html: Layout complete, {} layout boxes created\r\n", self.layout.len()));
 
         // Store the DOM after layout
         self.dom = Some(dom);
+    }
+
+    /// Debug helper to print DOM structure
+    fn debug_print_dom(&self, node: &Node, depth: usize) {
+        let indent = "  ".repeat(depth);
+        match &node.node_type {
+            NodeType::Element(elem) => {
+                crate::kernel::uart_write_string(&alloc::format!("{}Element: <{}> ({} children)\r\n",
+                    indent, elem.tag_name, node.children.len()));
+                for child in &node.children {
+                    self.debug_print_dom(child, depth + 1);
+                }
+            }
+            NodeType::Text(text) => {
+                let preview = if text.len() > 40 { &text[..40] } else { text };
+                crate::kernel::uart_write_string(&alloc::format!("{}Text: \"{}\"\r\n", indent, preview));
+            }
+        }
+    }
+
+    /// Find and layout the <body> element, wherever it is in the DOM
+    fn find_and_layout_body(&mut self, node: &Node, x: usize, y: usize, max_width: usize) {
+        match &node.node_type {
+            NodeType::Element(elem) => {
+                if elem.tag_name == "body" {
+                    // Found the body! Layout its children
+                    crate::kernel::uart_write_string("find_and_layout_body: Found <body> element\r\n");
+                    for child in &node.children {
+                        self.layout_node(child, x, y, max_width, &Color::BLACK, false, false, 2, "");
+                    }
+                    return;
+                }
+                // Not body, recurse into children to find it
+                for child in &node.children {
+                    self.find_and_layout_body(child, x, y, max_width);
+                }
+            }
+            NodeType::Text(_) => {
+                // Text nodes can't contain body
+            }
+        }
     }
 
     /// Load error page

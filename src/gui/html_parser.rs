@@ -119,25 +119,66 @@ impl Parser {
         let attrs = self.parse_attributes();
         assert_eq!(self.consume_char(), '>');
 
-        // Self-closing tags
-        if tag_name == "br" || tag_name == "img" || tag_name == "hr" {
+        // Self-closing tags (void elements in HTML5)
+        if tag_name == "br" || tag_name == "img" || tag_name == "hr"
+            || tag_name == "meta" || tag_name == "link" || tag_name == "input" {
             return Node::new_element(&tag_name, attrs, Vec::new());
+        }
+
+        // Special handling for style and script tags - consume raw content without parsing
+        if tag_name == "style" || tag_name == "script" {
+            let content = self.consume_raw_text(&tag_name);
+            let mut text_node = Vec::new();
+            if !content.is_empty() {
+                text_node.push(Node::new_text(&content));
+            }
+            return Node::new_element(&tag_name, attrs, text_node);
         }
 
         // Children
         let children = self.parse_nodes();
 
-        // Closing tag
+        // Closing tag - be lenient for real-world HTML
         self.skip_whitespace();
         if self.starts_with("</") {
-            assert_eq!(self.consume_char(), '<');
-            assert_eq!(self.consume_char(), '/');
+            self.consume_char(); // '<'
+            self.consume_char(); // '/'
             let close_tag = self.parse_tag_name();
-            assert_eq!(close_tag, tag_name, "Mismatched closing tag");
-            assert_eq!(self.consume_char(), '>');
+
+            // If closing tag matches, consume it normally
+            if close_tag == tag_name {
+                self.consume_char(); // '>'
+            } else {
+                // Mismatched closing tag - this is common in real-world HTML
+                // For example: <head>...<style>...</style><body> (missing </head>)
+                // Just put the closing tag back by rewinding
+                // Actually, we can't easily rewind, so just skip the closing tag
+                // and let the parent handle it
+                self.consume_char(); // '>'
+            }
         }
+        // If no closing tag found, that's OK too (for malformed HTML like <p>text<p>text)
 
         Node::new_element(&tag_name, attrs, children)
+    }
+
+    /// Consume raw text content until we find the closing tag
+    fn consume_raw_text(&mut self, tag_name: &str) -> String {
+        let mut text = String::new();
+        let closing_tag = alloc::format!("</{}>", tag_name);
+
+        while !self.eof() && !self.starts_with(&closing_tag) {
+            text.push(self.consume_char());
+        }
+
+        // Consume the closing tag if present
+        if self.starts_with(&closing_tag) {
+            for _ in 0..closing_tag.len() {
+                self.consume_char();
+            }
+        }
+
+        text
     }
 
     /// Parse text content
