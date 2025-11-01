@@ -734,6 +734,9 @@ impl Browser {
             let mut header_len = 0;
             let mut expected_seq = conn.ack_num; // Track expected next sequence number
 
+            // Buffer for out-of-order packets (seq_num, data)
+            let mut ooo_buffer: Vec<(u32, Vec<u8>)> = Vec::new();
+
             for iteration in 0..10000 {
                 let mut rx_buffer = [0u8; 1526];
                 if let Ok(len) = devices[0].receive(&mut rx_buffer) {
@@ -791,10 +794,13 @@ impl Browser {
 
                                                 if tcp_seq != expected_seq {
                                                     crate::kernel::uart_write_string(&alloc::format!(
-                                                        "http_get_binary: OUT OF ORDER! Expected seq {}, got seq {}, data len {}\r\n",
+                                                        "http_get_binary: OUT OF ORDER! Expected seq {}, got seq {}, data len {} - buffering\r\n",
                                                         expected_seq, tcp_seq, tcp_data.len()
                                                     ));
-                                                    // Skip out-of-order packets for now
+                                                    // Buffer this out-of-order packet
+                                                    ooo_buffer.push((tcp_seq, tcp_data.to_vec()));
+                                                    // Send duplicate ACK to signal missing data
+                                                    let _ = conn.send_ack(&mut devices[0], gateway_mac, our_mac);
                                                     continue;
                                                 }
 
@@ -816,6 +822,24 @@ impl Browser {
                                                         "http_get_binary: Received {} bytes, total now: {}\r\n",
                                                         tcp_data.len(), response.len()
                                                     ));
+
+                                                    // Check if any buffered out-of-order packets can now be processed
+                                                    let mut made_progress = true;
+                                                    while made_progress {
+                                                        made_progress = false;
+                                                        // Find packet with matching sequence number
+                                                        if let Some(idx) = ooo_buffer.iter().position(|(seq, _)| *seq == expected_seq) {
+                                                            let (_, buffered_data) = ooo_buffer.remove(idx);
+                                                            crate::kernel::uart_write_string(&alloc::format!(
+                                                                "http_get_binary: Draining buffered packet, {} bytes\r\n",
+                                                                buffered_data.len()
+                                                            ));
+                                                            response.extend_from_slice(&buffered_data);
+                                                            expected_seq = expected_seq.wrapping_add(buffered_data.len() as u32);
+                                                            conn.ack_num = conn.ack_num.wrapping_add(buffered_data.len() as u32);
+                                                            made_progress = true;
+                                                        }
+                                                    }
 
                                                 // Try to parse Content-Length from headers if not done yet
                                                 if !headers_complete {
