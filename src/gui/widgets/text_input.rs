@@ -29,6 +29,10 @@ pub struct TextInput {
     is_selecting: bool,
     /// Maximum character length (0 = unlimited)
     max_length: usize,
+    /// Last click timestamp (for double/triple-click detection)
+    last_click_time: u64,
+    /// Number of consecutive clicks
+    click_count: u32,
 }
 
 impl TextInput {
@@ -41,6 +45,8 @@ impl TextInput {
             selection_end: None,
             is_selecting: false,
             max_length: 0,
+            last_click_time: 0,
+            click_count: 0,
         }
     }
 
@@ -54,6 +60,8 @@ impl TextInput {
             selection_end: None,
             is_selecting: false,
             max_length: 0,
+            last_click_time: 0,
+            click_count: 0,
         }
     }
 
@@ -236,6 +244,51 @@ impl TextInput {
         }
     }
 
+    /// Check if a character is a word boundary (for double-click word selection)
+    fn is_word_boundary(ch: char) -> bool {
+        ch.is_whitespace() || matches!(ch, '/' | ':' | '?' | '&' | '=' | '.' | '#' | '@' | '-' | '_')
+    }
+
+    /// Select word at cursor position (for double-click)
+    pub fn select_word_at_cursor(&mut self) {
+        if self.text.is_empty() {
+            return;
+        }
+
+        let chars: alloc::vec::Vec<char> = self.text.chars().collect();
+        let len = chars.len();
+
+        // If cursor is at the end, move it back to last character
+        let cursor_pos = if self.cursor_pos >= len && len > 0 {
+            len - 1
+        } else {
+            self.cursor_pos
+        };
+
+        if cursor_pos >= len {
+            return;
+        }
+
+        // Find word start (go backwards from cursor)
+        let mut start = cursor_pos;
+        while start > 0 && !Self::is_word_boundary(chars[start - 1]) {
+            start -= 1;
+        }
+
+        // Find word end (go forwards from cursor)
+        let mut end = cursor_pos;
+        while end < len && !Self::is_word_boundary(chars[end]) {
+            end += 1;
+        }
+
+        // Select the word
+        if start < end {
+            self.selection_start = Some(start);
+            self.selection_end = Some(end);
+            self.cursor_pos = end;
+        }
+    }
+
     /// Get selected text (if any)
     fn get_selected_text(&self) -> Option<String> {
         if let (Some(start), Some(end)) = (self.selection_start, self.selection_end) {
@@ -347,8 +400,12 @@ impl TextInput {
         }
     }
 
-    /// Handle mouse down - start selection
+    /// Handle mouse down - start selection, detect double/triple clicks
     pub fn handle_mouse_down(&mut self, click_x: i32, base_x: i32) {
+        // Get current time for double/triple-click detection
+        let current_time = crate::kernel::drivers::timer::get_time_ms();
+        const MULTI_CLICK_THRESHOLD_MS: u64 = 500;
+
         // Calculate relative position
         let rel_x = (click_x - base_x).max(0);
 
@@ -357,12 +414,42 @@ impl TextInput {
 
         // Clamp to text length
         let len = self.text.chars().count();
-        self.cursor_pos = char_pos.min(len);
+        let new_cursor_pos = char_pos.min(len);
 
-        // Start selection
-        self.selection_start = Some(self.cursor_pos);
-        self.selection_end = Some(self.cursor_pos);
-        self.is_selecting = true;
+        // Check if this is a multi-click (double or triple)
+        let time_diff = current_time.saturating_sub(self.last_click_time);
+
+        if time_diff <= MULTI_CLICK_THRESHOLD_MS {
+            // Multi-click detected
+            self.click_count += 1;
+        } else {
+            // Too long between clicks - reset to single click
+            self.click_count = 1;
+        }
+
+        self.last_click_time = current_time;
+        self.cursor_pos = new_cursor_pos;
+
+        match self.click_count {
+            1 => {
+                // Single click - position cursor and start selection
+                self.selection_start = Some(self.cursor_pos);
+                self.selection_end = Some(self.cursor_pos);
+                self.is_selecting = true;
+            }
+            2 => {
+                // Double click - select word at cursor
+                self.select_word_at_cursor();
+                self.is_selecting = false; // Don't allow dragging after double-click
+            }
+            _ => {
+                // Triple click (or more) - select all
+                self.select_all();
+                self.is_selecting = false; // Don't allow dragging after triple-click
+                // Reset click count to prevent overflow
+                self.click_count = 3;
+            }
+        }
     }
 
     /// Handle mouse drag - update selection
