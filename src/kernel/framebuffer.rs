@@ -167,7 +167,7 @@ pub fn clear_screen(color: u32) {
 
 /// Simple 8x8 bitmap font for basic text rendering
 /// Covers ASCII 0-127 with glyphs for 0-9, A-Z, a-z
-const FONT_8X8: [[u8; 8]; 128] = [
+pub const FONT_8X8: [[u8; 8]; 128] = [
     // Control characters 0-31 (blank)
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // 0
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // 1

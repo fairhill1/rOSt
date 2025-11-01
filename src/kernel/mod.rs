@@ -33,6 +33,8 @@ pub mod file_explorer;
 pub mod timer;
 pub mod rtc;
 pub mod snake;
+pub mod html_parser;
+pub mod browser;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]
@@ -51,9 +53,9 @@ static mut NET_DEVICES: Option<alloc::vec::Vec<virtio_net::VirtioNetDevice>> = N
 // Static storage for ARP cache
 static mut ARP_CACHE: Option<network::ArpCache> = None;
 
-// Static network configuration
-static mut OUR_IP: [u8; 4] = [10, 0, 2, 15];  // Default QEMU user network IP
-static mut GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];  // Default QEMU gateway
+// Static network configuration (vmnet-shared on macOS: 192.168.64.x)
+static mut OUR_IP: [u8; 4] = [192, 168, 64, 10];  // vmnet-shared guest IP (avoid .2 conflict)
+static mut GATEWAY_IP: [u8; 4] = [192, 168, 64, 1];  // vmnet-shared gateway/DNS
 
 // Static for GPU driver and cursor position
 static mut GPU_DRIVER: Option<virtio_gpu::VirtioGpuDriver> = None;
@@ -343,6 +345,10 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         // Initialize file explorer
         file_explorer::init();
         uart_write_string("File explorer initialized!\r\n");
+
+        // Initialize web browser
+        browser::init();
+        uart_write_string("Web browser initialized!\r\n");
 
         // Initialize snake game
         snake::init();
@@ -840,6 +846,11 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
                         game.render(fb, screen_width as usize, ch as usize, centered_x as usize, centered_y as usize);
                     }
+                }
+
+                // Render all browser windows INSIDE their windows
+                for (instance_id, cx, cy, cw, ch) in window_manager::get_all_browsers() {
+                    browser::render_at(instance_id, cx as usize, cy as usize, cw as usize, ch as usize);
                 }
 
                 // Hardware cursor is now handled by VirtIO GPU, no need for software cursor
