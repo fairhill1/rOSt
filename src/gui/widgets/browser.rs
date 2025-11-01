@@ -1053,9 +1053,10 @@ impl Browser {
         } else {
             // Not focused on URL bar
             if key == 'l' && ctrl {
-                // Ctrl+L - focus address bar
+                // Ctrl+L - focus address bar and select all (like modern browsers)
                 self.url_focused = true;
                 self.url_input.set_text(&self.url);
+                self.url_input.select_all();
             }
         }
     }
@@ -1087,11 +1088,18 @@ impl Browser {
                 self.go_forward();
             } else if rel_x >= input_x && rel_x < input_x + input_width
                    && rel_y >= input_y && rel_y < input_y + input_height {
-                // Click inside URL input field - focus it
-                self.url_focused = true;
-                self.url_input.set_text(&self.url);
-                // Handle mouse down for cursor positioning
-                self.url_input.handle_mouse_down(rel_x as i32, (input_x + 4) as i32);
+                // Click inside URL input field
+                let was_focused = self.url_focused;
+
+                if !was_focused {
+                    // First click on unfocused URL bar - focus and select all (like Chrome/Safari)
+                    self.url_focused = true;
+                    self.url_input.set_text(&self.url);
+                    self.url_input.select_all();
+                } else {
+                    // Already focused - position cursor at click location (subsequent click)
+                    self.url_input.handle_mouse_down(rel_x as i32, (input_x + 4) as i32);
+                }
             } else {
                 // Click elsewhere in address bar - unfocus
                 self.url_focused = false;
