@@ -523,7 +523,7 @@ impl Browser {
 
         // Layout the DOM tree
         crate::kernel::uart_write_string("load_html: Starting layout\r\n");
-        self.layout_node(&dom, 10, 50, 1000, &Color::BLACK, false, false, 1);
+        self.layout_node(&dom, 10, 10, 1000, &Color::BLACK, false, false, 1);
 
         crate::kernel::uart_write_string(&alloc::format!("load_html: Layout complete, {} layout boxes created\r\n", self.layout.len()));
 
@@ -699,7 +699,10 @@ impl Browser {
             }
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 // Headings - larger font size with proportional spacing
-                current_y += font_size * CHAR_HEIGHT; // Extra spacing before heading (scales with size)
+                // Only add spacing before if there's already content above
+                if !self.layout.is_empty() {
+                    current_y += font_size * CHAR_HEIGHT; // Extra spacing before heading (scales with size)
+                }
 
                 for child in &node.children {
                     let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic, font_size);
