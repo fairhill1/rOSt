@@ -243,8 +243,10 @@ impl Browser {
                                 }
                             }
                         }
+                    } else {
+                        // Only delay if no packet received
+                        crate::kernel::drivers::timer::delay_ms(1);
                     }
-                    crate::kernel::drivers::timer::delay_ms(1);  // 1ms delay between checks
                 }
 
                 resolved_ip?
@@ -305,8 +307,10 @@ impl Browser {
                             }
                         }
                     }
+                } else {
+                    // Only delay if no packet received
+                    crate::kernel::drivers::timer::delay_ms(1);
                 }
-                crate::kernel::drivers::timer::delay_ms(1);  // 1ms delay between checks
             }
 
             if !connection_established {
@@ -406,10 +410,10 @@ impl Browser {
                                                 let _ = conn.send_ack(&mut devices[0], gateway_mac, our_mac);
                                             }
 
-                                            // If we received FIN and have some response, break after a short delay
+                                            // If we received FIN and have some response, break immediately
                                             if connection_closed_by_server && !response.is_empty() {
-                                                // Wait a bit more to ensure all data arrived
-                                                if no_data_count > 100 {
+                                                // FIN means server is done sending, break immediately
+                                                if no_data_count > 0 {
                                                     break;
                                                 }
                                             }
@@ -428,12 +432,13 @@ impl Browser {
                         break;
                     }
                     // If server closed connection and we haven't received new data in a while, break
-                    if connection_closed_by_server && no_data_count > 100 {
+                    if connection_closed_by_server && no_data_count > 0 {
                         crate::kernel::uart_write_string("http_get: Server closed connection, finishing up\r\n");
                         break;
                     }
+                    // Only delay if no packet received
+                    crate::kernel::drivers::timer::delay_ms(1);
                 }
-                crate::kernel::drivers::timer::delay_ms(1);  // 1ms delay between checks
             }
 
             // Close our side of the connection properly if not already closed
@@ -457,8 +462,10 @@ impl Browser {
                                 }
                             }
                         }
+                    } else {
+                        // Only delay if no packet received
+                        crate::kernel::drivers::timer::delay_ms(1);
                     }
-                    crate::kernel::drivers::timer::delay_ms(1);  // 1ms delay between checks
                 }
             }
 
@@ -468,19 +475,20 @@ impl Browser {
             let start_time = crate::kernel::drivers::timer::get_time_ms();
             let mut drained = 0;
             let mut no_packet_count = 0;
-            // Drain for up to 1000ms, but exit early if no packets for 100ms
-            while crate::kernel::drivers::timer::get_time_ms() - start_time < 1000 {
+            // Drain for up to 200ms, but exit early if no packets for 10ms
+            while crate::kernel::drivers::timer::get_time_ms() - start_time < 200 {
                 let mut rx_buffer = [0u8; 1526];
                 if let Ok(_) = devices[0].receive(&mut rx_buffer) {
                     drained += 1;
                     no_packet_count = 0;  // Reset counter when packet received
                 } else {
                     no_packet_count += 1;
-                    if no_packet_count > 50 {  // 50 * 2ms = 100ms without packets
+                    if no_packet_count > 5 {  // 5 * 2ms = 10ms without packets
                         break;  // Exit early - no more packets coming
                     }
+                    // Only delay if no packet received
+                    crate::kernel::drivers::timer::delay_ms(2);
                 }
-                crate::kernel::drivers::timer::delay_ms(2);
             }
             crate::kernel::uart_write_string(&alloc::format!("http_get: Drained {} packets\r\n", drained));
 
