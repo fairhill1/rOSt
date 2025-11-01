@@ -349,8 +349,12 @@ impl WindowManager {
         let time_y = MENU_START_Y + 4;
         framebuffer::draw_string(time_x, time_y, &time_str, COLOR_TEXT);
 
-        // Check if we're in delete confirmation mode
-        if crate::kernel::drivers::input_events::is_confirming_delete() {
+        // Check if we're in close confirmation mode
+        if crate::kernel::drivers::input_events::is_confirming_close() {
+            // Show close confirmation prompt
+            let prompt_text = "Close without saving? (y/n)";
+            framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, prompt_text, COLOR_TEXT);
+        } else if crate::kernel::drivers::input_events::is_confirming_delete() {
             // Show delete confirmation prompt
             if let Some(filename) = crate::kernel::drivers::input_events::get_delete_confirm_filename() {
                 let prompt_text = alloc::format!("Delete '{}'? (y/n)", filename);
@@ -585,6 +589,18 @@ impl WindowManager {
             if self.windows[i].contains_point(x, y) {
                 // Check close button first
                 if self.windows[i].is_close_button_clicked(x, y) {
+                    // Check if this is an editor with unsaved changes
+                    if self.windows[i].content == WindowContent::Editor {
+                        let instance_id = self.windows[i].instance_id;
+                        if let Some(editor) = crate::gui::widgets::editor::get_editor(instance_id) {
+                            if editor.is_modified() {
+                                // Prompt for confirmation
+                                crate::kernel::drivers::input_events::start_close_confirm(i);
+                                return true;
+                            }
+                        }
+                    }
+                    // No unsaved changes (or not an editor) - close immediately
                     self.remove_window(i);
                     return true;
                 }
@@ -1153,6 +1169,51 @@ pub fn render_menu_bar_only() {
 
             // Flush only the menu bar region to GPU
             crate::kernel::flush_display_partial(0, 0, wm.screen_width, MENU_BAR_HEIGHT);
+        }
+    }
+}
+
+/// Check if any window has focus
+pub fn has_any_focused_window() -> bool {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.windows.iter().any(|w| w.is_focused)
+        } else {
+            false
+        }
+    }
+}
+
+/// Get the focused window index
+pub fn get_focused_window_index() -> Option<usize> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.windows.iter().position(|w| w.is_focused)
+        } else {
+            None
+        }
+    }
+}
+
+/// Close the currently focused window
+pub fn close_focused_window() {
+    unsafe {
+        if let Some(ref mut wm) = WINDOW_MANAGER {
+            // Find the focused window index
+            if let Some(index) = wm.windows.iter().position(|w| w.is_focused) {
+                wm.remove_window(index);
+            }
+        }
+    }
+}
+
+/// Close a window by its index
+pub fn close_window_by_index(index: usize) {
+    unsafe {
+        if let Some(ref mut wm) = WINDOW_MANAGER {
+            if index < wm.windows.len() {
+                wm.remove_window(index);
+            }
         }
     }
 }
