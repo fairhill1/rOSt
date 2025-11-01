@@ -1,6 +1,6 @@
 // Simple text editor for rOSt
 
-use crate::kernel::framebuffer;
+use crate::gui::framebuffer;
 extern crate alloc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -684,7 +684,7 @@ impl TextEditor {
     /// Copy selected text to clipboard
     pub fn copy(&mut self) {
         if let Some(text) = self.get_selected_text() {
-            crate::kernel::clipboard::copy(text);
+            crate::gui::clipboard::copy(text);
             self.set_status("Copied to clipboard");
         } else {
             self.set_status("No selection to copy");
@@ -697,7 +697,7 @@ impl TextEditor {
             // Save state before modification
             self.save_snapshot();
 
-            crate::kernel::clipboard::copy(text);
+            crate::gui::clipboard::copy(text);
             self.delete_selection();
             self.set_status("Cut to clipboard");
         } else {
@@ -707,7 +707,7 @@ impl TextEditor {
 
     /// Paste text from clipboard
     pub fn paste(&mut self) {
-        if let Some(text) = crate::kernel::clipboard::paste() {
+        if let Some(text) = crate::gui::clipboard::paste() {
             // Save state before modification
             self.save_snapshot();
 

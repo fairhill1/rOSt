@@ -6,7 +6,7 @@
 // - Sectors 2-9: Reserved for future use
 // - Sectors 10+: Data blocks
 
-use crate::kernel::virtio_blk::VirtioBlkDevice;
+use crate::kernel::drivers::virtio::blk::VirtioBlkDevice;
 use core::ptr;
 extern crate alloc;
 

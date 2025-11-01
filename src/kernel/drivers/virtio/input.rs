@@ -2,9 +2,9 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
-use crate::kernel::pci::PciDevice;
+use crate::kernel::drivers::pci::PciDevice;
 use crate::kernel::uart_write_string;
-use crate::kernel::usb_hid::{InputEvent, queue_input_event};
+use crate::kernel::drivers::input_events::{InputEvent, queue_input_event};
 
 // VirtIO Input Device IDs
 const VIRTIO_VENDOR_ID: u16 = 0x1AF4;
@@ -125,7 +125,7 @@ impl VirtioInputDevice {
         uart_write_string("Scanning PCI bus for VirtIO input devices...\r\n");
         let mut devices = Vec::new();
 
-        let config = crate::kernel::pci::PciConfig::new();
+        let config = crate::kernel::drivers::pci::PciConfig::new();
 
         // Scan PCI bus for VirtIO input devices
         for bus in 0..=255 {
@@ -223,7 +223,7 @@ impl VirtioInputDevice {
         uart_write_string("\r\n");
 
         let mut devices = Vec::new();
-        let config = crate::kernel::pci::PciConfig::with_base_addr(pci_ecam_base);
+        let config = crate::kernel::drivers::pci::PciConfig::with_base_addr(pci_ecam_base);
 
         // Scan PCI bus for VirtIO input devices
         for bus in 0..=255 {

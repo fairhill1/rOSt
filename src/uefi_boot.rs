@@ -7,6 +7,9 @@ use core::panic::PanicInfo;
 use linked_list_allocator::LockedHeap;
 
 mod kernel;
+mod system;
+mod gui;
+mod apps;
 mod raw_uefi;
 
 use raw_uefi::*;
@@ -47,7 +50,7 @@ pub extern "efiapi" fn efi_main(
     
     // Try to get GOP framebuffer before exiting boot services
     print_string("Trying to get GOP framebuffer...\r\n");
-    let gop_framebuffer: Option<kernel::framebuffer::FramebufferInfo> = match locate_graphics_output_protocol() {
+    let gop_framebuffer: Option<gui::framebuffer::FramebufferInfo> = match locate_graphics_output_protocol() {
         Ok(gop) if !gop.is_null() => {
             print_string("GOP found - setting graphics mode\r\n");
             unsafe {
@@ -127,13 +130,13 @@ pub extern "efiapi" fn efi_main(
                     // Accept any mode with a non-zero framebuffer base
                     if framebuffer_base != 0 && framebuffer_size > 0 {
                         print_string("Found valid framebuffer!\r\n");
-                        valid_fb_info = Some(kernel::framebuffer::FramebufferInfo {
+                        valid_fb_info = Some(gui::framebuffer::FramebufferInfo {
                             base_address: framebuffer_base,
                             size: framebuffer_size as usize,
                             width: mode_info.horizontal_resolution,
                             height: mode_info.vertical_resolution,
                             pixels_per_scanline: mode_info.pixels_per_scan_line,
-                            pixel_format: kernel::framebuffer::PixelFormat::Rgb,
+                            pixel_format: gui::framebuffer::PixelFormat::Rgb,
                         });
                     }
                 }
@@ -161,13 +164,13 @@ pub extern "efiapi" fn efi_main(
                     print_string("\r\n");
                     
                     if framebuffer_base != 0 {
-                        Some(kernel::framebuffer::FramebufferInfo {
+                        Some(gui::framebuffer::FramebufferInfo {
                             base_address: framebuffer_base,
                             size: framebuffer_size as usize,
                             width: mode_info.horizontal_resolution,
                             height: mode_info.vertical_resolution,
                             pixels_per_scanline: mode_info.pixels_per_scan_line,
-                            pixel_format: kernel::framebuffer::PixelFormat::Rgb,
+                            pixel_format: gui::framebuffer::PixelFormat::Rgb,
                         })
                     } else {
                         print_string("GOP framebuffer base is 0\r\n");
@@ -196,13 +199,13 @@ pub extern "efiapi" fn efi_main(
                     print_hex(framebuffer_base);
                     print_string("\r\n");
                     
-                    Some(kernel::framebuffer::FramebufferInfo {
+                    Some(gui::framebuffer::FramebufferInfo {
                         base_address: framebuffer_base,
                         size: framebuffer_size as usize,
                         width: mode_info.horizontal_resolution,
                         height: mode_info.vertical_resolution,
                         pixels_per_scanline: mode_info.pixels_per_scanline,
-                        pixel_format: kernel::framebuffer::PixelFormat::Rgb,
+                        pixel_format: gui::framebuffer::PixelFormat::Rgb,
                     })
                 } else {
                     print_string("GOP found but framebuffer base is 0\r\n");
@@ -227,7 +230,7 @@ pub extern "efiapi" fn efi_main(
             // Create static boot info for kernel
             use core::mem::MaybeUninit;
             static mut BOOT_INFO_STORAGE: MaybeUninit<kernel::BootInfo> = MaybeUninit::uninit();
-            static mut FB_INFO_STORAGE: MaybeUninit<kernel::framebuffer::FramebufferInfo> = MaybeUninit::uninit();
+            static mut FB_INFO_STORAGE: MaybeUninit<gui::framebuffer::FramebufferInfo> = MaybeUninit::uninit();
             static EMPTY_MEMORY_MAP: &[kernel::memory::MemoryDescriptor] = &[];
             
             // Use GOP framebuffer if available, otherwise dummy
@@ -235,13 +238,13 @@ pub extern "efiapi" fn efi_main(
                 if let Some(gop_fb) = gop_framebuffer {
                     FB_INFO_STORAGE.write(gop_fb)
                 } else {
-                    FB_INFO_STORAGE.write(kernel::framebuffer::FramebufferInfo {
+                    FB_INFO_STORAGE.write(gui::framebuffer::FramebufferInfo {
                         base_address: 0, // Will be set by VirtIO-GPU driver
                         size: 0,
                         width: 0,
                         height: 0,
                         pixels_per_scanline: 0,
-                        pixel_format: kernel::framebuffer::PixelFormat::Rgb,
+                        pixel_format: gui::framebuffer::PixelFormat::Rgb,
                     })
                 }
             };

@@ -1,8 +1,7 @@
 // File Explorer - Visual file manager for SimpleFS
 
-use crate::kernel::framebuffer;
-use crate::kernel::filesystem::SimpleFilesystem;
-use crate::kernel::virtio_blk::VirtioBlkDevice;
+use crate::gui::framebuffer;
+use crate::system::fs::filesystem::SimpleFilesystem;
 extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;

@@ -1,7 +1,5 @@
 // Kernel entry point after exiting UEFI boot services
 
-use core::arch::asm;
-
 // Simple print macro for debugging - writes to serial port
 #[macro_export]
 macro_rules! print {
@@ -11,56 +9,35 @@ macro_rules! print {
     };
 }
 
+// Core kernel modules
 pub mod memory;
 pub mod interrupts;
-pub mod framebuffer;
-pub mod pci;
-pub mod virtio_gpu;
-pub mod usb_hid;
-pub mod virtio_input;
-pub mod virtio_blk;
-pub mod virtio_net;
-pub mod network;
-pub mod dns;
-pub mod tcp;
-pub mod filesystem;
-pub mod shell;
 pub mod dtb;
-pub mod console;
-pub mod window_manager;
-pub mod clipboard;
-pub mod editor;
-pub mod text_input;
-pub mod file_explorer;
-pub mod timer;
-pub mod rtc;
-pub mod snake;
-pub mod html_parser;
-pub mod browser;
+pub mod drivers;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]
 pub struct BootInfo {
     pub memory_map: &'static [memory::MemoryDescriptor],
-    pub framebuffer: framebuffer::FramebufferInfo,
+    pub framebuffer: crate::gui::framebuffer::FramebufferInfo,
     pub acpi_rsdp: Option<u64>,
 }
 
 // Static storage for block devices (needs to outlive local scope for shell access)
-static mut BLOCK_DEVICES: Option<alloc::vec::Vec<virtio_blk::VirtioBlkDevice>> = None;
+pub static mut BLOCK_DEVICES: Option<alloc::vec::Vec<drivers::virtio::blk::VirtioBlkDevice>> = None;
 
 // Static storage for network devices
-static mut NET_DEVICES: Option<alloc::vec::Vec<virtio_net::VirtioNetDevice>> = None;
+pub static mut NET_DEVICES: Option<alloc::vec::Vec<drivers::virtio::net::VirtioNetDevice>> = None;
 
 // Static storage for ARP cache
-static mut ARP_CACHE: Option<network::ArpCache> = None;
+pub static mut ARP_CACHE: Option<crate::system::net::ArpCache> = None;
 
 // Static network configuration for QEMU user-mode networking (10.0.2.x)
-static mut OUR_IP: [u8; 4] = [10, 0, 2, 15];  // QEMU user-mode guest IP (default)
-static mut GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];  // QEMU user-mode gateway
+pub static mut OUR_IP: [u8; 4] = [10, 0, 2, 15];  // QEMU user-mode guest IP (default)
+pub static mut GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];  // QEMU user-mode gateway
 
 // Static for GPU driver and cursor position
-static mut GPU_DRIVER: Option<virtio_gpu::VirtioGpuDriver> = None;
+static mut GPU_DRIVER: Option<drivers::virtio::gpu::VirtioGpuDriver> = None;
 static mut CURSOR_X: u32 = 0;
 static mut CURSOR_Y: u32 = 0;
 static mut SCREEN_WIDTH: u32 = 0;
@@ -90,14 +67,14 @@ pub fn handle_mouse_movement(x_delta: i32, y_delta: i32) {
             );
 
             // Sync hardware cursor position to framebuffer for click detection
-            framebuffer::set_cursor_pos(CURSOR_X as i32, CURSOR_Y as i32);
+            crate::gui::framebuffer::set_cursor_pos(CURSOR_X as i32, CURSOR_Y as i32);
         }
     }
 }
 
 // Get current time in milliseconds (for double-click detection, etc.)
 pub fn get_time_ms() -> u64 {
-    timer::get_time_ms()
+    drivers::timer::get_time_ms()
 }
 
 // Simple hex printing for debug
@@ -141,10 +118,10 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Now initialize VirtIO-GPU for graphics
     uart_write_string("Trying to initialize VirtIO-GPU...\r\n");
     let mut gpu_framebuffer_info = None;
-    let mut virtio_gpu_driver: Option<virtio_gpu::VirtioGpuDriver> = None;
+    let mut virtio_gpu_driver: Option<drivers::virtio::gpu::VirtioGpuDriver> = None;
 
     // Initialize VirtIO-GPU properly
-    if let Some(mut virtio_gpu) = virtio_gpu::VirtioGpuDriver::new() {
+    if let Some(mut virtio_gpu) = drivers::virtio::gpu::VirtioGpuDriver::new() {
         uart_write_string("VirtIO-GPU device found, initializing...\r\n");
 
         // Step 1: Initialize device
@@ -206,13 +183,13 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                                 uart_write_string("\r\n");
 
                                 if fb_addr != 0 {
-                                    gpu_framebuffer_info = Some(framebuffer::FramebufferInfo {
+                                    gpu_framebuffer_info = Some(crate::gui::framebuffer::FramebufferInfo {
                                         base_address: fb_addr,
                                         size: (height * stride) as usize,
                                         width,
                                         height,
                                         pixels_per_scanline: stride / 4,
-                                        pixel_format: framebuffer::PixelFormat::Rgb,
+                                        pixel_format: crate::gui::framebuffer::PixelFormat::Rgb,
                                     });
 
                                     // Store GPU driver and screen info for mouse handling
@@ -225,7 +202,7 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                                     }
 
                                     // Initialize framebuffer cursor position to match hardware cursor
-                                    framebuffer::set_cursor_pos((width / 2) as i32, (height / 2) as i32);
+                                    crate::gui::framebuffer::set_cursor_pos((width / 2) as i32, (height / 2) as i32);
 
                                     virtio_gpu_driver = None; // Moved to static
                                 }
@@ -317,7 +294,7 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Use VirtIO-GPU framebuffer if available, otherwise fallback
     let fb_info = gpu_framebuffer_info.as_ref().unwrap_or(&boot_info.framebuffer);
     uart_write_string("Initializing framebuffer...\r\n");
-    framebuffer::init(fb_info);
+    crate::gui::framebuffer::init(fb_info);
 
     uart_write_string("=== RUST OS KERNEL RUNNING SUCCESSFULLY! ===\r\n");
     uart_write_string("ExitBootServices worked! We're in kernel space!\r\n");
@@ -328,32 +305,32 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         uart_write_string("Graphics framebuffer is active - initializing GUI desktop!\r\n");
 
         // Initialize GUI console
-        console::init();
+        crate::gui::widgets::console::init();
         uart_write_string("GUI console initialized!\r\n");
 
         // Initialize window manager
-        window_manager::init();
+        crate::gui::window_manager::init();
         uart_write_string("Window manager initialized!\r\n");
         uart_write_string("Click menu bar to open windows\r\n");
 
         // Initialize RTC
-        rtc::init();
+        drivers::rtc::init();
         uart_write_string("RTC initialized!\r\n");
 
         // Initialize text editor
-        editor::init();
+        crate::gui::widgets::editor::init();
         uart_write_string("Text editor initialized!\r\n");
 
         // Initialize file explorer
-        file_explorer::init();
+        crate::gui::widgets::file_explorer::init();
         uart_write_string("File explorer initialized!\r\n");
 
         // Initialize web browser
-        browser::init();
+        crate::gui::widgets::browser::init();
         uart_write_string("Web browser initialized!\r\n");
 
         // Initialize snake game
-        snake::init();
+        crate::apps::snake::init();
         uart_write_string("Snake game initialized!\r\n");
     } else {
         uart_write_string("No framebuffer available - running in text mode\r\n");
@@ -393,18 +370,18 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Initialize interrupt-based input system
         uart_write_string("Initializing interrupt-based input system...\r\n");
-        usb_hid::init_usb_hid();
+        drivers::input_events::init_usb_hid();
         uart_write_string("Input system ready for GUI keyboard events!\r\n");
 
         // Initialize VirtIO input devices using DTB-provided addresses
         uart_write_string("Initializing VirtIO input devices with DTB addresses...\r\n");
-        virtio_input::init_virtio_input_with_pci_base(info.ecam_base, info.mmio_base);
+        drivers::virtio::input::init_virtio_input_with_pci_base(info.ecam_base, info.mmio_base);
         uart_write_string("VirtIO input devices ready!\r\n");
 
         // Initialize VirtIO block devices
         uart_write_string("Initializing VirtIO block devices...\r\n");
         unsafe {
-            BLOCK_DEVICES = Some(virtio_blk::VirtioBlkDevice::find_and_init(info.ecam_base, info.mmio_base));
+            BLOCK_DEVICES = Some(drivers::virtio::blk::VirtioBlkDevice::find_and_init(info.ecam_base, info.mmio_base));
         }
 
         // Create a local reference for easier access (must borrow from static)
@@ -502,7 +479,7 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
             // Initialize VirtIO network devices
             uart_write_string("\n=== Initializing VirtIO Network Devices ===\r\n");
             unsafe {
-                NET_DEVICES = Some(virtio_net::VirtioNetDevice::find_and_init(info.ecam_base, info.mmio_base));
+                NET_DEVICES = Some(drivers::virtio::net::VirtioNetDevice::find_and_init(info.ecam_base, info.mmio_base));
             }
 
             let net_devices = unsafe { NET_DEVICES.as_mut().unwrap() };
@@ -513,7 +490,7 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
                 // Initialize ARP cache
                 unsafe {
-                    ARP_CACHE = Some(network::ArpCache::new());
+                    ARP_CACHE = Some(crate::system::net::ArpCache::new());
                 }
 
                 // Add receive buffers to the first network device
@@ -557,12 +534,12 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
             // Try to mount existing filesystem first
             uart_write_string("\nTrying to mount existing filesystem...\r\n");
-            let mut fs_result = filesystem::SimpleFilesystem::mount(&mut blk_devices[fs_device_idx]);
+            let mut fs_result = crate::system::fs::SimpleFilesystem::mount(&mut blk_devices[fs_device_idx]);
 
             if fs_result.is_err() {
                 // No existing filesystem, format and mount
                 uart_write_string("No existing filesystem found. Formatting disk...\r\n");
-                match filesystem::SimpleFilesystem::format(&mut blk_devices[fs_device_idx], 20480) {
+                match crate::system::fs::SimpleFilesystem::format(&mut blk_devices[fs_device_idx], 20480) {
                     Ok(()) => {
                         uart_write_string("✓ Disk formatted successfully!\r\n");
                     }
@@ -575,7 +552,7 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
                 // Mount the freshly formatted filesystem
                 uart_write_string("\nMounting filesystem...\r\n");
-                fs_result = filesystem::SimpleFilesystem::mount(&mut blk_devices[fs_device_idx]);
+                fs_result = crate::system::fs::SimpleFilesystem::mount(&mut blk_devices[fs_device_idx]);
             }
 
             match fs_result {
@@ -772,8 +749,8 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     } else {
         uart_write_string("WARNING: DTB parsing failed, using fallback initialization\r\n");
-        usb_hid::init_usb_hid();
-        virtio_input::init_virtio_input();
+        drivers::input_events::init_usb_hid();
+        drivers::virtio::input::init_virtio_input();
     }
 
     uart_write_string("\r\n");
@@ -786,28 +763,28 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     uart_write_string("Kernel ready! Open a terminal window from the menu.\r\n");
 
     let mut needs_full_render = true; // Force initial render
-    let mut last_minute = rtc::get_datetime().minute; // Track last rendered minute
+    let mut last_minute = drivers::rtc::get_datetime().minute; // Track last rendered minute
 
     loop {
         // Check if minute has changed - redraw clock every minute
-        let current_minute = rtc::get_datetime().minute;
+        let current_minute = drivers::rtc::get_datetime().minute;
         if current_minute != last_minute {
             last_minute = current_minute;
             needs_full_render = true;
         }
 
         // Poll VirtIO input devices for real trackpad/keyboard input
-        virtio_input::poll_virtio_input();
+        drivers::virtio::input::poll_virtio_input();
 
         // Process queued input events - returns (needs_full_redraw, needs_cursor_redraw)
-        let (needs_full_redraw, needs_cursor_redraw) = usb_hid::test_input_events();
+        let (needs_full_redraw, needs_cursor_redraw) = drivers::input_events::test_input_events();
         if needs_full_redraw {
             needs_full_render = true;
         }
 
         // Update snake games and only render if any game changed state
-        if !window_manager::get_all_snakes().is_empty() {
-            if snake::update_all_games() {
+        if !crate::gui::window_manager::get_all_snakes().is_empty() {
+            if crate::apps::snake::update_all_games() {
                 needs_full_render = true;
             }
         }
@@ -816,29 +793,29 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         if fb_info.base_address != 0 {
             if needs_full_render {
                 // Full redraw to back buffer - clear, render windows, console, cursor
-                framebuffer::clear_screen(0xFF1A1A1A);
-                window_manager::render();
+                crate::gui::framebuffer::clear_screen(0xFF1A1A1A);
+                crate::gui::window_manager::render();
 
                 // Render all terminals INSIDE their windows
-                for (instance_id, cx, cy, cw, ch) in window_manager::get_all_terminals() {
-                    console::render_at(instance_id, cx, cy, cw, ch);
+                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_terminals() {
+                    crate::gui::widgets::console::render_at(instance_id, cx, cy, cw, ch);
                 }
 
                 // Render all editors INSIDE their windows
-                for (instance_id, cx, cy, _cw, ch) in window_manager::get_all_editors() {
-                    editor::render_at(instance_id, cx, cy, ch);
+                for (instance_id, cx, cy, _cw, ch) in crate::gui::window_manager::get_all_editors() {
+                    crate::gui::widgets::editor::render_at(instance_id, cx, cy, ch);
                 }
 
                 // Render all file explorers INSIDE their windows
-                for (instance_id, cx, cy, cw, ch) in window_manager::get_all_file_explorers() {
-                    file_explorer::render_at(instance_id, cx, cy, cw, ch);
+                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_file_explorers() {
+                    crate::gui::widgets::file_explorer::render_at(instance_id, cx, cy, cw, ch);
                 }
 
                 // Render all snake games INSIDE their windows (already updated above)
-                for (instance_id, cx, cy, cw, ch) in window_manager::get_all_snakes() {
-                    if let Some(game) = snake::get_snake_game(instance_id) {
-                        let fb = framebuffer::get_back_buffer();
-                        let (screen_width, _) = framebuffer::get_screen_dimensions();
+                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_snakes() {
+                    if let Some(game) = crate::apps::snake::get_snake_game(instance_id) {
+                        let fb = crate::gui::framebuffer::get_back_buffer();
+                        let (screen_width, _) = crate::gui::framebuffer::get_screen_dimensions();
 
                         // Center the game in the window
                         let game_width = game.width() as i32;
@@ -851,16 +828,16 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                 }
 
                 // Render all browser windows INSIDE their windows
-                for (instance_id, cx, cy, cw, ch) in window_manager::get_all_browsers() {
-                    browser::render_at(instance_id, cx as usize, cy as usize, cw as usize, ch as usize);
+                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_browsers() {
+                    crate::gui::widgets::browser::render_at(instance_id, cx as usize, cy as usize, cw as usize, ch as usize);
                 }
 
                 // Hardware cursor is now handled by VirtIO GPU, no need for software cursor
-                // framebuffer::draw_cursor();
+                // crate::gui::framebuffer::draw_cursor();
 
                 // Swap buffers - copy back buffer to screen in one fast operation
                 // This eliminates ALL flickering!
-                framebuffer::swap_buffers();
+                crate::gui::framebuffer::swap_buffers();
 
                 // Flush to VirtIO GPU display
                 unsafe {

@@ -1,6 +1,6 @@
 // GUI Console/Terminal - Display text on the framebuffer
 
-use crate::kernel::framebuffer;
+use crate::gui::framebuffer;
 extern crate alloc;
 use alloc::vec::Vec;
 
