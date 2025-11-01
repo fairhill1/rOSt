@@ -116,12 +116,17 @@ impl Parser {
         // Opening tag
         assert_eq!(self.consume_char(), '<');
         let tag_name = self.parse_tag_name();
+
+        // Debug output to track parsing progress
+        crate::kernel::uart_write_string(&alloc::format!("parse_element: Parsing <{}>\r\n", tag_name));
+
         let attrs = self.parse_attributes();
         assert_eq!(self.consume_char(), '>');
 
-        // Self-closing tags (void elements in HTML5)
+        // Self-closing tags (void elements in HTML5 + old HTML tags)
         if tag_name == "br" || tag_name == "img" || tag_name == "hr"
-            || tag_name == "meta" || tag_name == "link" || tag_name == "input" {
+            || tag_name == "meta" || tag_name == "link" || tag_name == "input"
+            || tag_name == "nextid" || tag_name == "isindex" || tag_name == "base" {
             return Node::new_element(&tag_name, attrs, Vec::new());
         }
 
@@ -136,7 +141,9 @@ impl Parser {
         }
 
         // Children
+        crate::kernel::uart_write_string(&alloc::format!("parse_element: Parsing children of <{}>\r\n", tag_name));
         let children = self.parse_nodes();
+        crate::kernel::uart_write_string(&alloc::format!("parse_element: Done parsing children of <{}>\r\n", tag_name));
 
         // Closing tag - be lenient for real-world HTML
         self.skip_whitespace();
@@ -236,18 +243,33 @@ impl Parser {
         (name, value)
     }
 
-    /// Parse attribute value (quoted string)
+    /// Parse attribute value (quoted or unquoted string)
     fn parse_attr_value(&mut self) -> String {
-        let quote = self.consume_char();
-        assert!(quote == '"' || quote == '\'');
+        let first_char = self.current_char();
 
-        let mut value = String::new();
-        while !self.eof() && self.current_char() != quote {
-            value.push(self.consume_char());
+        // Check if value is quoted
+        if first_char == '"' || first_char == '\'' {
+            let quote = self.consume_char();
+            let mut value = String::new();
+            while !self.eof() && self.current_char() != quote {
+                value.push(self.consume_char());
+            }
+            if !self.eof() {
+                self.consume_char(); // consume closing quote
+            }
+            value
+        } else {
+            // Unquoted value (old HTML style) - read until whitespace or '>'
+            let mut value = String::new();
+            while !self.eof() {
+                let c = self.current_char();
+                if c.is_whitespace() || c == '>' {
+                    break;
+                }
+                value.push(self.consume_char());
+            }
+            value
         }
-
-        assert_eq!(self.consume_char(), quote);
-        value
     }
 
     /// Skip whitespace characters
