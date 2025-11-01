@@ -47,6 +47,7 @@ pub struct LayoutBox {
     pub link_url: String,
     pub bold: bool,
     pub italic: bool,
+    pub element_id: String, // HTML element ID attribute
 }
 
 pub struct Browser {
@@ -523,7 +524,7 @@ impl Browser {
 
         // Layout the DOM tree
         crate::kernel::uart_write_string("load_html: Starting layout\r\n");
-        self.layout_node(&dom, 10, 10, 1000, &Color::BLACK, false, false, 2);
+        self.layout_node(&dom, 10, 10, 1000, &Color::BLACK, false, false, 2, "");
 
         crate::kernel::uart_write_string(&alloc::format!("load_html: Layout complete, {} layout boxes created\r\n", self.layout.len()));
 
@@ -582,6 +583,7 @@ impl Browser {
         bold: bool,
         italic: bool,
         font_size: usize,
+        element_id: &str,
     ) -> (usize, usize) {
         match &node.node_type {
             NodeType::Text(text) => {
@@ -618,6 +620,7 @@ impl Browser {
                         link_url: String::new(),
                         bold,
                         italic,
+                        element_id: element_id.to_string(),
                     });
 
                     current_x += word_width + char_width;
@@ -626,7 +629,7 @@ impl Browser {
                 (current_x, current_y)
             }
             NodeType::Element(elem) => {
-                self.layout_element(node, elem, x, y, max_width, color, bold, italic, font_size)
+                self.layout_element(node, elem, x, y, max_width, color, bold, italic, font_size, element_id)
             }
         }
     }
@@ -643,8 +646,14 @@ impl Browser {
         parent_bold: bool,
         parent_italic: bool,
         parent_font_size: usize,
+        parent_element_id: &str,
     ) -> (usize, usize) {
         let tag = elem.tag_name.as_str();
+
+        // Extract element ID from attributes if present
+        let element_id = elem.attributes.get("id")
+            .map(|s| s.as_str())
+            .unwrap_or(parent_element_id);
 
         let mut current_x = x;
         let mut current_y = y;
@@ -684,7 +693,7 @@ impl Browser {
 
                 for child in &node.children {
                     let start_idx = self.layout.len();
-                    let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, &link_color, bold, italic, font_size);
+                    let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, &link_color, bold, italic, font_size, element_id);
 
                     // Mark all boxes created for this link
                     for i in start_idx..self.layout.len() {
@@ -705,7 +714,7 @@ impl Browser {
                 }
 
                 for child in &node.children {
-                    let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic, font_size);
+                    let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic, font_size, element_id);
                     current_x = new_x;
                     current_y = new_y;
                 }
@@ -732,10 +741,11 @@ impl Browser {
                         link_url: String::new(),
                         bold,
                         italic,
+                        element_id: element_id.to_string(),
                     });
 
                     let bullet_width = bullet.len() * CHAR_WIDTH * font_size;
-                    let (_, new_y) = self.layout_node(child, current_x + bullet_width + 8, current_y, max_width - bullet_width - 8, color, bold, italic, font_size);
+                    let (_, new_y) = self.layout_node(child, current_x + bullet_width + 8, current_y, max_width - bullet_width - 8, color, bold, italic, font_size, element_id);
                     current_y = new_y + CHAR_HEIGHT * font_size + 2;
                 }
                 return (x, current_y);
@@ -745,7 +755,7 @@ impl Browser {
 
         // Render children
         for child in &node.children {
-            let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic, font_size);
+            let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic, font_size, element_id);
             current_x = new_x;
             current_y = new_y;
         }
@@ -944,6 +954,28 @@ impl Browser {
                     && click_y < layout_box.y + layout_box.height
                 {
                     // Clicked on link!
+
+                    // Handle internal anchor links
+                    if layout_box.link_url.starts_with('#') {
+                        // Internal anchor - find element and scroll to it
+                        let anchor_id = &layout_box.link_url[1..]; // Strip the '#'
+
+                        // Find the first layout box with this element_id
+                        if let Some(target_box) = self.layout.iter().find(|b| b.element_id == anchor_id) {
+                            // Calculate scroll bounds to avoid scrolling past content
+                            let content_height = win_height.saturating_sub(35); // Address bar is 35px
+                            let max_content_y = self.layout.iter()
+                                .map(|box_| box_.y + box_.height)
+                                .max()
+                                .unwrap_or(0);
+                            let max_scroll = max_content_y.saturating_sub(content_height);
+
+                            // Scroll to the target element, but respect scroll bounds
+                            self.scroll_offset = target_box.y.min(max_scroll);
+                        }
+                        return;
+                    }
+
                     // Handle relative URLs
                     let url = if layout_box.link_url.starts_with("http://") || layout_box.link_url.starts_with("https://") {
                         layout_box.link_url.clone()
