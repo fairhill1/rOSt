@@ -60,10 +60,12 @@ pub struct Browser {
     pub history: Vec<String>,
     pub history_index: usize,
     pub loading: bool,
+    pub page_title: Option<String>,
+    pub instance_id: usize, // ID for updating window title
 }
 
 impl Browser {
-    pub fn new() -> Self {
+    pub fn new(instance_id: usize) -> Self {
         Browser {
             url: String::from("about:blank"),
             url_input: TextInput::new(),
@@ -74,6 +76,8 @@ impl Browser {
             history: Vec::new(),
             history_index: 0,
             loading: false,
+            page_title: None,
+            instance_id,
         }
     }
 
@@ -513,6 +517,30 @@ impl Browser {
         }
     }
 
+    /// Extract title from DOM tree
+    fn extract_title(&self, node: &Node) -> Option<String> {
+        match &node.node_type {
+            NodeType::Element(elem) => {
+                if elem.tag_name == "title" {
+                    // Found title element - extract text from children
+                    for child in &node.children {
+                        if let NodeType::Text(text) = &child.node_type {
+                            return Some(text.trim().to_string());
+                        }
+                    }
+                }
+                // Recursively search children
+                for child in &node.children {
+                    if let Some(title) = self.extract_title(child) {
+                        return Some(title);
+                    }
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
     /// Load HTML content
     pub fn load_html(&mut self, html: String) {
         crate::kernel::uart_write_string("load_html: Starting HTML parsing\r\n");
@@ -522,7 +550,16 @@ impl Browser {
         crate::kernel::uart_write_string("load_html: HTML parsed, clearing layout\r\n");
         self.layout = Vec::new();
 
-        // Layout the DOM tree
+        // Extract page title from DOM
+        self.page_title = self.extract_title(&dom);
+
+        // Update window title
+        if let Some(ref title) = self.page_title {
+            let window_title = alloc::format!("Browser - {}", title);
+            crate::gui::window_manager::set_browser_window_title(self.instance_id, &window_title);
+        }
+
+        // Layout the DOM tree (skip <head> elements)
         crate::kernel::uart_write_string("load_html: Starting layout\r\n");
         self.layout_node(&dom, 10, 10, 1000, &Color::BLACK, false, false, 2, "");
 
@@ -649,6 +686,11 @@ impl Browser {
         parent_element_id: &str,
     ) -> (usize, usize) {
         let tag = elem.tag_name.as_str();
+
+        // Skip rendering <head> and its contents
+        if tag == "head" {
+            return (x, y);
+        }
 
         // Extract element ID from attributes if present
         let element_id = elem.attributes.get("id")
@@ -1084,7 +1126,7 @@ pub fn init() {
 pub fn create_browser() -> usize {
     unsafe {
         let id = BROWSERS.len();
-        let mut browser = Browser::new();
+        let mut browser = Browser::new(id);
 
         // Navigate to default page
         browser.navigate("about:home".to_string());

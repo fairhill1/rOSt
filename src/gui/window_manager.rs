@@ -803,6 +803,14 @@ impl WindowManager {
         }
     }
 
+    /// Update a browser window title by instance ID
+    pub fn set_browser_title(&mut self, instance_id: usize, title: &str) {
+        if let Some(window) = self.windows.iter_mut()
+            .find(|w| w.content == WindowContent::Browser && w.instance_id == instance_id) {
+            window.title = String::from(title);
+        }
+    }
+
     /// Get the focused file explorer window instance ID
     pub fn get_focused_file_explorer_id(&self) -> Option<usize> {
         self.windows.iter()
@@ -979,6 +987,14 @@ pub fn set_editor_window_title(title: &str) {
     unsafe {
         if let Some(ref mut wm) = WINDOW_MANAGER {
             wm.set_editor_title(title);
+        }
+    }
+}
+
+pub fn set_browser_window_title(instance_id: usize, title: &str) {
+    unsafe {
+        if let Some(ref mut wm) = WINDOW_MANAGER {
+            wm.set_browser_title(instance_id, title);
         }
     }
 }
