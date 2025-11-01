@@ -38,6 +38,7 @@ pub enum WindowContent {
     Editor,
     FileExplorer,
     Snake,
+    Browser,
 }
 
 pub struct Window {
@@ -162,6 +163,10 @@ impl Window {
                 // Snake game content is rendered by the snake system directly
                 // (see main rendering loop which calls snake::render_at())
             }
+            WindowContent::Browser => {
+                // Browser content is rendered by the browser system directly
+                // (see main rendering loop which calls browser::render_at())
+            }
         }
     }
 
@@ -187,6 +192,7 @@ const MENU_ITEMS: &[MenuItem] = &[
     MenuItem { label: "Terminal", window_type: WindowContent::Terminal },
     MenuItem { label: "Editor", window_type: WindowContent::Editor },
     MenuItem { label: "Files", window_type: WindowContent::FileExplorer },
+    MenuItem { label: "Browser", window_type: WindowContent::Browser },
     MenuItem { label: "Snake", window_type: WindowContent::Snake },
     MenuItem { label: "About", window_type: WindowContent::AboutDialog },
 ];
@@ -479,6 +485,9 @@ impl WindowManager {
                 WindowContent::Snake => {
                     crate::kernel::snake::remove_snake_game(window.instance_id);
                 },
+                WindowContent::Browser => {
+                    crate::kernel::browser::remove_browser(window.instance_id);
+                },
                 WindowContent::AboutDialog => {
                     // No instance to remove
                 },
@@ -530,6 +539,10 @@ impl WindowManager {
                 WindowContent::Snake => {
                     let id = crate::kernel::snake::create_snake_game();
                     ("Snake", id)
+                },
+                WindowContent::Browser => {
+                    let id = crate::kernel::browser::create_browser();
+                    ("Browser", id)
                 },
                 WindowContent::AboutDialog => {
                     ("About rOSt", 0) // AboutDialog doesn't need an instance
@@ -651,6 +664,24 @@ impl WindowManager {
                             },
                             FileExplorerAction::None => {},
                         }
+                    }
+                }
+
+                // If it's a browser window and click is in content area, handle click
+                if self.windows[i].content == WindowContent::Browser {
+                    let (cx, cy, cw, ch) = self.windows[i].get_content_bounds();
+                    if x >= cx && x < cx + cw as i32 && y >= cy && y < cy + ch as i32 {
+                        // Click is inside browser content area
+                        let instance_id = self.windows[i].instance_id;
+                        crate::kernel::browser::handle_click(
+                            instance_id,
+                            x as usize,
+                            y as usize,
+                            cx as usize,
+                            cy as usize,
+                            cw as usize,
+                            ch as usize
+                        );
                     }
                 }
 
@@ -785,6 +816,25 @@ impl WindowManager {
     pub fn get_all_snakes(&self) -> Vec<(usize, i32, i32, u32, u32)> {
         self.windows.iter()
             .filter(|w| w.content == WindowContent::Snake && w.visible)
+            .map(|w| {
+                let (x, y, width, height) = w.get_content_bounds();
+                (w.instance_id, x, y, width, height)
+            })
+            .collect()
+    }
+
+    /// Get the focused browser window instance ID
+    pub fn get_focused_browser_id(&self) -> Option<usize> {
+        self.windows.iter()
+            .filter(|w| w.content == WindowContent::Browser && w.is_focused)
+            .last()
+            .map(|w| w.instance_id)
+    }
+
+    /// Get all browser windows with their instance IDs and content bounds
+    pub fn get_all_browsers(&self) -> Vec<(usize, i32, i32, u32, u32)> {
+        self.windows.iter()
+            .filter(|w| w.content == WindowContent::Browser && w.visible)
             .map(|w| {
                 let (x, y, width, height) = w.get_content_bounds();
                 (w.instance_id, x, y, width, height)
@@ -939,6 +989,36 @@ pub fn get_all_file_explorers() -> Vec<(usize, i32, i32, u32, u32)> {
     unsafe {
         if let Some(ref wm) = WINDOW_MANAGER {
             wm.get_all_file_explorers()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+pub fn has_focused_browser() -> bool {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_focused_browser_id().is_some()
+        } else {
+            false
+        }
+    }
+}
+
+pub fn get_focused_browser_id() -> Option<usize> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_focused_browser_id()
+        } else {
+            None
+        }
+    }
+}
+
+pub fn get_all_browsers() -> Vec<(usize, i32, i32, u32, u32)> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_all_browsers()
         } else {
             Vec::new()
         }

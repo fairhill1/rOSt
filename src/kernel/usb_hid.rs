@@ -687,6 +687,13 @@ pub fn test_input_events() -> (bool, bool) {
                         }
                         _ => {}
                     }
+                } else if let Some(browser_id) = crate::kernel::window_manager::get_focused_browser_id() {
+                    // Browser keyboard navigation
+                    if let Some(ascii) = evdev_to_ascii(key, modifiers) {
+                        let is_ctrl = (modifiers & 0x01) != 0 || (modifiers & 0x10) != 0;
+                        crate::kernel::browser::handle_key(browser_id, ascii as char, is_ctrl);
+                        needs_full_redraw = true;
+                    }
                 }
             }
             InputEvent::KeyReleased { key: _, modifiers: _ } => {
