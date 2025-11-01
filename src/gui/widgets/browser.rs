@@ -768,13 +768,29 @@ impl Browser {
             "ul" | "ol" => {
                 // Lists
                 for (i, child) in node.children.iter().enumerate() {
+                    // Save the starting Y position for this list item
+                    let list_item_y = current_y;
+
                     // Add bullet or number (use ASCII * since bullet • is not in ASCII)
                     let bullet = if tag == "ul" { "* " } else { &alloc::format!("{}. ", i + 1) };
+                    let bullet_width = bullet.len() * CHAR_WIDTH * font_size;
 
-                    self.layout.push(LayoutBox {
+                    // Layout the list item content first to get its starting position
+                    let content_start_idx = self.layout.len();
+                    let (_, new_y) = self.layout_node(child, current_x + bullet_width + 8, list_item_y, max_width - bullet_width - 8, color, bold, italic, font_size, element_id);
+
+                    // Find the Y position where the content actually started
+                    let content_y = if self.layout.len() > content_start_idx {
+                        self.layout[content_start_idx].y
+                    } else {
+                        list_item_y
+                    };
+
+                    // Now add the bullet at the same Y position as the content
+                    self.layout.insert(content_start_idx, LayoutBox {
                         x: current_x,
-                        y: current_y,
-                        width: bullet.len() * CHAR_WIDTH * font_size,
+                        y: content_y,
+                        width: bullet_width,
                         height: CHAR_HEIGHT * font_size,
                         text: bullet.to_string(),
                         color: *color,
@@ -786,8 +802,6 @@ impl Browser {
                         element_id: element_id.to_string(),
                     });
 
-                    let bullet_width = bullet.len() * CHAR_WIDTH * font_size;
-                    let (_, new_y) = self.layout_node(child, current_x + bullet_width + 8, current_y, max_width - bullet_width - 8, color, bold, italic, font_size, element_id);
                     current_y = new_y + CHAR_HEIGHT * font_size + 2;
                 }
                 return (x, current_y);
