@@ -782,13 +782,61 @@ impl Browser {
             }
         }
 
-        // Address bar text
+        // URL input field box (white background with border)
+        let input_x = 40;
+        let input_y = 5;
+        let input_width = win_width.saturating_sub(130); // Leave space for buttons
+        let input_height = 20;
+
+        // Draw white input field background
+        for y in input_y..input_y + input_height {
+            for x in input_x..input_x + input_width {
+                let fb_x = win_x + x;
+                let fb_y = win_y + y;
+                if fb_x < fb_width && fb_y < fb_height {
+                    fb[fb_y * fb_width + fb_x] = 0xFFFFFFFF; // White
+                }
+            }
+        }
+
+        // Draw border around input field
+        let border_color = if self.url_focused { 0xFF4A90E2 } else { 0xFFCCCCCC }; // Blue if focused, gray otherwise
+        // Top and bottom borders
+        for x in input_x..input_x + input_width {
+            let fb_x = win_x + x;
+            // Top
+            let fb_y_top = win_y + input_y;
+            if fb_x < fb_width && fb_y_top < fb_height {
+                fb[fb_y_top * fb_width + fb_x] = border_color;
+            }
+            // Bottom
+            let fb_y_bottom = win_y + input_y + input_height - 1;
+            if fb_x < fb_width && fb_y_bottom < fb_height {
+                fb[fb_y_bottom * fb_width + fb_x] = border_color;
+            }
+        }
+        // Left and right borders
+        for y in input_y..input_y + input_height {
+            let fb_y = win_y + y;
+            // Left
+            let fb_x_left = win_x + input_x;
+            if fb_x_left < fb_width && fb_y < fb_height {
+                fb[fb_y * fb_width + fb_x_left] = border_color;
+            }
+            // Right
+            let fb_x_right = win_x + input_x + input_width - 1;
+            if fb_x_right < fb_width && fb_y < fb_height {
+                fb[fb_y * fb_width + fb_x_right] = border_color;
+            }
+        }
+
+        // Address bar text inside input field
         let addr_text = if self.url_focused {
-            alloc::format!("URL: {}|", self.url_input)
+            alloc::format!("{}|", self.url_input)
         } else {
-            alloc::format!("URL: {}", self.url)
+            self.url.clone()
         };
-        self.draw_text(fb, fb_width, fb_height, win_x + 10, win_y + 10, &addr_text, &Color::BLACK, 1);
+        self.draw_text(fb, fb_width, fb_height, win_x + input_x + 4, win_y + input_y + 6, &addr_text, &Color::BLACK, 1);
 
         // Back button
         self.draw_text(fb, fb_width, fb_height, win_x + win_width - 80, win_y + 10, "[<]", &Color::new(100, 100, 100), 1);
@@ -895,16 +943,25 @@ impl Browser {
 
         // Check if click is in address bar
         if rel_y < 30 {
+            let input_x = 40;
+            let input_y = 5;
+            let input_width = win_width.saturating_sub(130);
+            let input_height = 20;
+
             if rel_x > win_width - 80 && rel_x < win_width - 60 {
                 // Back button
                 self.go_back();
             } else if rel_x > win_width - 50 && rel_x < win_width - 30 {
                 // Forward button
                 self.go_forward();
-            } else if rel_x < win_width - 90 {
-                // Click on address bar - focus it
+            } else if rel_x >= input_x && rel_x < input_x + input_width
+                   && rel_y >= input_y && rel_y < input_y + input_height {
+                // Click inside URL input field - focus it
                 self.url_focused = true;
                 self.url_input = self.url.clone();
+            } else {
+                // Click elsewhere in address bar - unfocus
+                self.url_focused = false;
             }
             return;
         }
