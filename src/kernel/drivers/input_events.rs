@@ -426,17 +426,29 @@ pub fn test_input_events() -> (bool, bool) {
                     // Handle filename input
                     if let Some(ascii) = evdev_to_ascii(key, modifiers) {
                         if ascii == b'\n' {
-                            // Enter pressed - check if renaming or creating new file
+                            // Enter pressed - check if renaming, creating new file, or saving in editor
                             if is_renaming() {
                                 finish_rename_prompt_for_file_explorer();
-                            } else {
+                            } else if crate::gui::window_manager::has_focused_file_explorer() {
+                                // File explorer new file creation
                                 finish_filename_prompt_for_file_explorer();
+                            } else if let Some(editor_id) = crate::gui::window_manager::get_focused_editor_id() {
+                                // Editor save with new filename
+                                if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
+                                    finish_filename_prompt(editor);
+                                }
                             }
                             needs_full_redraw = true;
                         } else if ascii == 27 { // ESC
                             // Cancel the prompt (clears both rename and new file states)
                             cancel_filename_prompt();
                             unsafe { RENAME_OLD_FILENAME = None; }
+                            // Also set status message for editor if it's focused
+                            if let Some(editor_id) = crate::gui::window_manager::get_focused_editor_id() {
+                                if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
+                                    editor.set_status("Save cancelled");
+                                }
+                            }
                             needs_full_redraw = true;
                         } else if ascii == 8 { // Backspace
                             backspace_filename_prompt();
@@ -447,59 +459,33 @@ pub fn test_input_events() -> (bool, bool) {
                         }
                     }
                 } else if let Some(editor_id) = crate::gui::window_manager::get_focused_editor_id() {
-                    // Check if we're prompting for a filename (old editor-specific code)
-                    if false { // This branch is now dead code since we handle prompts globally above
-                        // Handle filename input
-                        if let Some(ascii) = evdev_to_ascii(key, modifiers) {
-                            if ascii == b'\n' {
-                                // Enter pressed - finish the prompt and save
-                                if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
-                                    finish_filename_prompt(editor);
+                    // Normal editor input handling
+
+                    // Check for ESC first (to close window or clear selection)
+                    if key == 1 { // KEY_ESC = 1 in evdev
+                        if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
+                            if editor.has_selection() {
+                                // Clear selection first
+                                editor.clear_selection();
+                                needs_full_redraw = true;
+                            } else if editor.is_modified() {
+                                // Has unsaved changes - prompt for confirmation
+                                if let Some(window_index) = crate::gui::window_manager::get_focused_window_index() {
+                                    start_close_confirm(window_index);
+                                    needs_full_redraw = true;
                                 }
-                                needs_full_redraw = true;
-                            } else if ascii == 27 { // ESC
-                                // Cancel the prompt
-                                cancel_filename_prompt();
-                                if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
-                                    editor.set_status("Save cancelled");
-                                }
-                                needs_full_redraw = true;
-                            } else if ascii == 8 { // Backspace
-                                backspace_filename_prompt();
-                                needs_full_redraw = true;
-                            } else if ascii >= 32 && ascii < 127 { // Printable ASCII
-                                add_to_filename_prompt(ascii as char);
+                            } else {
+                                // No unsaved changes - close immediately
+                                crate::gui::window_manager::close_focused_window();
                                 needs_full_redraw = true;
                             }
                         }
-                    } else {
-                        // Normal editor input handling
+                    }
+                    // Check for Ctrl+S (save)
+                    else {
+                        let is_ctrl = (modifiers & (MOD_LEFT_CTRL | MOD_RIGHT_CTRL)) != 0;
 
-                        // Check for ESC first (to close window or clear selection)
-                        if key == 1 { // KEY_ESC = 1 in evdev
-                            if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
-                                if editor.has_selection() {
-                                    // Clear selection first
-                                    editor.clear_selection();
-                                    needs_full_redraw = true;
-                                } else if editor.is_modified() {
-                                    // Has unsaved changes - prompt for confirmation
-                                    if let Some(window_index) = crate::gui::window_manager::get_focused_window_index() {
-                                        start_close_confirm(window_index);
-                                        needs_full_redraw = true;
-                                    }
-                                } else {
-                                    // No unsaved changes - close immediately
-                                    crate::gui::window_manager::close_focused_window();
-                                    needs_full_redraw = true;
-                                }
-                            }
-                        }
-                        // Check for Ctrl+S (save)
-                        else {
-                            let is_ctrl = (modifiers & (MOD_LEFT_CTRL | MOD_RIGHT_CTRL)) != 0;
-
-                            if is_ctrl && key == 30 { // KEY_A = 30 in evdev (Ctrl+A)
+                        if is_ctrl && key == 30 { // KEY_A = 30 in evdev (Ctrl+A)
                             // Handle select all
                             if let Some(editor) = crate::gui::widgets::editor::get_editor(editor_id) {
                                 editor.select_all();
@@ -612,8 +598,7 @@ pub fn test_input_events() -> (bool, bool) {
                                 }
                             }
                         }
-                        } // Close the else block for non-ESC keys
-                    }
+                    } // Close the else block for non-ESC keys
                 } else if let Some(terminal_id) = crate::gui::window_manager::get_focused_terminal_id() {
                     // Check for ESC to close terminal
                     if key == 1 { // KEY_ESC = 1 in evdev
@@ -1216,112 +1201,93 @@ fn save_editor_file_internal(editor: &mut crate::gui::widgets::editor::TextEdito
     let content = editor.get_text();
     let content_bytes = content.as_bytes();
 
-    // Try to access filesystem through shell first, then file explorer as fallback
-    let fs_access = if let Some(shell) = crate::apps::shell::get_shell(0) {
-        shell.filesystem.as_mut().zip(shell.device_index)
-    } else {
-        // No shell, try file explorer
-        if let Some(explorer_id) = crate::gui::window_manager::get_focused_file_explorer_id() {
-            if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(explorer_id) {
-                explorer.filesystem.as_mut().zip(explorer.device_index)
-            } else {
-                None
-            }
-        } else {
-            // Try any file explorer
-            let explorers = crate::gui::widgets::file_explorer::get_all_file_explorers();
-            if !explorers.is_empty() {
-                if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(explorers[0]) {
-                    explorer.filesystem.as_mut().zip(explorer.device_index)
+    // Access filesystem directly
+    unsafe {
+        if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+            if let Some(device) = devices.get_mut(0) { // Use first block device
+                // Mount filesystem
+                let mut fs = match crate::system::fs::filesystem::SimpleFilesystem::mount(device) {
+                    Ok(fs) => fs,
+                    Err(_) => {
+                        editor.set_status("Failed to mount filesystem");
+                        return;
+                    }
+                };
+                // Check if file exists and get its size
+                let files = fs.list_files();
+                let existing_file = files.iter().find(|f| f.get_name() == filename);
+
+                let required_size = ((content_bytes.len() + 511) / 512) * 512; // Round up to sector
+
+                // If file doesn't exist or is too small, (re)create it
+                if let Some(file) = existing_file {
+                    let current_size = file.get_size_bytes() as usize;
+                    if content_bytes.len() > current_size {
+                        // File exists but is too small, delete and recreate
+                        match fs.delete_file(device, &filename) {
+                            Ok(()) => {
+                                uart_write_string(&alloc::format!("Resizing '{}' from {} to {} bytes\r\n",
+                                    filename, current_size, required_size));
+                            }
+                            Err(e) => {
+                                let msg = alloc::format!("Error deleting file for resize: {}", e);
+                                set_menu_status(&msg);
+                                uart_write_string(&alloc::format!("{}\r\n", msg));
+                                return;
+                            }
+                        }
+                        // Create new larger file
+                        match fs.create_file(device, &filename, required_size as u32) {
+                            Ok(()) => {
+                                uart_write_string(&alloc::format!("Created larger file '{}'\r\n", filename));
+                            }
+                            Err(e) => {
+                                let msg = alloc::format!("Error creating resized file: {}", e);
+                                set_menu_status(&msg);
+                                uart_write_string(&alloc::format!("{}\r\n", msg));
+                                return;
+                            }
+                        }
+                    }
                 } else {
-                    None
-                }
-            } else {
-                None
-            }
-        }
-    };
-
-    if let Some((fs, device_idx)) = fs_access {
-                unsafe {
-                    if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
-                        if let Some(device) = devices.get_mut(device_idx) {
-                            // Check if file exists and get its size
-                            let files = fs.list_files();
-                            let existing_file = files.iter().find(|f| f.get_name() == filename);
-
-                            let required_size = ((content_bytes.len() + 511) / 512) * 512; // Round up to sector
-
-                            // If file doesn't exist or is too small, (re)create it
-                            if let Some(file) = existing_file {
-                                let current_size = file.get_size_bytes() as usize;
-                                if content_bytes.len() > current_size {
-                                    // File exists but is too small, delete and recreate
-                                    match fs.delete_file(device, &filename) {
-                                        Ok(()) => {
-                                            uart_write_string(&alloc::format!("Resizing '{}' from {} to {} bytes\r\n",
-                                                filename, current_size, required_size));
-                                        }
-                                        Err(e) => {
-                                            let msg = alloc::format!("Error deleting file for resize: {}", e);
-                                            set_menu_status(&msg);
-                                            uart_write_string(&alloc::format!("{}\r\n", msg));
-                                            return;
-                                        }
-                                    }
-                                    // Create new larger file
-                                    match fs.create_file(device, &filename, required_size as u32) {
-                                        Ok(()) => {
-                                            uart_write_string(&alloc::format!("Created larger file '{}'\r\n", filename));
-                                        }
-                                        Err(e) => {
-                                            let msg = alloc::format!("Error creating resized file: {}", e);
-                                            set_menu_status(&msg);
-                                            uart_write_string(&alloc::format!("{}\r\n", msg));
-                                            return;
-                                        }
-                                    }
-                                }
-                            } else {
-                                // File doesn't exist, create it
-                                match fs.create_file(device, &filename, required_size as u32) {
-                                    Ok(()) => {
-                                        uart_write_string(&alloc::format!("Created file '{}'\r\n", filename));
-                                    }
-                                    Err(e) => {
-                                        let msg = alloc::format!("Error creating file: {}", e);
-                                        set_menu_status(&msg);
-                                        uart_write_string(&alloc::format!("{}\r\n", msg));
-                                        return;
-                                    }
-                                }
-                            }
-
-                            // Write content to file
-                            match fs.write_file(device, &filename, content_bytes) {
-                                Ok(()) => {
-                                    editor.mark_saved();
-                                    let msg = alloc::format!("Saved {} bytes to '{}'", content_bytes.len(), filename);
-                                    set_menu_status(&msg);
-                                    uart_write_string(&alloc::format!("{}\r\n", msg));
-
-                                    // Update editor window title to show filename
-                                    let window_title = alloc::format!("Text Editor - {}", filename);
-                                    crate::gui::window_manager::set_editor_window_title(&window_title);
-                                }
-                                Err(e) => {
-                                    let msg = alloc::format!("Error saving: {}", e);
-                                    set_menu_status(&msg);
-                                    uart_write_string(&alloc::format!("{}\r\n", msg));
-                                }
-                            }
-                        } else {
-                            editor.set_status("Block device not available");
+                    // File doesn't exist, create it
+                    match fs.create_file(device, &filename, required_size as u32) {
+                        Ok(()) => {
+                            uart_write_string(&alloc::format!("Created file '{}'\r\n", filename));
+                        }
+                        Err(e) => {
+                            let msg = alloc::format!("Error creating file: {}", e);
+                            set_menu_status(&msg);
+                            uart_write_string(&alloc::format!("{}\r\n", msg));
+                            return;
                         }
                     }
                 }
-    } else {
-        editor.set_status("Filesystem not available - open a terminal or file explorer first");
+
+                // Write content to file
+                match fs.write_file(device, &filename, content_bytes) {
+                    Ok(()) => {
+                        editor.mark_saved();
+                        let msg = alloc::format!("Saved {} bytes to '{}'", content_bytes.len(), filename);
+                        set_menu_status(&msg);
+                        uart_write_string(&alloc::format!("{}\r\n", msg));
+
+                        // Update editor window title to show filename
+                        let window_title = alloc::format!("Text Editor - {}", filename);
+                        crate::gui::window_manager::set_editor_window_title(&window_title);
+                    }
+                    Err(e) => {
+                        let msg = alloc::format!("Error saving: {}", e);
+                        set_menu_status(&msg);
+                        uart_write_string(&alloc::format!("{}\r\n", msg));
+                    }
+                }
+            } else {
+                editor.set_status("Block device not available");
+            }
+        } else {
+            editor.set_status("Block device not available");
+        }
     }
 }
 
