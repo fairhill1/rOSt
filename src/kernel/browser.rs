@@ -239,7 +239,7 @@ impl Browser {
                             }
                         }
                     }
-                    for _ in 0..10000 { core::arch::asm!("nop"); }
+                    crate::kernel::timer::delay_ms(1);  // 1ms delay between checks
                 }
 
                 resolved_ip?
@@ -301,7 +301,7 @@ impl Browser {
                         }
                     }
                 }
-                for _ in 0..10000 { core::arch::asm!("nop"); }
+                crate::kernel::timer::delay_ms(1);  // 1ms delay between checks
             }
 
             if !connection_established {
@@ -328,10 +328,13 @@ impl Browser {
             // Step 4: Receive HTTP response
             let mut response = String::new();
             let mut no_data_count = 0;
+            let mut connection_closed_by_server = false;
+            let mut fin_already_acked = false;  // Track if we've already ACKed the FIN
             for _ in 0..10000 {  // Increased iterations
                 let mut rx_buffer = [0u8; 1526];
                 if let Ok(len) = devices[0].receive(&mut rx_buffer) {
                     no_data_count = 0;  // Reset timeout counter when we get data
+
                     if let Some((frame, payload)) = crate::kernel::network::parse_ethernet(&rx_buffer[..len]) {
                         let ethertype = crate::kernel::network::be16_to_cpu(frame.ethertype);
 
@@ -351,24 +354,59 @@ impl Browser {
                                 if ip_hdr.protocol == crate::kernel::network::IP_PROTO_TCP {
                                     if let Some((tcp_hdr, tcp_data)) = crate::kernel::network::parse_tcp(ip_payload) {
                                         if crate::kernel::network::be16_to_cpu(tcp_hdr.dst_port) == local_port {
-                                            let _ = conn.handle_segment(&tcp_hdr, tcp_data);
+                                            let flags = u16::from_be(tcp_hdr.data_offset_flags) & 0x1FF;
+                                            let has_fin = flags & crate::kernel::network::TCP_FLAG_FIN != 0;
 
-                                            // Collect response data
+                                            // First, collect any data in this packet
+                                            let mut need_ack = false;
                                             if !tcp_data.is_empty() {
-                                                if let Ok(text) = core::str::from_utf8(tcp_data) {
-                                                    response.push_str(text);
-                                                    crate::kernel::uart_write_string(&alloc::format!("http_get: Received {} bytes data, total now: {}\r\n", tcp_data.len(), response.len()));
-                                                }
+                                                // Check if packet contains only null bytes (likely TCP options/padding bug)
+                                                let all_nulls = tcp_data.iter().all(|&b| b == 0);
+                                                if all_nulls {
+                                                    crate::kernel::uart_write_string(&alloc::format!("http_get: WARNING: Ignoring packet with {} null bytes (NOT ACKing)\r\n", tcp_data.len()));
+                                                    // Don't add null bytes to response, and DON'T ACK them
+                                                    // The null bytes aren't real data, so ACKing them causes us to skip real bytes!
+                                                } else {
+                                                    // Show first 20 bytes for debugging
+                                                    let preview_len = tcp_data.len().min(20);
+                                                    let preview: alloc::vec::Vec<u8> = tcp_data[..preview_len].to_vec();
+                                                    crate::kernel::uart_write_string(&alloc::format!("http_get: Packet has {} bytes, first {} bytes: {:?}\r\n", tcp_data.len(), preview_len, preview));
 
-                                                // Update ACK
-                                                conn.ack_num = conn.ack_num.wrapping_add(tcp_data.len() as u32);
+                                                    if let Ok(text) = core::str::from_utf8(tcp_data) {
+                                                        response.push_str(text);
+                                                        crate::kernel::uart_write_string(&alloc::format!("http_get: Added {} bytes data, total now: {}\r\n", tcp_data.len(), response.len()));
+                                                    } else {
+                                                        crate::kernel::uart_write_string(&alloc::format!("http_get: WARNING: Skipped {} bytes (invalid UTF-8)\r\n", tcp_data.len()));
+                                                    }
+                                                    // Update ACK number for the data
+                                                    conn.ack_num = conn.ack_num.wrapping_add(tcp_data.len() as u32);
+                                                    need_ack = true;
+                                                }
+                                            }
+
+                                            // Then, if FIN flag is set AND we haven't ACKed it yet, ACK it (FIN consumes 1 sequence number)
+                                            if has_fin && !fin_already_acked {
+                                                crate::kernel::uart_write_string("http_get: Received FIN from server\r\n");
+                                                conn.ack_num = conn.ack_num.wrapping_add(1);
+                                                connection_closed_by_server = true;
+                                                fin_already_acked = true;  // Mark FIN as processed
+                                                need_ack = true;
+                                            } else if has_fin && !tcp_data.is_empty() {
+                                                // If FIN already ACKed but there's new data, still need to ACK the data
+                                                need_ack = true;
+                                            }
+
+                                            // Send ONE ACK for both data and FIN (if present)
+                                            if need_ack {
                                                 let _ = conn.send_ack(&mut devices[0], gateway_mac, our_mac);
                                             }
 
-                                            // Check if connection closed
-                                            if conn.state == crate::kernel::tcp::TcpState::Closed {
-                                                crate::kernel::uart_write_string("http_get: Connection closed by server\r\n");
-                                                break;
+                                            // If we received FIN and have some response, break after a short delay
+                                            if connection_closed_by_server && !response.is_empty() {
+                                                // Wait a bit more to ensure all data arrived
+                                                if no_data_count > 100 {
+                                                    break;
+                                                }
                                             }
                                         }
                                     }
@@ -378,14 +416,72 @@ impl Browser {
                     }
                 } else {
                     no_data_count += 1;
+                    // Increase timeout threshold significantly (3000 iterations instead of 500)
                     // Only break after receiving no data for a while AND we have some response
-                    if no_data_count > 500 && !response.is_empty() {
+                    if no_data_count > 3000 && !response.is_empty() {
                         crate::kernel::uart_write_string(&alloc::format!("http_get: Timeout after {} iterations with no data\r\n", no_data_count));
                         break;
                     }
+                    // If server closed connection and we haven't received new data in a while, break
+                    if connection_closed_by_server && no_data_count > 100 {
+                        crate::kernel::uart_write_string("http_get: Server closed connection, finishing up\r\n");
+                        break;
+                    }
                 }
-                for _ in 0..10000 { core::arch::asm!("nop"); }
+                crate::kernel::timer::delay_ms(1);  // 1ms delay between checks
             }
+
+            // Close our side of the connection properly if not already closed
+            if conn.state == crate::kernel::tcp::TcpState::Established {
+                crate::kernel::uart_write_string("http_get: Closing connection\r\n");
+                let _ = conn.close(&mut devices[0], gateway_mac, our_mac);
+                // Wait briefly for FIN-ACK
+                for _ in 0..100 {
+                    let mut rx_buffer = [0u8; 1526];
+                    if let Ok(len) = devices[0].receive(&mut rx_buffer) {
+                        if let Some((frame, payload)) = crate::kernel::network::parse_ethernet(&rx_buffer[..len]) {
+                            if crate::kernel::network::be16_to_cpu(frame.ethertype) == crate::kernel::network::ETHERTYPE_IPV4 {
+                                if let Some((ip_hdr, ip_payload)) = crate::kernel::network::parse_ipv4(payload) {
+                                    if ip_hdr.protocol == crate::kernel::network::IP_PROTO_TCP {
+                                        if let Some((tcp_hdr, tcp_data)) = crate::kernel::network::parse_tcp(ip_payload) {
+                                            if crate::kernel::network::be16_to_cpu(tcp_hdr.dst_port) == local_port {
+                                                let _ = conn.handle_segment(&tcp_hdr, tcp_data);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    crate::kernel::timer::delay_ms(1);  // 1ms delay between checks
+                }
+            }
+
+            // Drain receive queue briefly to remove any stale packets
+            // Exit early if no packets are arriving
+            crate::kernel::uart_write_string("http_get: Draining receive queue...\r\n");
+            let start_time = crate::kernel::timer::get_time_ms();
+            let mut drained = 0;
+            let mut no_packet_count = 0;
+            // Drain for up to 1000ms, but exit early if no packets for 100ms
+            while crate::kernel::timer::get_time_ms() - start_time < 1000 {
+                let mut rx_buffer = [0u8; 1526];
+                if let Ok(_) = devices[0].receive(&mut rx_buffer) {
+                    drained += 1;
+                    no_packet_count = 0;  // Reset counter when packet received
+                } else {
+                    no_packet_count += 1;
+                    if no_packet_count > 50 {  // 50 * 2ms = 100ms without packets
+                        break;  // Exit early - no more packets coming
+                    }
+                }
+                crate::kernel::timer::delay_ms(2);
+            }
+            crate::kernel::uart_write_string(&alloc::format!("http_get: Drained {} packets\r\n", drained));
+
+            // Replenish receive buffers after draining to ensure next connection has buffers
+            let _ = devices[0].add_receive_buffers(8);
+            crate::kernel::uart_write_string("http_get: Replenished 8 receive buffers\r\n");
 
             // Step 5: Extract HTML body from HTTP response
             crate::kernel::uart_write_string(&alloc::format!("http_get: Received {} bytes\r\n", response.len()));

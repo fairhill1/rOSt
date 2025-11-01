@@ -53,9 +53,9 @@ static mut NET_DEVICES: Option<alloc::vec::Vec<virtio_net::VirtioNetDevice>> = N
 // Static storage for ARP cache
 static mut ARP_CACHE: Option<network::ArpCache> = None;
 
-// Static network configuration (vmnet-shared on macOS: 192.168.64.x)
-static mut OUR_IP: [u8; 4] = [192, 168, 64, 10];  // vmnet-shared guest IP (avoid .2 conflict)
-static mut GATEWAY_IP: [u8; 4] = [192, 168, 64, 1];  // vmnet-shared gateway/DNS
+// Static network configuration for QEMU user-mode networking (10.0.2.x)
+static mut OUR_IP: [u8; 4] = [10, 0, 2, 15];  // QEMU user-mode guest IP (default)
+static mut GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];  // QEMU user-mode gateway
 
 // Static for GPU driver and cursor position
 static mut GPU_DRIVER: Option<virtio_gpu::VirtioGpuDriver> = None;
