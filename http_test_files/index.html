@@ -1,7 +1,69 @@
 <!DOCTYPE html>
 <html>
+<head>
+    <title>rOSt HTTP Test Page</title>
+</head>
 <body>
     <h1>TCP WORKS! Boom</h1>
     <p>Your OS successfully made an HTTP request!</p>
+
+    <h2>Test Features</h2>
+
+    <h3>Unordered List</h3>
+    <ul>
+        <li>VirtIO network driver working</li>
+        <li>TCP/IP stack functional</li>
+        <li>HTTP GET request successful</li>
+        <li>HTML rendering in progress</li>
+    </ul>
+
+    <h3>Ordered List</h3>
+    <ol>
+        <li>Connect to network</li>
+        <li>Resolve DNS</li>
+        <li>Send HTTP request</li>
+        <li>Parse HTML response</li>
+        <li>Render content</li>
+    </ol>
+
+    <h3>Links</h3>
+    <p>External links to test:</p>
+    <ul>
+        <li><a href="https://www.google.com">Google</a></li>
+        <li><a href="https://www.github.com">GitHub</a></li>
+        <li><a href="https://docs.rs">docs.rs - Rust Documentation</a></li>
+        <li><a href="http://example.com">Example.com</a></li>
+    </ul>
+
+    <p>Internal anchor: <a href="#bottom">Jump to bottom</a></p>
+
+    <h3>Nested Lists</h3>
+    <ul>
+        <li>Networking
+            <ul>
+                <li>Ethernet</li>
+                <li>ARP</li>
+                <li>IPv4</li>
+                <li>UDP</li>
+            </ul>
+        </li>
+        <li>Storage
+            <ul>
+                <li>VirtIO Block</li>
+                <li>SimpleFS</li>
+            </ul>
+        </li>
+    </ul>
+
+    <h3>Text Formatting</h3>
+    <p>This is <strong>bold text</strong> and this is <em>italic text</em>.</p>
+    <p>This is <code>inline code</code> and this is <a href="#">a link</a>.</p>
+
+    <hr>
+
+    <h3 id="bottom">Bottom Section</h3>
+    <p>If you see this after clicking the anchor link, internal navigation works!</p>
+
+    <p><small>Test page for rOSt browser - Last updated 2025-11-01</small></p>
 </body>
 </html>
