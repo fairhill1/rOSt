@@ -684,9 +684,7 @@ impl TextEditor {
     /// Copy selected text to clipboard
     pub fn copy(&mut self) {
         if let Some(text) = self.get_selected_text() {
-            unsafe {
-                CLIPBOARD = Some(text);
-            }
+            crate::kernel::clipboard::copy(text);
             self.set_status("Copied to clipboard");
         } else {
             self.set_status("No selection to copy");
@@ -699,9 +697,7 @@ impl TextEditor {
             // Save state before modification
             self.save_snapshot();
 
-            unsafe {
-                CLIPBOARD = Some(text);
-            }
+            crate::kernel::clipboard::copy(text);
             self.delete_selection();
             self.set_status("Cut to clipboard");
         } else {
@@ -711,9 +707,7 @@ impl TextEditor {
 
     /// Paste text from clipboard
     pub fn paste(&mut self) {
-        let clipboard_text = unsafe { CLIPBOARD.clone() };
-
-        if let Some(text) = clipboard_text {
+        if let Some(text) = crate::kernel::clipboard::paste() {
             // Save state before modification
             self.save_snapshot();
 
@@ -873,9 +867,6 @@ impl TextEditor {
 
 /// Global editor instances
 static mut EDITORS: Vec<TextEditor> = Vec::new();
-
-/// Global clipboard (shared across all editor instances)
-static mut CLIPBOARD: Option<String> = None;
 
 pub fn init() {
     // Nothing to do - editors are created on demand

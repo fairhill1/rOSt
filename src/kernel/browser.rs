@@ -3,6 +3,7 @@
 
 use crate::kernel::html_parser::{Parser, Node, NodeType, ElementData};
 use crate::kernel::framebuffer::FONT_8X8;
+use crate::kernel::text_input::TextInput;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
@@ -51,7 +52,7 @@ pub struct LayoutBox {
 
 pub struct Browser {
     pub url: String,
-    pub url_input: String,
+    pub url_input: TextInput,
     pub url_focused: bool,
     pub dom: Option<Node>,
     pub layout: Vec<LayoutBox>,
@@ -65,7 +66,7 @@ impl Browser {
     pub fn new() -> Self {
         Browser {
             url: String::from("about:blank"),
-            url_input: String::new(),
+            url_input: TextInput::new(),
             url_focused: false,
             dom: None,
             layout: Vec::new(),
@@ -86,7 +87,7 @@ impl Browser {
         self.history_index = self.history.len();
 
         self.url = url.clone();
-        self.url_input = url.clone();
+        self.url_input.set_text(&url);
         self.scroll_offset = 0;
         self.loading = true;
 
@@ -782,61 +783,20 @@ impl Browser {
             }
         }
 
-        // URL input field box (white background with border)
+        // URL input field
         let input_x = 40;
         let input_y = 3;
         let input_width = win_width.saturating_sub(130); // Leave space for buttons
         let input_height = 24;
 
-        // Draw white input field background
-        for y in input_y..input_y + input_height {
-            for x in input_x..input_x + input_width {
-                let fb_x = win_x + x;
-                let fb_y = win_y + y;
-                if fb_x < fb_width && fb_y < fb_height {
-                    fb[fb_y * fb_width + fb_x] = 0xFFFFFFFF; // White
-                }
-            }
-        }
-
-        // Draw border around input field
-        let border_color = if self.url_focused { 0xFF4A90E2 } else { 0xFFCCCCCC }; // Blue if focused, gray otherwise
-        // Top and bottom borders
-        for x in input_x..input_x + input_width {
-            let fb_x = win_x + x;
-            // Top
-            let fb_y_top = win_y + input_y;
-            if fb_x < fb_width && fb_y_top < fb_height {
-                fb[fb_y_top * fb_width + fb_x] = border_color;
-            }
-            // Bottom
-            let fb_y_bottom = win_y + input_y + input_height - 1;
-            if fb_x < fb_width && fb_y_bottom < fb_height {
-                fb[fb_y_bottom * fb_width + fb_x] = border_color;
-            }
-        }
-        // Left and right borders
-        for y in input_y..input_y + input_height {
-            let fb_y = win_y + y;
-            // Left
-            let fb_x_left = win_x + input_x;
-            if fb_x_left < fb_width && fb_y < fb_height {
-                fb[fb_y * fb_width + fb_x_left] = border_color;
-            }
-            // Right
-            let fb_x_right = win_x + input_x + input_width - 1;
-            if fb_x_right < fb_width && fb_y < fb_height {
-                fb[fb_y * fb_width + fb_x_right] = border_color;
-            }
-        }
-
-        // Address bar text inside input field
-        let addr_text = if self.url_focused {
-            alloc::format!("{}|", self.url_input)
-        } else {
-            self.url.clone()
-        };
-        self.draw_text(fb, fb_width, fb_height, win_x + input_x + 4, win_y + input_y + 4, &addr_text, &Color::BLACK, 2);
+        // Render the TextInput widget
+        self.url_input.render_at(
+            (win_x + input_x) as i32,
+            (win_y + input_y) as i32,
+            input_width as u32,
+            input_height as u32,
+            self.url_focused
+        );
 
         // Back button
         self.draw_text(fb, fb_width, fb_height, win_x + win_width - 80, win_y + 7, "[<]", &Color::new(100, 100, 100), 2);
@@ -913,26 +873,31 @@ impl Browser {
     }
 
     /// Handle keyboard input
-    pub fn handle_key(&mut self, key: char, ctrl: bool) {
+    pub fn handle_key(&mut self, key: char, ctrl: bool, shift: bool) {
         if self.url_focused {
             if key == '\n' {
                 // Enter key - navigate
                 self.url_focused = false;
-                let url = self.url_input.clone();
+                let url = self.url_input.get_text().to_string();
                 self.navigate(url);
-            } else if key == '\x08' {
-                // Backspace
-                self.url_input.pop();
-            } else if key.is_ascii() && !ctrl {
-                self.url_input.push(key);
+            } else {
+                // Pass to TextInput
+                self.url_input.handle_key(key, ctrl, shift);
             }
         } else {
             // Not focused on URL bar
             if key == 'l' && ctrl {
                 // Ctrl+L - focus address bar
                 self.url_focused = true;
-                self.url_input = self.url.clone();
+                self.url_input.set_text(&self.url);
             }
+        }
+    }
+
+    /// Handle arrow key input
+    pub fn handle_arrow_key(&mut self, arrow: crate::kernel::text_input::ArrowKey, shift: bool) {
+        if self.url_focused {
+            self.url_input.handle_arrow_key(arrow, shift);
         }
     }
 
@@ -958,7 +923,9 @@ impl Browser {
                    && rel_y >= input_y && rel_y < input_y + input_height {
                 // Click inside URL input field - focus it
                 self.url_focused = true;
-                self.url_input = self.url.clone();
+                self.url_input.set_text(&self.url);
+                // Handle mouse down for cursor positioning
+                self.url_input.handle_mouse_down(rel_x as i32, (input_x + 4) as i32);
             } else {
                 // Click elsewhere in address bar - unfocus
                 self.url_focused = false;
@@ -1000,6 +967,33 @@ impl Browser {
         self.url_focused = false;
     }
 
+    /// Handle mouse drag - returns true if selection changed
+    pub fn handle_mouse_drag(&mut self, x: usize, y: usize, win_x: usize, win_y: usize, win_width: usize, _win_height: usize) -> bool {
+        let rel_x = x.saturating_sub(win_x);
+        let rel_y = y.saturating_sub(win_y);
+
+        // Only handle drag in URL input area when focused
+        if self.url_focused && rel_y < 30 {
+            let input_x = 40;
+            let input_y = 3;
+            let input_width = win_width.saturating_sub(130);
+            let input_height = 24;
+
+            if rel_x >= input_x && rel_x < input_x + input_width
+               && rel_y >= input_y && rel_y < input_y + input_height {
+                return self.url_input.handle_mouse_drag(rel_x as i32, (input_x + 4) as i32);
+            }
+        }
+        false
+    }
+
+    /// Handle mouse up
+    pub fn handle_mouse_up(&mut self) {
+        if self.url_focused {
+            self.url_input.handle_mouse_up();
+        }
+    }
+
     /// Handle scroll
     pub fn handle_scroll(&mut self, delta: i32) {
         if delta > 0 {
@@ -1015,7 +1009,7 @@ impl Browser {
             self.history_index -= 1;
             let url = self.history[self.history_index - 1].clone();
             self.url = url.clone();
-            self.url_input = url.clone();
+            self.url_input.set_text(&url);
 
             // Reload page (simplified - in real browser we'd use cache)
             self.navigate(url);
@@ -1028,7 +1022,7 @@ impl Browser {
             self.history_index += 1;
             let url = self.history[self.history_index - 1].clone();
             self.url = url.clone();
-            self.url_input = url.clone();
+            self.url_input.set_text(&url);
 
             // Reload page
             self.navigate(url);
@@ -1083,10 +1077,19 @@ pub fn render_at(instance_id: usize, x: usize, y: usize, width: usize, height: u
 }
 
 /// Handle keyboard input for a browser
-pub fn handle_key(instance_id: usize, key: char, ctrl: bool) {
+pub fn handle_key(instance_id: usize, key: char, ctrl: bool, shift: bool) {
     unsafe {
         if instance_id < BROWSERS.len() {
-            BROWSERS[instance_id].handle_key(key, ctrl);
+            BROWSERS[instance_id].handle_key(key, ctrl, shift);
+        }
+    }
+}
+
+/// Handle arrow key input for a browser
+pub fn handle_arrow_key(instance_id: usize, arrow: crate::kernel::text_input::ArrowKey, shift: bool) {
+    unsafe {
+        if instance_id < BROWSERS.len() {
+            BROWSERS[instance_id].handle_arrow_key(arrow, shift);
         }
     }
 }
@@ -1096,6 +1099,26 @@ pub fn handle_click(instance_id: usize, x: usize, y: usize, win_x: usize, win_y:
     unsafe {
         if instance_id < BROWSERS.len() {
             BROWSERS[instance_id].handle_click(x, y, win_x, win_y, win_width, win_height);
+        }
+    }
+}
+
+/// Handle mouse drag for a browser
+pub fn handle_mouse_drag(instance_id: usize, x: usize, y: usize, win_x: usize, win_y: usize, win_width: usize, win_height: usize) -> bool {
+    unsafe {
+        if instance_id < BROWSERS.len() {
+            BROWSERS[instance_id].handle_mouse_drag(x, y, win_x, win_y, win_width, win_height)
+        } else {
+            false
+        }
+    }
+}
+
+/// Handle mouse up for a browser
+pub fn handle_mouse_up(instance_id: usize) {
+    unsafe {
+        if instance_id < BROWSERS.len() {
+            BROWSERS[instance_id].handle_mouse_up();
         }
     }
 }
