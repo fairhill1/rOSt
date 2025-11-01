@@ -523,7 +523,7 @@ impl Browser {
 
         // Layout the DOM tree
         crate::kernel::uart_write_string("load_html: Starting layout\r\n");
-        self.layout_node(&dom, 10, 10, 1000, &Color::BLACK, false, false, 1);
+        self.layout_node(&dom, 10, 10, 1000, &Color::BLACK, false, false, 2);
 
         crate::kernel::uart_write_string(&alloc::format!("load_html: Layout complete, {} layout boxes created\r\n", self.layout.len()));
 
@@ -663,12 +663,12 @@ impl Browser {
         let bold = parent_bold || matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "b" | "strong");
         let italic = parent_italic || matches!(tag, "i" | "em");
         let font_size = match tag {
-            "h1" => 3,
-            "h2" => 2,
-            "h3" => 2,
-            "h4" => 1,
-            "h5" => 1,
-            "h6" => 1,
+            "h1" => 5,
+            "h2" => 4,
+            "h3" => 3,
+            "h4" => 2,
+            "h5" => 2,
+            "h6" => 2,
             _ => parent_font_size,
         };
 
@@ -784,9 +784,9 @@ impl Browser {
 
         // URL input field box (white background with border)
         let input_x = 40;
-        let input_y = 5;
+        let input_y = 3;
         let input_width = win_width.saturating_sub(130); // Leave space for buttons
-        let input_height = 20;
+        let input_height = 24;
 
         // Draw white input field background
         for y in input_y..input_y + input_height {
@@ -836,13 +836,13 @@ impl Browser {
         } else {
             self.url.clone()
         };
-        self.draw_text(fb, fb_width, fb_height, win_x + input_x + 4, win_y + input_y + 6, &addr_text, &Color::BLACK, 1);
+        self.draw_text(fb, fb_width, fb_height, win_x + input_x + 4, win_y + input_y + 4, &addr_text, &Color::BLACK, 2);
 
         // Back button
-        self.draw_text(fb, fb_width, fb_height, win_x + win_width - 80, win_y + 10, "[<]", &Color::new(100, 100, 100), 1);
+        self.draw_text(fb, fb_width, fb_height, win_x + win_width - 80, win_y + 7, "[<]", &Color::new(100, 100, 100), 2);
 
         // Forward button
-        self.draw_text(fb, fb_width, fb_height, win_x + win_width - 50, win_y + 10, "[>]", &Color::new(100, 100, 100), 1);
+        self.draw_text(fb, fb_width, fb_height, win_x + win_width - 50, win_y + 7, "[>]", &Color::new(100, 100, 100), 2);
 
         // Content area
         let content_y = win_y + 35;
@@ -944,9 +944,9 @@ impl Browser {
         // Check if click is in address bar
         if rel_y < 30 {
             let input_x = 40;
-            let input_y = 5;
+            let input_y = 3;
             let input_width = win_width.saturating_sub(130);
-            let input_height = 20;
+            let input_height = 24;
 
             if rel_x > win_width - 80 && rel_x < win_width - 60 {
                 // Back button
