@@ -232,15 +232,17 @@ pub fn draw_string(x: i32, y: i32, text: &str, color: u32, size: f32) -> i32 {
 }
 
 /// Measure the width of a string without rendering it
+/// IMPORTANT: Must match draw_string's rounding behavior (accumulate as i32)
 pub fn measure_string(text: &str, size: f32) -> i32 {
     unsafe {
         if let Some(ref font) = FONT {
-            let mut width = 0.0;
+            // Accumulate as i32 to match draw_string's rounding (prevents cursor drift)
+            let mut width = 0i32;
             for ch in text.chars() {
                 let metrics = font.metrics(ch, size);
-                width += metrics.advance_width;
+                width += metrics.advance_width as i32;
             }
-            width as i32
+            width
         } else {
             // Fallback: estimate based on bitmap font (8px * 2 = 16px per char)
             (text.len() * 16) as i32
