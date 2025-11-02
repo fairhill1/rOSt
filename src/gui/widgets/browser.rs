@@ -5,6 +5,8 @@ use crate::gui::html_parser::{Parser, Node, NodeType, ElementData};
 use crate::gui::framebuffer::FONT_8X8;
 use crate::gui::widgets::text_input::TextInput;
 use crate::gui::bmp_decoder::BmpImage;
+use crate::gui::bmp_decoder::decode_bmp;
+use crate::gui::png_decoder::decode_png;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::format;
@@ -599,9 +601,25 @@ impl Browser {
                     if let Some(image_data) = self.http_get_binary(&host, port, &path) {
                         crate::kernel::uart_write_string(&alloc::format!("layout_element: Fetched {} bytes\r\n", image_data.len()));
 
-                        // Decode BMP image
-                        if let Some(bmp) = crate::gui::bmp_decoder::decode_bmp(&image_data) {
-                            crate::kernel::uart_write_string(&alloc::format!("layout_element: Decoded BMP {}x{}\r\n", bmp.width, bmp.height));
+                        // Detect image format by magic bytes
+                        let is_png = image_data.len() >= 8 &&
+                                     image_data[0] == 0x89 && image_data[1] == 0x50 &&
+                                     image_data[2] == 0x4E && image_data[3] == 0x47;
+                        let is_bmp = image_data.len() >= 2 &&
+                                     image_data[0] == 0x42 && image_data[1] == 0x4D;
+
+                        // Decode image (try PNG first if detected, otherwise BMP)
+                        let decoded_image = if is_png {
+                            decode_png(&image_data)
+                        } else if is_bmp {
+                            decode_bmp(&image_data)
+                        } else {
+                            None
+                        };
+
+                        if let Some(img) = decoded_image {
+                            let format_name = if is_png { "PNG" } else { "BMP" };
+                            crate::kernel::uart_write_string(&alloc::format!("layout_element: Decoded {} {}x{}\r\n", format_name, img.width, img.height));
 
                             // Add spacing before image if needed
                             if !self.layout.is_empty() {
@@ -612,8 +630,8 @@ impl Browser {
                             self.layout.push(LayoutBox {
                                 x: current_x,
                                 y: current_y,
-                                width: bmp.width as usize,
-                                height: bmp.height as usize,
+                                width: img.width as usize,
+                                height: img.height as usize,
                                 text: String::new(),
                                 color: Color::BLACK,
                                 font_size,
@@ -623,7 +641,7 @@ impl Browser {
                                 italic: false,
                                 element_id: element_id.to_string(),
                                 is_image: true,
-                                image_data: Some(bmp),
+                                image_data: Some(img),
                             });
 
                             // Move to next line after image
@@ -817,18 +835,23 @@ impl Browser {
             if layout_box.is_image {
                 // Draw image
                 if let Some(ref img) = layout_box.image_data {
-                    // Render image by flipping vertically (BMP pixels[0] = top, but render bottom-up)
+                    // Render image (decoders output pixels[0] as top-left)
                     for img_y in 0..img.height as usize {
                         for img_x in 0..img.width as usize {
                             let fb_x = win_x + layout_box.x + img_x;
                             let fb_y = content_y + y + img_y;
 
                             if fb_x < fb_width && fb_y < fb_height {
-                                // Flip vertically: bottom row on screen gets pixels[0], top row gets pixels[last]
-                                let flipped_y = img.height as usize - 1 - img_y;
-                                let pixel_idx = flipped_y * img.width as usize + img_x;
+                                let pixel_idx = img_y * img.width as usize + img_x;
                                 if pixel_idx < img.pixels.len() {
-                                    fb[fb_y * fb_width + fb_x] = img.pixels[pixel_idx];
+                                    // Swap R and B channels: 0xAABBGGRR -> 0xAARRGGBB
+                                    let pixel = img.pixels[pixel_idx];
+                                    let r = pixel & 0xFF;
+                                    let g = (pixel >> 8) & 0xFF;
+                                    let b = (pixel >> 16) & 0xFF;
+                                    let a = pixel & 0xFF000000;
+                                    let swapped = a | (r << 16) | (g << 8) | b;
+                                    fb[fb_y * fb_width + fb_x] = swapped;
                                 }
                             }
                         }
