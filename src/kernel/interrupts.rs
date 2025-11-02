@@ -248,13 +248,34 @@ fn handle_timer_interrupt() {
     unsafe {
         // Acknowledge the timer interrupt
         asm!("msr cntp_ctl_el0, {}", in(reg) 0u64);
-        
+
         // Reset timer for next interrupt (1 second)
         let freq: u64;
         asm!("mrs {}, cntfrq_el0", out(reg) freq);
         asm!("msr cntp_tval_el0, {}", in(reg) freq);
         asm!("msr cntp_ctl_el0, {}", in(reg) 1u64);
-        
-        // In a real kernel, update system time, schedule processes, etc.
+
+        // Preemptive multitasking - switch threads every N ticks
+        static mut TICK_COUNT: u64 = 0;
+        const PREEMPT_TICKS: u64 = 10; // Preempt every 10 timer interrupts (10 seconds with current setup)
+
+        TICK_COUNT += 1;
+        if TICK_COUNT >= PREEMPT_TICKS {
+            TICK_COUNT = 0;
+
+            // Preempt current thread - get context switch info while holding lock
+            let switch_info = {
+                crate::kernel::scheduler::SCHEDULER.lock().preempt()
+            }; // Lock dropped here!
+
+            // Perform context switch outside the lock
+            if let Some((current_ptr, next_ptr, is_first)) = switch_info {
+                if is_first {
+                    crate::kernel::thread::jump_to_thread(next_ptr);
+                } else {
+                    crate::kernel::thread::context_switch(current_ptr, next_ptr);
+                }
+            }
+        }
     }
 }
