@@ -16,6 +16,7 @@ pub struct InlineStyle {
     pub margin: Option<usize>,     // simplified: single value for all sides
     pub padding: Option<usize>,    // simplified: single value for all sides
     pub text_align: Option<TextAlign>,
+    pub display: Option<Display>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -25,21 +26,28 @@ pub enum TextAlign {
     Right,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Display {
+    Block,
+    Inline,
+    None,
+}
+
 /// CSS Selector types
 #[derive(Debug, Clone, PartialEq)]
-pub enum Selector {
+pub enum SimpleSelector {
     Element(String),    // e.g., "p" or "div"
     Class(String),      // e.g., ".myclass"
     Id(String),         // e.g., "#myid"
 }
 
-impl Selector {
-    /// Check if this selector matches the given element
+impl SimpleSelector {
+    /// Check if this simple selector matches the given element
     pub fn matches(&self, tag: &str, classes: &[&str], id: Option<&str>) -> bool {
         match self {
-            Selector::Element(element) => element == tag,
-            Selector::Class(class) => classes.contains(&class.as_str()),
-            Selector::Id(selector_id) => {
+            SimpleSelector::Element(element) => element == tag,
+            SimpleSelector::Class(class) => classes.contains(&class.as_str()),
+            SimpleSelector::Id(selector_id) => {
                 if let Some(element_id) = id {
                     selector_id == element_id
                 } else {
@@ -49,13 +57,29 @@ impl Selector {
         }
     }
 
-    /// Get specificity for cascade (higher = more specific)
-    /// ID selectors: 100, Class selectors: 10, Element selectors: 1
+    /// Get specificity contribution (ID: 100, Class: 10, Element: 1)
     pub fn specificity(&self) -> usize {
         match self {
-            Selector::Id(_) => 100,
-            Selector::Class(_) => 10,
-            Selector::Element(_) => 1,
+            SimpleSelector::Id(_) => 100,
+            SimpleSelector::Class(_) => 10,
+            SimpleSelector::Element(_) => 1,
+        }
+    }
+}
+
+/// Full selector (can be simple or descendant)
+#[derive(Debug, Clone, PartialEq)]
+pub enum Selector {
+    Simple(SimpleSelector),
+    Descendant(Vec<SimpleSelector>), // e.g., ".hero h1" = [Class("hero"), Element("h1")]
+}
+
+impl Selector {
+    /// Get specificity for cascade (sum of all parts)
+    pub fn specificity(&self) -> usize {
+        match self {
+            Selector::Simple(s) => s.specificity(),
+            Selector::Descendant(parts) => parts.iter().map(|s| s.specificity()).sum(),
         }
     }
 }
@@ -115,6 +139,9 @@ impl InlineStyle {
                     }
                     "text-align" => {
                         style.text_align = parse_text_align(value);
+                    }
+                    "display" => {
+                        style.display = parse_display(value);
                     }
                     _ => {
                         // Unsupported property - ignore for now
@@ -207,6 +234,17 @@ fn parse_text_align(value: &str) -> Option<TextAlign> {
     }
 }
 
+/// Parse display value
+fn parse_display(value: &str) -> Option<Display> {
+    match value.trim().to_lowercase().as_str() {
+        "block" => Some(Display::Block),
+        "inline" => Some(Display::Inline),
+        "none" => Some(Display::None),
+        "inline-block" => Some(Display::Inline), // Treat as inline for now
+        _ => None,
+    }
+}
+
 /// Parse single hex digit (0-9, A-F)
 fn parse_hex_digit(c: char) -> Option<u8> {
     c.to_digit(16).map(|d| d as u8)
@@ -269,20 +307,18 @@ impl Stylesheet {
                 break;
             }
 
-            // Parse selector
+            // Parse selector (everything up to '{', may contain spaces for descendant selectors)
             let mut selector_str = String::new();
             while let Some(&c) = chars.peek() {
-                if c == '{' || c.is_whitespace() {
+                if c == '{' {
                     break;
                 }
                 selector_str.push(chars.next().unwrap());
             }
 
-            if selector_str.is_empty() {
+            if selector_str.trim().is_empty() {
                 break;
             }
-
-            skip_whitespace_and_comments(&mut chars);
 
             // Expect '{'
             if chars.peek() != Some(&'{') {
@@ -308,13 +344,33 @@ impl Stylesheet {
                 }
             }
 
-            // Parse selector type
-            let selector = if selector_str.starts_with('#') {
-                Selector::Id(selector_str[1..].to_string())
-            } else if selector_str.starts_with('.') {
-                Selector::Class(selector_str[1..].to_string())
+            // Parse selector - split by spaces for descendant selectors
+            let selector_parts: Vec<&str> = selector_str.split_whitespace().collect();
+            let selector = if selector_parts.len() == 1 {
+                // Simple selector
+                let part = selector_parts[0];
+                let simple = if part.starts_with('#') {
+                    SimpleSelector::Id(part[1..].to_string())
+                } else if part.starts_with('.') {
+                    SimpleSelector::Class(part[1..].to_string())
+                } else {
+                    SimpleSelector::Element(part.to_string())
+                };
+                Selector::Simple(simple)
             } else {
-                Selector::Element(selector_str.trim().to_string())
+                // Descendant selector
+                let mut parts = Vec::new();
+                for part in selector_parts {
+                    let simple = if part.starts_with('#') {
+                        SimpleSelector::Id(part[1..].to_string())
+                    } else if part.starts_with('.') {
+                        SimpleSelector::Class(part[1..].to_string())
+                    } else {
+                        SimpleSelector::Element(part.to_string())
+                    };
+                    parts.push(simple);
+                }
+                Selector::Descendant(parts)
             };
 
             // Parse declarations using InlineStyle parser
@@ -361,6 +417,9 @@ pub fn merge_styles(base: InlineStyle, overrides: &[(&Selector, &InlineStyle)]) 
         }
         if let Some(ta) = style.text_align {
             result.text_align = Some(ta);
+        }
+        if let Some(d) = style.display {
+            result.display = Some(d);
         }
     }
 

@@ -5,7 +5,7 @@
 /// that can be rendered to the screen.
 
 use crate::gui::html_parser::{Parser, Node, NodeType, ElementData};
-use crate::gui::css_parser::{InlineStyle, Selector};
+use crate::gui::css_parser::{InlineStyle, Selector, SimpleSelector};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::format;
@@ -14,6 +14,57 @@ use super::{Browser, LayoutBox, Color, PendingImage};
 
 const CHAR_WIDTH: usize = 8;
 const CHAR_HEIGHT: usize = 8;
+
+/// Ancestor chain for matching descendant selectors
+#[derive(Debug, Clone)]
+pub struct Ancestor {
+    pub tag: String,
+    pub classes: Vec<String>,
+    pub id: Option<String>,
+}
+
+/// Check if selector matches element with given ancestors
+fn selector_matches(selector: &Selector, tag: &str, classes: &[&str], id: Option<&str>, ancestors: &[Ancestor]) -> bool {
+    match selector {
+        Selector::Simple(simple) => simple.matches(tag, classes, id),
+        Selector::Descendant(parts) => {
+            if parts.is_empty() {
+                return false;
+            }
+
+            // Last part must match current element
+            let last = &parts[parts.len() - 1];
+            if !last.matches(tag, classes, id) {
+                return false;
+            }
+
+            // If only one part, we're done
+            if parts.len() == 1 {
+                return true;
+            }
+
+            // Earlier parts must match ancestors (in order, but can skip ancestors)
+            let mut ancestor_idx = ancestors.len(); // Start from end (most recent ancestor)
+            for part in parts[..parts.len() - 1].iter().rev() {
+                // Find an ancestor that matches this part
+                let mut found = false;
+                while ancestor_idx > 0 {
+                    ancestor_idx -= 1;
+                    let anc = &ancestors[ancestor_idx];
+                    let anc_classes: Vec<&str> = anc.classes.iter().map(|s| s.as_str()).collect();
+                    if part.matches(&anc.tag, &anc_classes, anc.id.as_deref()) {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+}
 
 /// Get the actual font size in pixels based on heading level
 fn get_font_size_px(font_size_level: usize) -> f32 {
@@ -104,6 +155,36 @@ pub fn extract_css_urls(node: &Node, base_url: &str) -> Vec<String> {
     urls
 }
 
+/// Extract inline CSS from <style> tags
+pub fn extract_inline_css(node: &Node) -> Vec<String> {
+    let mut css_blocks = Vec::new();
+
+    match &node.node_type {
+        NodeType::Element(elem) => {
+            // Check if this is a style tag
+            if elem.tag_name == "style" {
+                // Extract text content from children
+                for child in &node.children {
+                    if let NodeType::Text(text) = &child.node_type {
+                        if !text.trim().is_empty() {
+                            crate::kernel::uart_write_string(&alloc::format!("Found inline <style>: {} bytes\r\n", text.len()));
+                            css_blocks.push(text.clone());
+                        }
+                    }
+                }
+            }
+
+            // Recursively search children
+            for child in &node.children {
+                css_blocks.extend(extract_inline_css(child));
+            }
+        }
+        _ => {}
+    }
+
+    css_blocks
+}
+
 /// Load HTML content
 pub fn load_html(browser: &mut Browser, html: String) {
     crate::kernel::uart_write_string("load_html: Starting HTML parsing\r\n");
@@ -125,6 +206,14 @@ pub fn load_html(browser: &mut Browser, html: String) {
     if let Some(ref title) = browser.page_title {
         let window_title = alloc::format!("Browser - {}", title);
         crate::gui::window_manager::set_browser_window_title(browser.instance_id, &window_title);
+    }
+
+    // Extract and parse inline <style> tags
+    let inline_css_blocks = extract_inline_css(&dom);
+    for css_text in inline_css_blocks {
+        let stylesheet = crate::gui::css_parser::Stylesheet::parse(&css_text);
+        crate::kernel::uart_write_string(&alloc::format!("Parsed inline <style>: {} rules\r\n", stylesheet.rules.len()));
+        browser.stylesheets.push(stylesheet);
     }
 
     // Extract and queue CSS files for loading
@@ -172,7 +261,7 @@ pub fn find_and_layout_body(browser: &mut Browser, node: &Node, x: usize, y: usi
                 // Found the body! Layout it (which will recursively layout its children)
                 crate::kernel::uart_write_string("find_and_layout_body: Found <body> element\r\n");
                 // Body text uses font_size_level = 1 (18px TTF / 8px bitmap)
-                layout_node(browser, node, x, y, max_width, &Color::BLACK, &None, false, false, 1, "");
+                layout_node(browser, node, x, y, max_width, &Color::BLACK, &None, false, false, 1, "", &[]);
 
                 // Add bottom padding (spacer box at end of page)
                 if let Some(last_box) = browser.layout.last() {
@@ -224,6 +313,7 @@ pub fn layout_node(
     italic: bool,
     font_size: usize,
     element_id: &str,
+    ancestors: &[Ancestor],
 ) -> (usize, usize) {
     match &node.node_type {
         NodeType::Text(text) => {
@@ -290,7 +380,7 @@ pub fn layout_node(
             (current_x, current_y)
         }
         NodeType::Element(elem) => {
-            layout_element(browser, node, elem, x, y, max_width, color, bold, italic, font_size, element_id)
+            layout_element(browser, node, elem, x, y, max_width, color, bold, italic, font_size, element_id, ancestors)
         }
     }
 }
@@ -308,6 +398,7 @@ pub fn layout_element(
     parent_italic: bool,
     parent_font_size: usize,
     parent_element_id: &str,
+    ancestors: &[Ancestor],
 ) -> (usize, usize) {
     let tag = elem.tag_name.as_str();
 
@@ -329,7 +420,7 @@ pub fn layout_element(
     let mut matched_styles: Vec<(&Selector, &InlineStyle)> = Vec::new();
     for stylesheet in &browser.stylesheets {
         for rule in &stylesheet.rules {
-            if rule.selector.matches(tag, &classes, Some(element_id).filter(|s| !s.is_empty())) {
+            if selector_matches(&rule.selector, tag, &classes, Some(element_id).filter(|s| !s.is_empty()), ancestors) {
                 matched_styles.push((&rule.selector, &rule.style));
             }
         }
@@ -348,7 +439,7 @@ pub fn layout_element(
     let inline_overrides: Vec<(&Selector, &InlineStyle)> = Vec::new(); // Empty, we'll apply inline directly
     let inline_style = if inline_style_raw.color.is_some() || inline_style_raw.background_color.is_some()
         || inline_style_raw.font_size.is_some() || inline_style_raw.margin.is_some()
-        || inline_style_raw.padding.is_some() {
+        || inline_style_raw.padding.is_some() || inline_style_raw.display.is_some() {
         // Merge inline over stylesheet
         let mut result = merged_from_sheets.clone();
         if let Some(c) = inline_style_raw.color { result.color = Some(c); }
@@ -357,16 +448,30 @@ pub fn layout_element(
         if let Some(m) = inline_style_raw.margin { result.margin = Some(m); }
         if let Some(p) = inline_style_raw.padding { result.padding = Some(p); }
         if let Some(ta) = inline_style_raw.text_align { result.text_align = Some(ta); }
+        if let Some(d) = inline_style_raw.display { result.display = Some(d); }
         result
     } else {
         merged_from_sheets
     };
 
+    // If display:none, skip rendering this element entirely
+    if let Some(crate::gui::css_parser::Display::None) = inline_style.display {
+        return (x, y);
+    }
+
     let mut current_x = x;
     let mut current_y = y;
 
     // Block-level elements start on new line
-    let is_block = matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "hr" | "table");
+    let is_block = matches!(tag,
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" |
+        "p" | "div" |
+        "ul" | "ol" | "li" |
+        "hr" | "table" |
+        // HTML5 semantic elements
+        "header" | "footer" | "nav" | "section" | "article" | "aside" | "main" |
+        "figure" | "figcaption" | "blockquote" | "pre"
+    );
     if is_block && !browser.layout.is_empty() {
         current_x = x;
         // Use whichever is lower on page: explicit spacing from parent (y) or default spacing
@@ -377,7 +482,9 @@ pub fn layout_element(
     // Determine color, style, and font size level - CSS can override
     let color = inline_style.color.as_ref().unwrap_or(parent_color);
     let bold = parent_bold || matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "b" | "strong");
-    let italic = parent_italic || matches!(tag, "i" | "em");
+    let italic = parent_italic || matches!(tag, "i" | "em" | "cite");
+
+    // <code> and <pre> could use monospace font in future, for now just render normally
 
     // Determine font size - tag-based defaults, potentially overridden by CSS
     let default_font_size_level = match tag {
@@ -565,9 +672,17 @@ pub fn layout_element(
             let link_url = elem.attributes.get("href").cloned().unwrap_or_default();
             let link_color = Color::new(0, 0, 255); // Blue
 
+            // Build ancestor chain for link children
+            let mut link_ancestors = ancestors.to_vec();
+            link_ancestors.push(Ancestor {
+                tag: tag.to_string(),
+                classes: classes.iter().map(|s| s.to_string()).collect(),
+                id: if element_id.is_empty() { None } else { Some(element_id.to_string()) },
+            });
+
             for child in &node.children {
                 let start_idx = browser.layout.len();
-                let (new_x, new_y) = layout_node(browser, child, current_x, current_y, max_width, &link_color, &background_color, bold, italic, font_size_level, element_id);
+                let (new_x, new_y) = layout_node(browser, child, current_x, current_y, max_width, &link_color, &background_color, bold, italic, font_size_level, element_id, &link_ancestors);
 
                 // Mark all boxes created for this link
                 for i in start_idx..browser.layout.len() {
@@ -625,9 +740,17 @@ pub fn layout_element(
                     bullet.len() * CHAR_WIDTH * font_size_level
                 };
 
+                // Build ancestor chain for list items
+                let mut list_ancestors = ancestors.to_vec();
+                list_ancestors.push(Ancestor {
+                    tag: tag.to_string(),
+                    classes: classes.iter().map(|s| s.to_string()).collect(),
+                    id: if element_id.is_empty() { None } else { Some(element_id.to_string()) },
+                });
+
                 // Layout the list item content first to get its starting position
                 let content_start_idx = browser.layout.len();
-                let (_, new_y) = layout_node(browser, child, current_x + LIST_INDENT, list_item_y, max_width - LIST_INDENT, color, &background_color, bold, italic, font_size_level, element_id);
+                let (_, new_y) = layout_node(browser, child, current_x + LIST_INDENT, list_item_y, max_width - LIST_INDENT, color, &background_color, bold, italic, font_size_level, element_id, &list_ancestors);
 
                 // Find the Y position where the content actually started
                 let content_y = if browser.layout.len() > content_start_idx {
@@ -734,10 +857,18 @@ pub fn layout_element(
                     // Save layout state
                     let layout_start = browser.layout.len();
 
+                    // Build ancestor chain for table cells
+                    let mut table_ancestors = ancestors.to_vec();
+                    table_ancestors.push(Ancestor {
+                        tag: tag.to_string(),
+                        classes: classes.iter().map(|s| s.to_string()).collect(),
+                        id: if element_id.is_empty() { None } else { Some(element_id.to_string()) },
+                    });
+
                     // Layout cell content
                     let cell_bold = bold || is_header;
                     for cell_child in &cell.children {
-                        layout_node(browser, cell_child, content_x, content_y, content_width, color, &background_color, cell_bold, italic, font_size_level, element_id);
+                        layout_node(browser, cell_child, content_x, content_y, content_width, color, &background_color, cell_bold, italic, font_size_level, element_id, &table_ancestors);
                     }
 
                     // Calculate cell content height
@@ -819,13 +950,29 @@ pub fn layout_element(
         current_y = content_y;
     }
 
+    // Build new ancestor chain for children
+    let mut new_ancestors = ancestors.to_vec();
+    new_ancestors.push(Ancestor {
+        tag: tag.to_string(),
+        classes: classes.iter().map(|s| s.to_string()).collect(),
+        id: if element_id.is_empty() { None } else { Some(element_id.to_string()) },
+    });
+
     // Render children
     for child in &node.children {
         // For block-level children (like nested lists), pass the base x position
         // For inline children (like text), pass current_x (continues on same line)
         // Special case: <br> needs base x to reset to left margin
         let child_is_block = if let NodeType::Element(child_elem) = &child.node_type {
-            matches!(child_elem.tag_name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "hr" | "table")
+            matches!(child_elem.tag_name.as_str(),
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" |
+                "p" | "div" |
+                "ul" | "ol" | "li" |
+                "hr" | "table" |
+                // HTML5 semantic elements
+                "header" | "footer" | "nav" | "section" | "article" | "aside" | "main" |
+                "figure" | "figcaption" | "blockquote" | "pre"
+            )
         } else {
             false
         };
@@ -838,7 +985,7 @@ pub fn layout_element(
 
         let child_base_x = if css_padding > 0 && is_block { content_x } else { x };
         let child_x = if child_is_block || is_br { child_base_x } else { current_x };
-        let (new_x, new_y) = layout_node(browser, child, child_x, current_y, content_max_width, color, &background_color, bold, italic, font_size_level, element_id);
+        let (new_x, new_y) = layout_node(browser, child, child_x, current_y, content_max_width, color, &background_color, bold, italic, font_size_level, element_id, &new_ancestors);
         current_x = new_x;
         current_y = new_y;
     }
@@ -849,16 +996,23 @@ pub fn layout_element(
     }
 
     // Add full-width background for block elements with background color
-    if is_block && background_color.is_some() && browser.layout.len() > block_start_idx {
+    if is_block && background_color.is_some() {
         let bg_color = background_color.unwrap();
 
-        // Calculate the actual height of the block content by finding max Y of all child boxes
+        // Calculate the actual height of the block content
+        // If we have child boxes, use their max Y
+        // If no child boxes (only block children), use current_y
         let mut block_end_y = block_start_y;
-        for i in block_start_idx..browser.layout.len() {
-            let box_end = browser.layout[i].y + browser.layout[i].height;
-            if box_end > block_end_y {
-                block_end_y = box_end;
+        if browser.layout.len() > block_start_idx {
+            for i in block_start_idx..browser.layout.len() {
+                let box_end = browser.layout[i].y + browser.layout[i].height;
+                if box_end > block_end_y {
+                    block_end_y = box_end;
+                }
             }
+        } else {
+            // No child boxes created - use current_y as end
+            block_end_y = current_y;
         }
 
         // Add padding if specified (top padding already in positions, add bottom padding to height)
