@@ -94,6 +94,7 @@ pub struct LayoutBox {
     pub height: usize,
     pub text: String,
     pub color: Color,
+    pub background_color: Option<Color>, // CSS background-color
     pub font_size: usize, // Multiplier for 8x8 font (1=8px, 2=16px, etc.)
     pub is_link: bool,
     pub link_url: String,
