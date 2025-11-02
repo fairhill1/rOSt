@@ -5,12 +5,12 @@
 /// that can be rendered to the screen.
 
 use crate::gui::html_parser::{Parser, Node, NodeType, ElementData};
-use crate::gui::css_parser::{InlineStyle, Selector, SimpleSelector};
+use crate::gui::css_parser::{InlineStyle, Selector};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::format;
 
 use super::{Browser, LayoutBox, Color, PendingImage};
+use super::utils::get_font_size_px;
 
 const CHAR_WIDTH: usize = 8;
 const CHAR_HEIGHT: usize = 8;
@@ -66,25 +66,6 @@ fn selector_matches(selector: &Selector, tag: &str, classes: &[&str], id: Option
     }
 }
 
-/// Get the actual font size in pixels based on heading level
-fn get_font_size_px(font_size_level: usize) -> f32 {
-    // When using TTF, use real pixel sizes
-    // When using bitmap, use multipliers of 8px
-    if crate::gui::font::is_available() {
-        match font_size_level {
-            6 => 48.0,  // CSS 48px / 8 = 6
-            5 => 36.0,  // h1: large
-            4 => 28.0,  // h2: medium-large
-            3 => 24.0,  // h3: medium (also CSS 24px / 8 = 3)
-            2 => 20.0,  // h4-h6: slightly larger than body (also CSS 18px / 8 = 2.25 → 2)
-            1 => 18.0,  // body text
-            _ => (font_size_level * 8) as f32,  // For other CSS sizes, multiply by 8
-        }
-    } else {
-        // Bitmap font - return multiplier * 8
-        (font_size_level * 8) as f32
-    }
-}
 
 /// Extract title from DOM tree
 pub fn extract_title(node: &Node) -> Option<String> {
