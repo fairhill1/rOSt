@@ -1065,29 +1065,6 @@ impl VirtioGpuDriver {
     }
 
     pub fn move_cursor(&mut self, x: u32, y: u32) -> Result<(), &'static str> {
-        static mut CURSOR_MOVE_COUNT: u32 = 0;
-        unsafe {
-            CURSOR_MOVE_COUNT += 1;
-            if CURSOR_MOVE_COUNT <= 20 {
-                crate::kernel::uart_write_string("VirtIO GPU: move_cursor to ");
-                let mut pos = x as u64;
-                for _ in 0..8 {
-                    let digit = (pos >> 28) & 0xF;
-                    let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                    core::ptr::write_volatile(0x09000000 as *mut u8, ch);
-                    pos <<= 4;
-                }
-                crate::kernel::uart_write_string(",");
-                let mut pos = y as u64;
-                for _ in 0..8 {
-                    let digit = (pos >> 28) & 0xF;
-                    let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                    core::ptr::write_volatile(0x09000000 as *mut u8, ch);
-                    pos <<= 4;
-                }
-                crate::kernel::uart_write_string("\r\n");
-            }
-        }
 
         // Use static buffer to avoid allocating/freeing on every move
         let cmd = VirtioGpuUpdateCursor {
