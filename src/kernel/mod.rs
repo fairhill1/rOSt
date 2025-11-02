@@ -32,9 +32,6 @@ pub static mut NET_DEVICES: Option<alloc::vec::Vec<drivers::virtio::net::VirtioN
 // Static storage for smoltcp-based network stack
 pub static mut NETWORK_STACK: Option<crate::system::net::NetworkStack> = None;
 
-// Static storage for ARP cache (deprecated - smoltcp handles ARP internally)
-pub static mut ARP_CACHE: Option<crate::system::net::ArpCache> = None;
-
 // Static network configuration for QEMU user-mode networking (10.0.2.x)
 pub static mut OUR_IP: [u8; 4] = [10, 0, 2, 15];  // QEMU user-mode guest IP (default)
 pub static mut GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];  // QEMU user-mode gateway
@@ -528,8 +525,6 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                     NETWORK_STACK = Some(stack);
                     // Store remaining devices (if any) for backward compatibility
                     NET_DEVICES = Some(net_devices);
-                    // Initialize ARP cache for backward compatibility
-                    ARP_CACHE = Some(crate::system::net::ArpCache::new());
                 }
 
                 uart_write_string("Network device ready!\r\n");

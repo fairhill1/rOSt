@@ -402,11 +402,12 @@ impl Browser {
                 </ul>\
                 <h2>Current Limitations</h2>\
                 <ul>\
-                <li>HTTP requests not yet implemented</li>\
+                <li>Powered by smoltcp TCP/IP stack</li>\
                 <li>No CSS support</li>\
-                <li>Basic tags only h1-h6 p a ul ol li br div b i</li>\
+                <li>Basic tags only h1-h6 p a ul ol li br div b i img</li>\
+                <li>BMP image support (24-bit uncompressed)</li>\
                 </ul>\
-                <p>Use Terminal httptest command to test HTTP</p>\
+                <p>Use Terminal http command to test HTTP: <code>http example.com</code></p>\
                 <p>Try clicking this test link <a href=\"about:blank\">about:blank</a></p>\
                 </body></html>"
             ),
