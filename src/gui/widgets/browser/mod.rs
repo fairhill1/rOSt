@@ -18,6 +18,7 @@ use crate::gui::widgets::text_input::TextInput;
 use crate::gui::bmp_decoder::BmpImage;
 use crate::gui::bmp_decoder::decode_bmp;
 use crate::gui::png_decoder::decode_png;
+use crate::gui::jpeg_decoder::decode_jpeg;
 use smoltcp::iface::SocketHandle;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -300,7 +301,13 @@ impl Browser {
 
                 // Parse URL and initiate TCP connection
                 let (host, port, path) = http::parse_url(&pending.url);
-                let is_png = pending.url.ends_with(".png");
+                let format = if pending.url.ends_with(".png") {
+                    ImageFormat::Png
+                } else if pending.url.ends_with(".jpg") || pending.url.ends_with(".jpeg") {
+                    ImageFormat::Jpeg
+                } else {
+                    ImageFormat::Bmp
+                };
 
                 unsafe {
                     if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
@@ -344,7 +351,7 @@ impl Browser {
                                     http_request,
                                     start_time: crate::kernel::drivers::timer::get_time_ms(),
                                     layout_box_index: pending.layout_box_index,
-                                    is_png,
+                                    format,
                                     url: pending.url.clone(),
                                 };
                             }
@@ -359,7 +366,7 @@ impl Browser {
             self.image_load_state = match current_state {
                 ImageLoadState::Idle => ImageLoadState::Idle,
 
-                ImageLoadState::Connecting { socket_handle, http_request, start_time, layout_box_index, is_png, url } => {
+                ImageLoadState::Connecting { socket_handle, http_request, start_time, layout_box_index, format, url } => {
                     unsafe {
                         if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
                             let connected = stack.with_tcp_socket(socket_handle, |socket| {
@@ -377,14 +384,14 @@ impl Browser {
                                     response_data: Vec::new(),
                                     last_recv_time: crate::kernel::drivers::timer::get_time_ms(),
                                     layout_box_index,
-                                    is_png,
+                                    format,
                                     url,
                                 }
                             } else if crate::kernel::drivers::timer::get_time_ms() - start_time > 10000 {
                                 stack.remove_socket(socket_handle);
                                 ImageLoadState::Idle
                             } else {
-                                ImageLoadState::Connecting { socket_handle, http_request, start_time, layout_box_index, is_png, url }
+                                ImageLoadState::Connecting { socket_handle, http_request, start_time, layout_box_index, format, url }
                             }
                         } else {
                             ImageLoadState::Idle
@@ -392,7 +399,7 @@ impl Browser {
                     }
                 }
 
-                ImageLoadState::Loading { socket_handle, mut response_data, last_recv_time, layout_box_index, is_png, url } => {
+                ImageLoadState::Loading { socket_handle, mut response_data, last_recv_time, layout_box_index, format, url } => {
                     unsafe {
                         if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
                             let mut received_data = false;
@@ -428,10 +435,10 @@ impl Browser {
                                 if let Some(body_start) = response_data.windows(4).position(|w| w == b"\r\n\r\n") {
                                     let image_data = &response_data[body_start + 4..];
 
-                                    let decoded_image = if is_png {
-                                        decode_png(image_data)
-                                    } else {
-                                        decode_bmp(image_data)
+                                    let decoded_image = match format {
+                                        ImageFormat::Png => decode_png(image_data),
+                                        ImageFormat::Jpeg => decode_jpeg(image_data),
+                                        ImageFormat::Bmp => decode_bmp(image_data),
                                     };
 
                                     if let Some(img) = decoded_image {
@@ -502,7 +509,7 @@ impl Browser {
                                     response_data,
                                     last_recv_time: new_last_recv_time,
                                     layout_box_index,
-                                    is_png,
+                                    format,
                                     url,
                                 }
                             }
