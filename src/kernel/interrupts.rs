@@ -1,5 +1,9 @@
 // ARM64 exception handling and interrupt controller
 
+use aarch64_cpu::{
+    asm::barrier,
+    registers::*,
+};
 use core::arch::asm;
 
 /// ARM64 exception vector table
@@ -22,13 +26,13 @@ pub fn init_exception_vectors() {
     unsafe {
         // Create exception vector table
         let vectors = create_vector_table();
-        
+
         // Set VBAR_EL1 (Vector Base Address Register)
         let vbar = &vectors as *const _ as u64;
-        asm!("msr vbar_el1, {}", in(reg) vbar);
-        
+        VBAR_EL1.set(vbar);
+
         // Ensure changes take effect
-        asm!("isb");
+        barrier::isb(barrier::SY);
     }
 }
 
@@ -105,20 +109,14 @@ extern "C" fn serror_handler_el1_spx() {
 
 fn handle_sync_exception() {
     // Handle synchronous exceptions (page faults, system calls, etc.)
-    unsafe {
-        let esr: u64;
-        let elr: u64;
-        let far: u64;
-        
-        asm!("mrs {}, esr_el1", out(reg) esr);
-        asm!("mrs {}, elr_el1", out(reg) elr);
-        asm!("mrs {}, far_el1", out(reg) far);
-        
-        // In a real kernel, we'd handle different exception types
-        // For now, just halt
-        loop {
-            asm!("wfe");
-        }
+    let esr = ESR_EL1.get();
+    let elr = ELR_EL1.get();
+    let far = FAR_EL1.get();
+
+    // In a real kernel, we'd handle different exception types
+    // For now, just halt
+    loop {
+        aarch64_cpu::asm::wfe();
     }
 }
 
@@ -145,10 +143,8 @@ fn handle_fiq() {
 fn handle_serror() {
     // Handle system error
     // This is usually fatal
-    unsafe {
-        loop {
-            asm!("wfe");
-        }
+    loop {
+        aarch64_cpu::asm::wfe();
     }
 }
 
@@ -203,7 +199,10 @@ pub fn init_gic() {
         core::ptr::write_volatile(GICC_CTLR as *mut u32, 1);
         
         // Enable interrupts at CPU level
-        asm!("msr daifclr, #2"); // Clear interrupt mask bit
+        // Clear interrupt mask bit (unmask IRQ)
+        unsafe {
+            core::arch::asm!("msr daifclr, #2");
+        }
     }
 }
 
@@ -219,23 +218,19 @@ fn gic_end_interrupt(intid: u32) {
     }
 }
 
-// Timer support
-const CNTFRQ_EL0: u64 = 0x3B9ACA00; // 62.5 MHz typical for QEMU
-
 /// Initialize the ARM generic timer
 pub fn init_timer() {
     unsafe {
-        // Read timer frequency
-        let freq: u64;
-        asm!("mrs {}, cntfrq_el0", out(reg) freq);
-        
+        // Read timer frequency from system register
+        let freq = CNTFRQ_EL0.get();
+
         // Set timer for 1 second from now
         let tval = freq; // 1 second worth of ticks
-        asm!("msr cntp_tval_el0, {}", in(reg) tval);
-        
-        // Enable the timer
-        asm!("msr cntp_ctl_el0, {}", in(reg) 1u64);
-        
+        CNTP_TVAL_EL0.set(tval);
+
+        // Enable the timer (ENABLE bit)
+        CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
+
         // Enable timer interrupt (interrupt 30)
         let addr = (GICD_ISENABLER + (30 / 32) * 4) as *mut u32;
         let bit = 1u32 << (30 % 32);
@@ -247,13 +242,12 @@ pub fn init_timer() {
 fn handle_timer_interrupt() {
     unsafe {
         // Acknowledge the timer interrupt
-        asm!("msr cntp_ctl_el0, {}", in(reg) 0u64);
+        CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::CLEAR);
 
         // Reset timer for next interrupt (1 second)
-        let freq: u64;
-        asm!("mrs {}, cntfrq_el0", out(reg) freq);
-        asm!("msr cntp_tval_el0, {}", in(reg) freq);
-        asm!("msr cntp_ctl_el0, {}", in(reg) 1u64);
+        let freq = CNTFRQ_EL0.get();
+        CNTP_TVAL_EL0.set(freq);
+        CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
 
         // Preemptive multitasking - switch threads every N ticks
         static mut TICK_COUNT: u64 = 0;
