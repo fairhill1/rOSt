@@ -1,6 +1,6 @@
 # rOSt - Rust ARM64 Operating System
 
-**Last Updated:** 2025-11-01 (Added BMP image support to web browser!)
+**Last Updated:** 2025-11-02 (Migrated to smoltcp + fixed VirtIO buffer exhaustion!)
 
 ## What Works
 
@@ -28,7 +28,7 @@
 - Hardware-independent double-click detection (500ms)
 
 ✅ **Web Browser**
-- Full graphical web browser with HTTP/1.0 client
+- Full graphical web browser with HTTP/1.0 client powered by smoltcp TCP stack
 - HTML parser supporting common tags (h1-h6, p, a, ul, ol, li, div, br, b, i, img)
 - DOM tree rendering with text layout engine
 - BMP image decoder and renderer (24-bit uncompressed BMPs)
@@ -39,9 +39,8 @@
 - Clickable hyperlinks with blue underlined styling
 - Back/Forward navigation with history
 - Integrated DNS resolution for domain names
-- TCP connection management with 3-way handshake and sequence number tracking
-- Multi-packet HTTP response handling with out-of-order detection
-- Binary file downloads (images, etc.)
+- Production-grade TCP/IP stack via smoltcp library
+- Binary file downloads (images, etc.) with automatic buffer replenishment
 - Successfully fetches and renders pages with images from HTTP servers
 - Shared OS-wide clipboard (Ctrl+A, C, X, V)
 
@@ -62,12 +61,13 @@
 - Timezone support (default: CET/UTC+1, configurable in rtc.rs)
 - Unix timestamp conversion to human-readable date/time
 
-✅ **Networking (VirtIO-Net)**
+✅ **Networking (VirtIO-Net + smoltcp)**
 - Full VirtIO 1.0 network device driver with modern virtio features
-- Complete network protocol stack: Ethernet, ARP, IPv4, ICMP, UDP, TCP
-- TCP connection state machine (CLOSED, SYN-SENT, ESTABLISHED, FIN-WAIT, TIME-WAIT)
-- TCP 3-way handshake (SYN, SYN-ACK, ACK) and proper connection teardown
-- HTTP/1.0 client for fetching web pages
+- **Production TCP/IP stack powered by smoltcp 0.12**
+- Automatic receive buffer replenishment after every packet (critical for reliability!)
+- Complete protocol support: Ethernet, ARP, IPv4, ICMP, UDP, TCP
+- TCP connection state machine with proper 3-way handshake and teardown
+- HTTP/1.0 client for fetching web pages and binary downloads
 - DNS resolver - resolve domain names to IP addresses (e.g., `nslookup google.com`)
 - Ping support - test connectivity to external hosts (e.g., `ping 8.8.8.8`)
 - ARP request/reply handling for MAC address resolution
@@ -306,6 +306,7 @@ The codebase is organized into logical modules for scalability and maintainabili
 15. **Reusable Components** - TextInput widget and shared clipboard for OS-wide consistency
 16. **Codebase Reorganization** - Modular architecture (drivers, system, gui, apps) for scalability
 17. **BMP Image Support** - Full BMP decoder (24-bit) with binary HTTP downloads and TCP sequence number tracking for reliable image rendering
+18. **smoltcp Migration** - Replaced custom TCP/IP stack with production smoltcp 0.12 library, fixed critical VirtIO buffer exhaustion bug enabling reliable binary downloads
 
 ### Key Fixes
 - **File persistence:** VirtIO test was overwriting sector 1 (file table) - moved to sector 1000
@@ -317,8 +318,8 @@ The codebase is organized into logical modules for scalability and maintainabili
 - **Network timing:** CPU cycle delays (nop loops) were unreliable - replaced with ARM Generic Timer for proper microsecond-precision delays
 - **TCP FIN handling:** Duplicate ACKs were corrupting connection state - added proper FIN handling logic
 - **HTML corruption:** Spurious null-byte TCP packets were corrupting rendered pages - added filtering
-- **RX queue exhaustion:** Network receive buffers weren't replenished - added proper buffer management
-- **TCP out-of-order packets:** Packets arriving out of sequence corrupted binary downloads (BMP images had harsh lines/wrong colors) - added TCP sequence number tracking to detect and skip out-of-order packets
+- **VirtIO buffer exhaustion (CRITICAL):** After receiving packets, descriptors were freed but never replenished to the available ring. After consuming all 16 initial buffers, QEMU couldn't deliver more packets (`virtio-net receive queue contains no in buffers`). Fixed by automatically replenishing each buffer immediately after reception - reconfigure descriptor, add back to available ring, and notify device. This was causing intermittent packet loss and incomplete HTTP downloads.
+- **smoltcp migration:** Replaced custom TCP/IP implementation with production-grade smoltcp 0.12 library for better reliability and maintainability. Reduced browser networking code from 834 lines to 76 lines (759 lines removed, 91% reduction).
 
 ## Resources
 

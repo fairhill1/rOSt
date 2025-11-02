@@ -26,10 +26,13 @@ pub struct BootInfo {
 // Static storage for block devices (needs to outlive local scope for shell access)
 pub static mut BLOCK_DEVICES: Option<alloc::vec::Vec<drivers::virtio::blk::VirtioBlkDevice>> = None;
 
-// Static storage for network devices
+// Static storage for network devices (deprecated - use NETWORK_STACK instead)
 pub static mut NET_DEVICES: Option<alloc::vec::Vec<drivers::virtio::net::VirtioNetDevice>> = None;
 
-// Static storage for ARP cache
+// Static storage for smoltcp-based network stack
+pub static mut NETWORK_STACK: Option<crate::system::net::NetworkStack> = None;
+
+// Static storage for ARP cache (deprecated - smoltcp handles ARP internally)
 pub static mut ARP_CACHE: Option<crate::system::net::ArpCache> = None;
 
 // Static network configuration for QEMU user-mode networking (10.0.2.x)
@@ -487,23 +490,24 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
             // Initialize VirtIO network devices
             uart_write_string("\n=== Initializing VirtIO Network Devices ===\r\n");
-            unsafe {
-                NET_DEVICES = Some(drivers::virtio::net::VirtioNetDevice::find_and_init(info.ecam_base, info.mmio_base));
-            }
+            let mut net_devices = drivers::virtio::net::VirtioNetDevice::find_and_init(info.ecam_base, info.mmio_base);
 
-            let net_devices = unsafe { NET_DEVICES.as_mut().unwrap() };
             if !net_devices.is_empty() {
                 uart_write_string(&alloc::format!(
                     "Found {} network device(s)\r\n", net_devices.len()
                 ));
 
-                // Initialize ARP cache
-                unsafe {
-                    ARP_CACHE = Some(crate::system::net::ArpCache::new());
-                }
+                // Take the first device and wrap it in smoltcp
+                let first_device = net_devices.remove(0);
+                let smoltcp_device = crate::system::net::SmoltcpVirtioNetDevice::new(first_device);
 
-                // Add receive buffers to the first network device
-                if let Err(e) = net_devices[0].add_receive_buffers(16) {
+                // Create network stack with smoltcp
+                let our_ip = unsafe { OUR_IP };
+                let gateway = unsafe { GATEWAY_IP };
+                let mut stack = crate::system::net::NetworkStack::new(smoltcp_device, our_ip, gateway);
+
+                // Add receive buffers
+                if let Err(e) = stack.add_receive_buffers(16) {
                     uart_write_string(&alloc::format!(
                         "Failed to add receive buffers: {}\r\n", e
                     ));
@@ -513,13 +517,27 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
                 uart_write_string(&alloc::format!(
                     "Network configuration: IP={}.{}.{}.{} Gateway={}.{}.{}.{}\r\n",
-                    unsafe { OUR_IP[0] }, unsafe { OUR_IP[1] }, unsafe { OUR_IP[2] }, unsafe { OUR_IP[3] },
-                    unsafe { GATEWAY_IP[0] }, unsafe { GATEWAY_IP[1] }, unsafe { GATEWAY_IP[2] }, unsafe { GATEWAY_IP[3] }
+                    our_ip[0], our_ip[1], our_ip[2], our_ip[3],
+                    gateway[0], gateway[1], gateway[2], gateway[3]
                 ));
+
+                uart_write_string("smoltcp network stack initialized!\r\n");
+
+                // Store the network stack globally
+                unsafe {
+                    NETWORK_STACK = Some(stack);
+                    // Store remaining devices (if any) for backward compatibility
+                    NET_DEVICES = Some(net_devices);
+                    // Initialize ARP cache for backward compatibility
+                    ARP_CACHE = Some(crate::system::net::ArpCache::new());
+                }
 
                 uart_write_string("Network device ready!\r\n");
             } else {
                 uart_write_string("No network devices found\r\n");
+                unsafe {
+                    NET_DEVICES = Some(net_devices);
+                }
             }
 
             // Test filesystem
@@ -784,6 +802,13 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
         // Poll VirtIO input devices for real trackpad/keyboard input
         drivers::virtio::input::poll_virtio_input();
+
+        // Poll network stack (process packets, timers, etc.)
+        unsafe {
+            if let Some(ref mut stack) = NETWORK_STACK {
+                stack.poll();
+            }
+        }
 
         // Process queued input events - returns (needs_full_redraw, needs_cursor_redraw)
         let (needs_full_redraw, needs_cursor_redraw) = drivers::input_events::test_input_events();

@@ -36,7 +36,7 @@ const VIRTIO_F_VERSION_1: u32 = 1 << 0;  // Bit 32 in features[1]
 
 // Network packet constants
 const QUEUE_SIZE: u16 = 128;
-const MAX_PACKET_SIZE: usize = 1526; // 12-byte header + 1514-byte ethernet frame
+const MAX_PACKET_SIZE: usize = 4096; // Increased to handle jumbo frames and large TCP segments
 const NET_HDR_SIZE: usize = 12;
 
 // Memory barrier
@@ -620,8 +620,27 @@ impl VirtioNetDevice {
                 buffer[i] = ptr::read_volatile(src.add(i));
             }
 
-            // Free descriptor
-            self.receiveq.free_desc(desc_idx);
+            // Replenish: Immediately make this descriptor available again with a fresh buffer
+            // This is critical - without replenishment, we exhaust all 16 buffers quickly!
+            let buffer_addr = desc.addr; // Reuse the same buffer address
+            ptr::write_bytes(buffer_addr as *mut u8, 0, 0x1000); // Zero it out
+
+            // Set descriptor for next receive
+            (*self.receiveq.desc.add(desc_idx as usize)).addr = buffer_addr;
+            (*self.receiveq.desc.add(desc_idx as usize)).len = MAX_PACKET_SIZE as u32;
+            (*self.receiveq.desc.add(desc_idx as usize)).flags = VIRTQ_DESC_F_WRITE;
+            (*self.receiveq.desc.add(desc_idx as usize)).next = 0;
+
+            // Add back to available ring
+            let avail_idx = ptr::read_volatile(ptr::addr_of!((*self.receiveq.avail).idx));
+            let ring_idx = (avail_idx % QUEUE_SIZE) as usize;
+            ptr::write_volatile(self.receiveq.avail_ring.add(ring_idx), desc_idx);
+            ptr::write_volatile(ptr::addr_of_mut!((*self.receiveq.avail).idx), avail_idx.wrapping_add(1));
+
+            // Notify device that we've added a buffer
+            let notify_addr = self.notify_base + (self.receiveq_notify_off as u64 * self.notify_off_multiplier as u64);
+            ptr::write_volatile(notify_addr as *mut u16, 0);
+
             self.receiveq.last_seen_used = used_idx;
 
             Ok(copy_len)
