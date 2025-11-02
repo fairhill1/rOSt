@@ -155,8 +155,9 @@ impl Console {
                     CHAR_WIDTH
                 };
 
-                // Draw a solid block cursor with bright green color
-                for dy in 0..CHAR_HEIGHT {
+                // Draw a solid block cursor with bright green color using actual font height
+                let cursor_height = framebuffer::get_char_height();
+                for dy in 0..cursor_height {
                     for dx in 0..char_width {
                         let px = cursor_x as u32 + dx as u32;
                         let py = cursor_y as u32 + dy as u32;

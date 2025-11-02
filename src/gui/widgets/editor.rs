@@ -868,14 +868,15 @@ impl TextEditor {
                     let sel_start_col = if line_num == start_row { start_col } else { 0 };
                     let sel_end_col = if line_num == end_row { end_col } else { line.len() };
 
-                    // Draw selection highlight (offset by gutter width)
+                    // Draw selection highlight (offset by gutter width) using actual font height
                     if sel_start_col < sel_end_col {
                         let sel_start_x = self.col_to_pixel_offset(line_num, sel_start_col);
                         let sel_end_x = self.col_to_pixel_offset(line_num, sel_end_col);
                         let sel_x = text_offset_x + sel_start_x;
                         let sel_width = (sel_end_x - sel_start_x) as u32;
+                        let sel_height = framebuffer::get_char_height();
 
-                        for dy in 0..CHAR_HEIGHT {
+                        for dy in 0..sel_height {
                             for dx in 0..sel_width {
                                 let px = sel_x + dx as i32;
                                 let py = y + dy as i32;
@@ -901,8 +902,9 @@ impl TextEditor {
             let cursor_x = text_offset_x + cursor_pixel_offset;
             let cursor_y = offset_y + (visible_row as i32 * LINE_HEIGHT as i32);
 
-            // Draw cursor as a vertical bar
-            for dy in 0..CHAR_HEIGHT {
+            // Draw cursor as a vertical bar using actual font height
+            let cursor_height = framebuffer::get_char_height();
+            for dy in 0..cursor_height {
                 for dx in 0..2 {
                     let px = cursor_x + dx as i32;
                     let py = cursor_y + dy as i32;
