@@ -60,6 +60,7 @@ enum ImageLoadState {
         start_time: u64,
         layout_box_index: usize,
         is_png: bool,
+        url: String, // For caching
     },
     Loading {
         socket_handle: SocketHandle,
@@ -67,6 +68,7 @@ enum ImageLoadState {
         last_recv_time: u64,
         layout_box_index: usize,
         is_png: bool,
+        url: String, // For caching
     },
 }
 
@@ -164,6 +166,9 @@ pub struct Browser {
     // Async image loading
     pending_images: Vec<PendingImage>,
     image_load_state: ImageLoadState,
+
+    // Image cache to prevent re-downloading on layout reflow
+    image_cache: alloc::collections::BTreeMap<String, BmpImage>,
 }
 
 impl Browser {
@@ -183,6 +188,7 @@ impl Browser {
             http_state: HttpState::Idle,
             pending_images: Vec::new(),
             image_load_state: ImageLoadState::Idle,
+            image_cache: alloc::collections::BTreeMap::new(),
         }
     }
 
@@ -502,6 +508,7 @@ impl Browser {
                                     start_time: crate::kernel::drivers::timer::get_time_ms(),
                                     layout_box_index: pending.layout_box_index,
                                     is_png,
+                                    url: pending.url.clone(),
                                 };
                             }
                         }
@@ -515,7 +522,7 @@ impl Browser {
             self.image_load_state = match current_state {
                 ImageLoadState::Idle => ImageLoadState::Idle,
 
-                ImageLoadState::Connecting { socket_handle, http_request, start_time, layout_box_index, is_png } => {
+                ImageLoadState::Connecting { socket_handle, http_request, start_time, layout_box_index, is_png, url } => {
                     unsafe {
                         if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
                             let connected = stack.with_tcp_socket(socket_handle, |socket| {
@@ -534,12 +541,13 @@ impl Browser {
                                     last_recv_time: crate::kernel::drivers::timer::get_time_ms(),
                                     layout_box_index,
                                     is_png,
+                                    url,
                                 }
                             } else if crate::kernel::drivers::timer::get_time_ms() - start_time > 10000 {
                                 stack.remove_socket(socket_handle);
                                 ImageLoadState::Idle
                             } else {
-                                ImageLoadState::Connecting { socket_handle, http_request, start_time, layout_box_index, is_png }
+                                ImageLoadState::Connecting { socket_handle, http_request, start_time, layout_box_index, is_png, url }
                             }
                         } else {
                             ImageLoadState::Idle
@@ -547,7 +555,7 @@ impl Browser {
                     }
                 }
 
-                ImageLoadState::Loading { socket_handle, mut response_data, last_recv_time, layout_box_index, is_png } => {
+                ImageLoadState::Loading { socket_handle, mut response_data, last_recv_time, layout_box_index, is_png, url } => {
                     unsafe {
                         if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
                             let mut received_data = false;
@@ -592,20 +600,33 @@ impl Browser {
                                     if let Some(img) = decoded_image {
                                         crate::kernel::uart_write_string(&alloc::format!("Image loaded: {}x{}\r\n", img.width, img.height));
 
-                                        // Update layout box
-                                        if layout_box_index < self.layout.len() {
-                                            self.layout[layout_box_index].image_data = Some(img.clone());
+                                        // Cache the loaded image
+                                        self.image_cache.insert(url.clone(), img.clone());
 
-                                            // Only override dimensions if they're still the default (100x100)
-                                            // This preserves HTML-specified width/height attributes
-                                            if self.layout[layout_box_index].width == 100 &&
-                                               self.layout[layout_box_index].height == 100 {
-                                                self.layout[layout_box_index].width = img.width as usize;
-                                                self.layout[layout_box_index].height = img.height as usize;
+                                        // Check if dimensions will change (need reflow)
+                                        let needs_reflow = if layout_box_index < self.layout.len() {
+                                            self.layout[layout_box_index].width == 100 &&
+                                            self.layout[layout_box_index].height == 100 &&
+                                            (img.width as usize != 100 || img.height as usize != 100)
+                                        } else {
+                                            false
+                                        };
+
+                                        if needs_reflow {
+                                            // Dimensions changed - need full reflow
+                                            crate::kernel::uart_write_string("Image dimensions changed, reflowing layout\r\n");
+                                            if let Some(ref dom) = self.dom.clone() {
+                                                self.layout.clear();
+                                                self.layout_node(&dom, 10, 10, 780, &Color::BLACK, false, false, 1, "");
                                             }
-
-                                            self.layout[layout_box_index].text = String::new();
                                             needs_redraw = true;
+                                        } else {
+                                            // Just update the image data in place
+                                            if layout_box_index < self.layout.len() {
+                                                self.layout[layout_box_index].image_data = Some(img.clone());
+                                                self.layout[layout_box_index].text = String::new();
+                                                needs_redraw = true;
+                                            }
                                         }
                                     }
                                 }
@@ -621,6 +642,7 @@ impl Browser {
                                     last_recv_time: new_last_recv_time,
                                     layout_box_index,
                                     is_png,
+                                    url,
                                 }
                             }
                         } else {
@@ -1122,14 +1144,27 @@ impl Browser {
                         current_y += 4;
                     }
 
-                    // Create placeholder layout box for image (will be filled later)
-                    let layout_box_index = self.layout.len();
+                    // Check if image is already cached
+                    let cached_image = self.image_cache.get(&img_url).cloned();
+
+                    // If no width/height specified and we have cached image, use its dimensions
+                    let (final_width, final_height) = if img_width == 100 && img_height == 100 {
+                        if let Some(ref img) = cached_image {
+                            (img.width as usize, img.height as usize)
+                        } else {
+                            (img_width, img_height)
+                        }
+                    } else {
+                        (img_width, img_height)
+                    };
+
+                    // Create layout box for image
                     self.layout.push(LayoutBox {
                         x: current_x,
                         y: current_y,
-                        width: img_width,
-                        height: img_height,
-                        text: String::from("[Loading image...]"),
+                        width: final_width,
+                        height: final_height,
+                        text: if cached_image.is_some() { String::new() } else { String::from("[Loading image...]") },
                         color: Color::new(128, 128, 128),
                         font_size: font_size_level,
                         is_link: false,
@@ -1138,16 +1173,19 @@ impl Browser {
                         italic: false,
                         element_id: element_id.to_string(),
                         is_image: true,
-                        image_data: None, // Will be filled async
+                        image_data: cached_image.clone(),
                     });
 
-                    // Queue async image load
-                    self.pending_images.push(PendingImage {
-                        url: img_url,
-                        layout_box_index,
-                    });
+                    // Only queue async load if not cached
+                    if cached_image.is_none() {
+                        let layout_box_index = self.layout.len() - 1;
+                        self.pending_images.push(PendingImage {
+                            url: img_url,
+                            layout_box_index,
+                        });
+                    }
 
-                    // Move to next line after image placeholder
+                    // Move to next line after image
                     current_y += self.layout.last().unwrap().height + 4;
                     return (x, current_y);
                 }
