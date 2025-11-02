@@ -604,10 +604,10 @@ impl Browser {
                                         self.image_cache.insert(url.clone(), img.clone());
 
                                         // Check if dimensions will change (need reflow)
+                                        // Reflow if placeholder was 0x0 (no size specified in HTML)
                                         let needs_reflow = if layout_box_index < self.layout.len() {
-                                            self.layout[layout_box_index].width == 100 &&
-                                            self.layout[layout_box_index].height == 100 &&
-                                            (img.width as usize != 100 || img.height as usize != 100)
+                                            self.layout[layout_box_index].width == 0 &&
+                                            self.layout[layout_box_index].height == 0
                                         } else {
                                             false
                                         };
@@ -1134,10 +1134,10 @@ impl Browser {
                     // Parse width/height attributes if present (prevents layout reflow)
                     let img_width = elem.attributes.get("width")
                         .and_then(|w| w.parse::<usize>().ok())
-                        .unwrap_or(100); // Default 100px if not specified
+                        .unwrap_or(0); // Default 0px if not specified (will reflow when image loads)
                     let img_height = elem.attributes.get("height")
                         .and_then(|h| h.parse::<usize>().ok())
-                        .unwrap_or(100);
+                        .unwrap_or(0);
 
                     // Add spacing before image if needed
                     if !self.layout.is_empty() {
@@ -1148,11 +1148,11 @@ impl Browser {
                     let cached_image = self.image_cache.get(&img_url).cloned();
 
                     // If no width/height specified and we have cached image, use its dimensions
-                    let (final_width, final_height) = if img_width == 100 && img_height == 100 {
+                    let (final_width, final_height) = if img_width == 0 && img_height == 0 {
                         if let Some(ref img) = cached_image {
                             (img.width as usize, img.height as usize)
                         } else {
-                            (img_width, img_height)
+                            (0, 0) // Unknown size, will reflow when loaded
                         }
                     } else {
                         (img_width, img_height)
