@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 // Window decorations
 const TITLE_BAR_HEIGHT: u32 = 24;
 const BORDER_WIDTH: u32 = 2;
-const CLOSE_BUTTON_SIZE: u32 = 16;
+const CLOSE_BUTTON_SIZE: u32 = 18;
 
 // Menu bar
 const MENU_BAR_HEIGHT: u32 = 32;
@@ -84,7 +84,7 @@ impl Window {
     /// Check if close button was clicked
     pub fn is_close_button_clicked(&self, px: i32, py: i32) -> bool {
         let btn_x = self.x + self.width as i32 - CLOSE_BUTTON_SIZE as i32 - 4;
-        let btn_y = self.y + 4;
+        let btn_y = self.y + ((TITLE_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2) as i32;
         px >= btn_x && px < btn_x + CLOSE_BUTTON_SIZE as i32 &&
         py >= btn_y && py < btn_y + CLOSE_BUTTON_SIZE as i32
     }
@@ -134,10 +134,10 @@ impl Window {
 
         // Draw X in close button (centered both horizontally and vertically)
         let x_width = framebuffer::measure_string("X");
-        // Subtract 1px to account for font bearing/offset
-        let x_x = btn_x as u32 + (CLOSE_BUTTON_SIZE - x_width) / 2 - 1;
-        let x_y = btn_y as u32; // No vertical offset - baseline alignment handles it
-        framebuffer::draw_string(x_x, x_y, "X", COLOR_TEXT);
+        let text_height = framebuffer::get_char_height();
+        let x_x = btn_x + ((CLOSE_BUTTON_SIZE as i32 - x_width as i32) / 2) - 1;
+        let x_y = btn_y + ((CLOSE_BUTTON_SIZE as i32 - text_height as i32) / 2);
+        framebuffer::draw_string(x_x as u32, x_y as u32, "X", COLOR_TEXT);
 
         // Draw content area background
         let (cx, cy, cw, ch) = self.get_content_bounds();
