@@ -1,7 +1,8 @@
-// Image Viewer - Display BMP images in a window
+// Image Viewer - Display BMP and PNG images in a window
 
 use crate::gui::framebuffer;
 use crate::gui::bmp_decoder::{BmpImage, decode_bmp};
+use crate::gui::png_decoder::decode_png;
 extern crate alloc;
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -29,7 +30,30 @@ impl ImageViewer {
     pub fn load_image(&mut self, filename: &str, data: &[u8]) {
         self.filename = String::from(filename);
 
-        match decode_bmp(data) {
+        // Detect image format by magic bytes
+        let is_png = data.len() >= 8 &&
+                     data[0] == 0x89 && data[1] == 0x50 &&
+                     data[2] == 0x4E && data[3] == 0x47;
+        let is_bmp = data.len() >= 2 &&
+                     data[0] == 0x42 && data[1] == 0x4D;
+
+        crate::kernel::uart_write_string(&alloc::format!(
+            "[ImageViewer] Loading {} (PNG={}, BMP={})\r\n",
+            filename, is_png, is_bmp
+        ));
+
+        let result = if is_png {
+            decode_png(data)
+        } else if is_bmp {
+            decode_bmp(data)
+        } else {
+            crate::kernel::uart_write_string(
+                "[ImageViewer] Unknown image format (not PNG or BMP)\r\n"
+            );
+            None
+        };
+
+        match result {
             Some(img) => {
                 crate::kernel::uart_write_string(&alloc::format!(
                     "[ImageViewer] Loaded {}x{} image\r\n", img.width, img.height
@@ -38,7 +62,8 @@ impl ImageViewer {
                 self.error_message = None;
             }
             None => {
-                self.error_message = Some(String::from("Failed to decode BMP image"));
+                let format_name = if is_png { "PNG" } else if is_bmp { "BMP" } else { "unknown" };
+                self.error_message = Some(alloc::format!("Failed to decode {} image", format_name));
                 self.image = None;
             }
         }

@@ -663,8 +663,9 @@ impl WindowManager {
 
                         match action {
                             FileExplorerAction::OpenFile(filename) => {
-                                // Check if file is a BMP image
-                                let is_bmp = filename.to_lowercase().ends_with(".bmp");
+                                // Check if file is an image (BMP or PNG)
+                                let lower = filename.to_lowercase();
+                                let is_image = lower.ends_with(".bmp") || lower.ends_with(".png");
 
                                 // Get filesystem from file explorer
                                 if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(instance_id) {
@@ -681,7 +682,7 @@ impl WindowManager {
                                                 if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
                                                     if let Some(device) = devices.get_mut(device_idx) {
                                                         if let Ok(bytes_read) = fs.read_file(device, &filename, &mut buffer) {
-                                                            if is_bmp {
+                                                            if is_image {
                                                                 // Open in image viewer
                                                                 let viewer_id = crate::gui::widgets::image_viewer::create_image_viewer_with_data(
                                                                     &filename,
