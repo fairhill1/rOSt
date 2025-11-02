@@ -116,9 +116,9 @@ pub fn decode_bmp(data: &[u8]) -> Option<BmpImage> {
             let g = data[pixel_offset + 1];
             let r = data[pixel_offset + 2];
 
-            // Convert to ARGB format for framebuffer
-            // BMP has BGR, framebuffer expects ARGB (0xAARRGGBB)
-            // which is stored as BGRA in little-endian memory
+            // Convert to framebuffer format (BGRA in little-endian)
+            // BMP has BGR, framebuffer expects 0xAARRGGBB which in LE memory is BGRA
+            // So we keep BGR order and add alpha: 0xAABBGGRR
             let pixel = 0xFF000000 | ((b as u32) << 16) | ((g as u32) << 8) | (r as u32);
             pixels.push(pixel);
         }
