@@ -635,11 +635,15 @@ pub fn test_input_events() -> (bool, bool) {
 
                             match action {
                                 FileExplorerAction::OpenFile(filename) => {
-                                    // Check if file is an image (BMP or PNG)
-                                    let lower = filename.to_lowercase();
-                                    let is_image = lower.ends_with(".bmp") || lower.ends_with(".png");
+                                    // Check window limit before loading file
+                                    if crate::gui::window_manager::get_window_count() >= 4 {
+                                        set_menu_status("Cannot open: 4 windows max");
+                                    } else {
+                                        // Check if file is an image (BMP or PNG)
+                                        let lower = filename.to_lowercase();
+                                        let is_image = lower.ends_with(".bmp") || lower.ends_with(".png");
 
-                                    if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(explorer_id) {
+                                        if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(explorer_id) {
                                         if let (Some(ref fs), Some(device_idx)) = (&explorer.filesystem, explorer.device_index) {
                                             // Get file info by listing all files
                                             let file_list = fs.list_files();
@@ -693,6 +697,7 @@ pub fn test_input_events() -> (bool, bool) {
                                                 }
                                             }
                                         }
+                                    }
                                     }
                                 }
                                 _ => {}
