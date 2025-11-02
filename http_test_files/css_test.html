@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>External CSS Test - rOSt</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>External CSS Test Page</h1>
+    <p>This page tests external stylesheet loading and CSS selectors.</p>
+
+    <h2>Element Selectors</h2>
+    <p>This paragraph should be styled by the 'p' element selector (12px margin).</p>
+    <p>All paragraphs get the same element-based styling.</p>
+
+    <h2>Class Selectors</h2>
+    <p class="highlight">This paragraph has class="highlight" - should have yellow background and padding.</p>
+    <p class="important">This paragraph has class="important" - should be red and large (24px).</p>
+    <div class="box">
+        <p>This is inside a div with class="box" - the div should have gray background.</p>
+        <p class="important">This combines element (p) and class (.important) styling.</p>
+    </div>
+
+    <h2>ID Selectors</h2>
+    <p id="special">This paragraph has id="special" - should be orange with cream background.</p>
+
+    <h2>Cascade Test</h2>
+    <p>Normal paragraph (element selector only).</p>
+    <p class="highlight">Class selector overrides element selector.</p>
+    <p id="special" class="highlight">ID selector (#special) should win over class (.highlight).</p>
+    <p style="color: purple; background-color: pink">Inline style beats everything!</p>
+
+    <h2>Mixed Content</h2>
+    <div class="box">
+        <h2>Nested heading (element selector)</h2>
+        <p class="important">Important text in a box.</p>
+        <p>Regular paragraph in a box.</p>
+    </div>
+
+    <div id="footer">
+        <p>Footer section with ID selector - gray text on light gray background.</p>
+    </div>
+</body>
+</html>

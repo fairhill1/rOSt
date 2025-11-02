@@ -65,8 +65,30 @@ pub enum ImageLoadState {
     },
 }
 
+/// Pending CSS load request
+pub struct PendingCss {
+    pub url: String,
+}
+
+/// CSS loading state machine
+pub enum CssLoadState {
+    Idle,
+    Connecting {
+        socket_handle: SocketHandle,
+        http_request: String,
+        start_time: u64,
+        url: String,
+    },
+    Loading {
+        socket_handle: SocketHandle,
+        response_data: Vec<u8>,
+        last_recv_time: u64,
+        url: String,
+    },
+}
+
 /// Simple color structure
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color {
     pub r: u8,
     pub g: u8,

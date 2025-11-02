@@ -5,7 +5,7 @@
 /// that can be rendered to the screen.
 
 use crate::gui::html_parser::{Parser, Node, NodeType, ElementData};
-use crate::gui::css_parser::InlineStyle;
+use crate::gui::css_parser::{InlineStyle, Selector};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::format;
@@ -58,6 +58,52 @@ pub fn extract_title(node: &Node) -> Option<String> {
     None
 }
 
+/// Extract CSS stylesheet URLs from <link rel="stylesheet" href="..."> tags
+pub fn extract_css_urls(node: &Node, base_url: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+
+    match &node.node_type {
+        NodeType::Element(elem) => {
+            // Check if this is a stylesheet link
+            if elem.tag_name == "link" {
+                if let Some(rel) = elem.attributes.get("rel") {
+                    if rel.to_lowercase().contains("stylesheet") {
+                        if let Some(href) = elem.attributes.get("href") {
+                            // Resolve relative URLs
+                            let css_url = if href.starts_with("http://") || href.starts_with("https://") {
+                                href.clone()
+                            } else if href.starts_with('/') {
+                                // Absolute path - use current host
+                                let (host, port, _) = super::http::parse_url(base_url);
+                                alloc::format!("http://{}:{}{}", host, port, href)
+                            } else {
+                                // Relative path - append to current URL's directory
+                                let base = if let Some(last_slash) = base_url.rfind('/') {
+                                    &base_url[..last_slash]
+                                } else {
+                                    base_url
+                                };
+                                alloc::format!("{}/{}", base, href)
+                            };
+
+                            crate::kernel::uart_write_string(&alloc::format!("Found CSS link: {}\r\n", css_url));
+                            urls.push(css_url);
+                        }
+                    }
+                }
+            }
+
+            // Recursively search children
+            for child in &node.children {
+                urls.extend(extract_css_urls(child, base_url));
+            }
+        }
+        _ => {}
+    }
+
+    urls
+}
+
 /// Load HTML content
 pub fn load_html(browser: &mut Browser, html: String) {
     crate::kernel::uart_write_string("load_html: Starting HTML parsing\r\n");
@@ -70,6 +116,7 @@ pub fn load_html(browser: &mut Browser, html: String) {
     debug_print_dom(&dom, 0);
 
     browser.layout.clear();
+    browser.stylesheets.clear(); // Clear previous stylesheets
 
     // Extract page title from DOM
     browser.page_title = extract_title(&dom);
@@ -78,6 +125,12 @@ pub fn load_html(browser: &mut Browser, html: String) {
     if let Some(ref title) = browser.page_title {
         let window_title = alloc::format!("Browser - {}", title);
         crate::gui::window_manager::set_browser_window_title(browser.instance_id, &window_title);
+    }
+
+    // Extract and queue CSS files for loading
+    let css_urls = extract_css_urls(&dom, &browser.url);
+    for css_url in css_urls {
+        browser.pending_css.push(super::PendingCss { url: css_url });
     }
 
     // Layout the DOM tree - search for <body> element
@@ -268,10 +321,46 @@ pub fn layout_element(
         .map(|s| s.as_str())
         .unwrap_or(parent_element_id);
 
+    // Extract class attribute and split into classes
+    let class_attr = elem.attributes.get("class").map(|s| s.as_str()).unwrap_or("");
+    let classes: Vec<&str> = class_attr.split_whitespace().collect();
+
+    // Match stylesheet rules for this element
+    let mut matched_styles: Vec<(&Selector, &InlineStyle)> = Vec::new();
+    for stylesheet in &browser.stylesheets {
+        for rule in &stylesheet.rules {
+            if rule.selector.matches(tag, &classes, Some(element_id).filter(|s| !s.is_empty())) {
+                matched_styles.push((&rule.selector, &rule.style));
+            }
+        }
+    }
+
     // Parse inline CSS styles if present
-    let inline_style = elem.attributes.get("style")
+    let inline_style_raw = elem.attributes.get("style")
         .map(|s| InlineStyle::parse(s))
         .unwrap_or_default();
+
+    // Merge styles: base (default) + stylesheet matches + inline styles
+    let base_style = InlineStyle::default();
+    let merged_from_sheets = crate::gui::css_parser::merge_styles(base_style, &matched_styles);
+
+    // Inline styles have highest priority, so merge them last
+    let inline_overrides: Vec<(&Selector, &InlineStyle)> = Vec::new(); // Empty, we'll apply inline directly
+    let inline_style = if inline_style_raw.color.is_some() || inline_style_raw.background_color.is_some()
+        || inline_style_raw.font_size.is_some() || inline_style_raw.margin.is_some()
+        || inline_style_raw.padding.is_some() {
+        // Merge inline over stylesheet
+        let mut result = merged_from_sheets.clone();
+        if let Some(c) = inline_style_raw.color { result.color = Some(c); }
+        if let Some(bg) = inline_style_raw.background_color { result.background_color = Some(bg); }
+        if let Some(fs) = inline_style_raw.font_size { result.font_size = Some(fs); }
+        if let Some(m) = inline_style_raw.margin { result.margin = Some(m); }
+        if let Some(p) = inline_style_raw.padding { result.padding = Some(p); }
+        if let Some(ta) = inline_style_raw.text_align { result.text_align = Some(ta); }
+        result
+    } else {
+        merged_from_sheets
+    };
 
     let mut current_x = x;
     let mut current_y = y;
