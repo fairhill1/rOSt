@@ -586,32 +586,7 @@ pub fn layout_element(
             if !browser.layout.is_empty() {
                 current_y += element_height; // Extra spacing before heading
             }
-
-            // Apply padding to content position
-            if css_padding > 0 {
-                current_x += css_padding;
-                current_y += css_padding;
-            }
-
-            for child in &node.children {
-                let child_max_width = if css_padding > 0 {
-                    max_width.saturating_sub(css_padding * 2)
-                } else {
-                    max_width
-                };
-                let (new_x, new_y) = layout_node(browser, child, current_x, current_y, child_max_width, color, &background_color, bold, italic, font_size_level, element_id);
-                current_x = new_x;
-                current_y = new_y;
-            }
-
-            // Add bottom padding
-            if css_padding > 0 {
-                current_y += css_padding;
-            }
-
-            // Add height of the text + spacing after
-            current_y += element_height * 2;
-            return (x, current_y);
+            // Don't early return - let headings use full-width background handling below
         }
         "ul" | "ol" => {
             // Lists - use small fixed indent to prevent excessive nesting
