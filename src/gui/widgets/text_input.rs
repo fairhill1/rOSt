@@ -36,6 +36,35 @@ pub struct TextInput {
 }
 
 impl TextInput {
+    /// Convert character position to pixel offset (using measured font widths)
+    fn char_to_pixel(&self, char_pos: usize) -> i32 {
+        let substring: String = self.text.chars().take(char_pos).collect();
+        framebuffer::measure_string(&substring) as i32
+    }
+
+    /// Convert pixel offset to character position (using measured font widths)
+    fn pixel_to_char(&self, pixel_x: i32) -> usize {
+        let char_count = self.text.chars().count();
+
+        // Binary search to find closest character position
+        for pos in 0..=char_count {
+            let width_at_pos = self.char_to_pixel(pos);
+            if pixel_x < width_at_pos {
+                // Found where we cross over - return closer of previous or current
+                if pos == 0 {
+                    return 0;
+                }
+                let width_at_prev = self.char_to_pixel(pos - 1);
+                let dist_to_prev = (pixel_x - width_at_prev).abs();
+                let dist_to_curr = (pixel_x - width_at_pos).abs();
+                return if dist_to_prev < dist_to_curr { pos - 1 } else { pos };
+            }
+        }
+        char_count
+    }
+}
+
+impl TextInput {
     /// Create a new empty text input
     pub fn new() -> Self {
         TextInput {
@@ -409,12 +438,8 @@ impl TextInput {
         // Calculate relative position
         let rel_x = (click_x - base_x).max(0);
 
-        // Convert to character position
-        let char_pos = ((rel_x + CHAR_WIDTH as i32 / 2) / CHAR_WIDTH as i32).max(0) as usize;
-
-        // Clamp to text length
-        let len = self.text.chars().count();
-        let new_cursor_pos = char_pos.min(len);
+        // Convert to character position using measured font widths
+        let new_cursor_pos = self.pixel_to_char(rel_x);
 
         // Check if this is a multi-click (double or triple)
         let time_diff = current_time.saturating_sub(self.last_click_time);
@@ -461,12 +486,8 @@ impl TextInput {
         // Calculate relative position
         let rel_x = (click_x - base_x).max(0);
 
-        // Convert to character position
-        let char_pos = ((rel_x + CHAR_WIDTH as i32 / 2) / CHAR_WIDTH as i32).max(0) as usize;
-
-        // Clamp to text length
-        let len = self.text.chars().count();
-        let clamped_pos = char_pos.min(len);
+        // Convert to character position using measured font widths
+        let clamped_pos = self.pixel_to_char(rel_x);
 
         // Check if position changed
         if self.selection_end == Some(clamped_pos) {
@@ -536,7 +557,8 @@ impl TextInput {
 
         // Calculate text rendering area (with padding)
         let text_x = x + 4;
-        let text_y = y + ((height as i32 - CHAR_HEIGHT as i32) / 2).max(0);
+        let char_height = framebuffer::get_char_height();
+        let text_y = y + ((height as i32 - char_height as i32) / 2).max(0);
 
         // Draw selection highlight (only when focused)
         if focused {
@@ -553,10 +575,10 @@ impl TextInput {
 
             if let Some((start, end)) = selection {
                 if start < end {
-                    let sel_x = text_x + (start as i32 * CHAR_WIDTH as i32);
-                    let sel_width = (end - start) as u32 * CHAR_WIDTH;
+                    let sel_x = text_x + self.char_to_pixel(start);
+                    let sel_width = (self.char_to_pixel(end) - self.char_to_pixel(start)) as u32;
 
-                    for dy in 0..CHAR_HEIGHT {
+                    for dy in 0..char_height {
                         for dx in 0..sel_width {
                             let px = sel_x + dx as i32;
                             let py = text_y + dy as i32;
@@ -569,19 +591,9 @@ impl TextInput {
             }
         }
 
-        // Draw text
-        for (idx, ch) in self.text.chars().enumerate() {
-            let char_x = text_x + (idx as i32 * CHAR_WIDTH as i32);
-
-            // Only draw if visible
-            if char_x + CHAR_WIDTH as i32 > x + width as i32 {
-                break;
-            }
-
-            // Draw character
-            let mut buf = [0u8; 4];
-            let s = ch.encode_utf8(&mut buf);
-            framebuffer::draw_string(char_x as u32, text_y as u32, s, COLOR_TEXT);
+        // Draw entire text string at once for proper character spacing
+        if !self.text.is_empty() {
+            framebuffer::draw_string(text_x as u32, text_y as u32, &self.text, COLOR_TEXT);
         }
 
         // Draw cursor (if focused and no active selection)
@@ -595,10 +607,10 @@ impl TextInput {
 
             // Only draw cursor if there's no selection
             if !has_selection {
-                let cursor_x = text_x + (self.cursor_pos as i32 * CHAR_WIDTH as i32);
+                let cursor_x = text_x + self.char_to_pixel(self.cursor_pos);
 
                 // Draw cursor as a vertical bar
-                for dy in 0..CHAR_HEIGHT {
+                for dy in 0..char_height {
                     for dx in 0..2 {
                         let px = cursor_x + dx as i32;
                         let py = text_y + dy as i32;
