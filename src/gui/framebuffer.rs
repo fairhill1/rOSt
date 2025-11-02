@@ -364,6 +364,18 @@ pub fn draw_pixel(x: u32, y: u32, color: u32) {
 
 /// Draw a string at the specified position
 pub fn draw_string(x: u32, y: u32, text: &str, color: u32) {
+    // Try to use fontdue TrueType rendering first
+    if crate::gui::font::is_available() {
+        let size = crate::gui::font::get_size();
+        crate::gui::font::draw_string(x as i32, y as i32, text, color, size);
+    } else {
+        // Fallback to bitmap font
+        draw_string_bitmap(x, y, text, color);
+    }
+}
+
+/// Draw a string using the bitmap font (fallback)
+fn draw_string_bitmap(x: u32, y: u32, text: &str, color: u32) {
     let mut cur_x = x;
     for ch in text.bytes() {
         if ch == b'\n' {
