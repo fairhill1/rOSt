@@ -840,7 +840,11 @@ pub fn layout_element(
         let child_x = if child_is_block || is_br { child_base_x } else { current_x };
         let (new_x, new_y) = layout_node(browser, child, child_x, current_y, content_max_width, color, &background_color, bold, italic, font_size_level, element_id);
         current_x = new_x;
-        current_y = new_y;
+        // Only update Y if child is block OR parent is block
+        // For inline parent with inline children, stay on same line
+        if is_block || child_is_block {
+            current_y = new_y;
+        }
     }
 
     // Add bottom padding
@@ -868,9 +872,12 @@ pub fn layout_element(
             block_end_y.saturating_sub(block_start_y) + 6
         };
 
-        // Clear background_color from child boxes (full-width bg will handle it)
+        // Clear background_color from child text boxes (full-width bg will handle it)
+        // But keep backgrounds on nested block elements (empty text = background box)
         for i in block_start_idx..browser.layout.len() {
-            browser.layout[i].background_color = None;
+            if !browser.layout[i].text.is_empty() {
+                browser.layout[i].background_color = None;
+            }
         }
 
         // Insert full-width background box at the beginning (so it renders behind content)
