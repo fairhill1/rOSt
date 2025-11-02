@@ -1,8 +1,9 @@
-// Image Viewer - Display BMP and PNG images in a window
+// Image Viewer - Display BMP, PNG, and JPEG images in a window
 
 use crate::gui::framebuffer;
 use crate::gui::bmp_decoder::{BmpImage, decode_bmp};
 use crate::gui::png_decoder::decode_png;
+use crate::gui::jpeg_decoder::decode_jpeg;
 extern crate alloc;
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -36,19 +37,23 @@ impl ImageViewer {
                      data[2] == 0x4E && data[3] == 0x47;
         let is_bmp = data.len() >= 2 &&
                      data[0] == 0x42 && data[1] == 0x4D;
+        let is_jpeg = data.len() >= 2 &&
+                      data[0] == 0xFF && data[1] == 0xD8;
 
         crate::kernel::uart_write_string(&alloc::format!(
-            "[ImageViewer] Loading {} (PNG={}, BMP={})\r\n",
-            filename, is_png, is_bmp
+            "[ImageViewer] Loading {} (PNG={}, BMP={}, JPEG={})\r\n",
+            filename, is_png, is_bmp, is_jpeg
         ));
 
         let result = if is_png {
             decode_png(data)
+        } else if is_jpeg {
+            decode_jpeg(data)
         } else if is_bmp {
             decode_bmp(data)
         } else {
             crate::kernel::uart_write_string(
-                "[ImageViewer] Unknown image format (not PNG or BMP)\r\n"
+                "[ImageViewer] Unknown image format (not PNG, JPEG, or BMP)\r\n"
             );
             None
         };
@@ -62,7 +67,7 @@ impl ImageViewer {
                 self.error_message = None;
             }
             None => {
-                let format_name = if is_png { "PNG" } else if is_bmp { "BMP" } else { "unknown" };
+                let format_name = if is_png { "PNG" } else if is_jpeg { "JPEG" } else if is_bmp { "BMP" } else { "unknown" };
                 self.error_message = Some(alloc::format!("Failed to decode {} image", format_name));
                 self.image = None;
             }

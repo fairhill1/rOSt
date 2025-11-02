@@ -36,6 +36,14 @@ pub struct PendingImage {
     pub layout_box_index: usize,
 }
 
+/// Image format types
+#[derive(Clone, Copy, Debug)]
+pub enum ImageFormat {
+    Bmp,
+    Png,
+    Jpeg,
+}
+
 /// Image loading state machine
 pub enum ImageLoadState {
     Idle,
@@ -44,7 +52,7 @@ pub enum ImageLoadState {
         http_request: String,
         start_time: u64,
         layout_box_index: usize,
-        is_png: bool,
+        format: ImageFormat,
         url: String, // For caching
     },
     Loading {
@@ -52,7 +60,7 @@ pub enum ImageLoadState {
         response_data: Vec<u8>,
         last_recv_time: u64,
         layout_box_index: usize,
-        is_png: bool,
+        format: ImageFormat,
         url: String, // For caching
     },
 }
