@@ -61,6 +61,53 @@ pub struct TextEditor {
 }
 
 impl TextEditor {
+    /// Calculate pixel offset for a given column in a line (for variable-width fonts)
+    fn col_to_pixel_offset(&self, line_idx: usize, col: usize) -> i32 {
+        if line_idx >= self.lines.len() {
+            return 0;
+        }
+
+        let line = &self.lines[line_idx];
+        let substring: String = line.chars().take(col).collect();
+        crate::gui::framebuffer::measure_string(&substring) as i32
+    }
+
+    /// Convert pixel position to column (for variable-width fonts)
+    /// Must match col_to_pixel_offset's measurement approach
+    fn pixel_to_col(&self, line_idx: usize, pixel_x: i32) -> usize {
+        if line_idx >= self.lines.len() {
+            return 0;
+        }
+
+        let line = &self.lines[line_idx];
+        let char_count = line.chars().count();
+
+        // Binary search would be faster, but linear search is simple and works
+        for col in 0..=char_count {
+            let width_at_col = self.col_to_pixel_offset(line_idx, col);
+
+            // If we haven't reached this position yet, check if click is closer to prev or current
+            if pixel_x < width_at_col {
+                if col == 0 {
+                    return 0;
+                }
+
+                // Check if closer to previous column
+                let prev_width = self.col_to_pixel_offset(line_idx, col - 1);
+                let dist_to_prev = pixel_x - prev_width;
+                let dist_to_current = width_at_col - pixel_x;
+
+                if dist_to_prev < dist_to_current {
+                    return col - 1;
+                } else {
+                    return col;
+                }
+            }
+        }
+
+        char_count // Clicked past end
+    }
+
     pub fn new() -> Self {
         TextEditor {
             lines: vec![String::new()],
@@ -541,9 +588,8 @@ impl TextEditor {
         // Adjust for gutter offset plus spacing
         let text_x = (click_x - GUTTER_WIDTH as i32 - GUTTER_SPACING as i32).max(0);
 
-        // Convert click position to row/column
-        let col = ((text_x + CHAR_WIDTH as i32 / 2) / CHAR_WIDTH as i32).max(0) as usize;
-        let visible_row = ((click_y + LINE_HEIGHT as i32 / 2) / LINE_HEIGHT as i32).max(0) as usize;
+        // Convert click position to row (no rounding needed - text starts at top of line)
+        let visible_row = (click_y / LINE_HEIGHT as i32).max(0) as usize;
 
         // Calculate actual row accounting for scroll offset
         let row = self.scroll_offset + visible_row;
@@ -551,6 +597,9 @@ impl TextEditor {
         // Clamp row to valid range
         if row < self.lines.len() {
             self.cursor_row = row;
+
+            // Convert pixel position to column (handles variable-width fonts)
+            let col = self.pixel_to_col(row, text_x);
 
             // Clamp column to line length
             let line_len = self.lines[row].len();
@@ -572,15 +621,17 @@ impl TextEditor {
         // Adjust for gutter offset plus spacing
         let text_x = (click_x - GUTTER_WIDTH as i32 - GUTTER_SPACING as i32).max(0);
 
-        // Convert click position to row/column
-        let col = ((text_x + CHAR_WIDTH as i32 / 2) / CHAR_WIDTH as i32).max(0) as usize;
-        let visible_row = ((click_y + LINE_HEIGHT as i32 / 2) / LINE_HEIGHT as i32).max(0) as usize;
+        // Convert click position to row (no rounding needed - text starts at top of line)
+        let visible_row = (click_y / LINE_HEIGHT as i32).max(0) as usize;
 
         // Calculate actual row accounting for scroll offset
         let row = self.scroll_offset + visible_row;
 
         // Clamp row to valid range
         if row < self.lines.len() {
+            // Convert pixel position to column (handles variable-width fonts)
+            let col = self.pixel_to_col(row, text_x);
+
             // Clamp column to line length
             let line_len = self.lines[row].len();
             let clamped_col = col.min(line_len);
@@ -819,8 +870,10 @@ impl TextEditor {
 
                     // Draw selection highlight (offset by gutter width)
                     if sel_start_col < sel_end_col {
-                        let sel_x = text_offset_x + (sel_start_col as i32 * CHAR_WIDTH as i32);
-                        let sel_width = (sel_end_col - sel_start_col) as u32 * CHAR_WIDTH;
+                        let sel_start_x = self.col_to_pixel_offset(line_num, sel_start_col);
+                        let sel_end_x = self.col_to_pixel_offset(line_num, sel_end_col);
+                        let sel_x = text_offset_x + sel_start_x;
+                        let sel_width = (sel_end_x - sel_start_x) as u32;
 
                         for dy in 0..CHAR_HEIGHT {
                             for dx in 0..sel_width {
@@ -835,25 +888,17 @@ impl TextEditor {
                 }
             }
 
-            // Draw each character (offset by gutter width)
-            for (col, ch) in line.chars().enumerate() {
-                if col >= EDITOR_WIDTH {
-                    break; // Don't draw beyond editor width
-                }
-                let x = text_offset_x + (col as i32 * CHAR_WIDTH as i32);
-
-                // Draw character
-                let mut buf = [0u8; 4];
-                let s = ch.encode_utf8(&mut buf);
-                framebuffer::draw_string(x as u32, y as u32, s, COLOR_TEXT);
-            }
+            // Draw entire line at once for proper character spacing with variable-width fonts
+            let display_line: String = line.chars().take(EDITOR_WIDTH).collect();
+            framebuffer::draw_string(text_offset_x as u32, y as u32, &display_line, COLOR_TEXT);
         }
 
         // Draw cursor (only if visible in current scroll view, offset by gutter width)
         if self.cursor_row >= self.scroll_offset &&
            self.cursor_row < self.scroll_offset + self.visible_height {
             let visible_row = self.cursor_row - self.scroll_offset;
-            let cursor_x = text_offset_x + (self.cursor_col as i32 * CHAR_WIDTH as i32);
+            let cursor_pixel_offset = self.col_to_pixel_offset(self.cursor_row, self.cursor_col);
+            let cursor_x = text_offset_x + cursor_pixel_offset;
             let cursor_y = offset_y + (visible_row as i32 * LINE_HEIGHT as i32);
 
             // Draw cursor as a vertical bar
