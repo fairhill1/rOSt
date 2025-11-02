@@ -146,6 +146,8 @@ pub struct LayoutBox {
     pub is_image: bool,
     pub image_data: Option<BmpImage>,
     pub is_hr: bool, // Horizontal rule - render as solid line
+    pub is_table_cell: bool, // Table cell - render with borders
+    pub is_header_cell: bool, // Header cell (th) - render with bold/different bg
 }
 
 pub struct Browser {
@@ -639,6 +641,8 @@ impl Browser {
                                                         is_image: false,
                                                         image_data: None,
                                                         is_hr: false,
+                                                        is_table_cell: false,
+                                                        is_header_cell: false,
                                                     });
                                                 }
                                             }
@@ -915,6 +919,8 @@ impl Browser {
                             is_image: false,
                             image_data: None,
                             is_hr: false,
+                            is_table_cell: false,
+                            is_header_cell: false,
                         });
                     }
                     return;
@@ -1038,6 +1044,8 @@ impl Browser {
                         is_image: false,
                         image_data: None,
                         is_hr: false,
+                        is_table_cell: false,
+                        is_header_cell: false,
                     });
 
                     current_x += word_width;
@@ -1081,7 +1089,7 @@ impl Browser {
         let mut current_y = y;
 
         // Block-level elements start on new line
-        let is_block = matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "br" | "hr");
+        let is_block = matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "br" | "hr" | "table");
         if is_block && !self.layout.is_empty() {
             current_x = x;
             // Use whichever is lower on page: explicit spacing from parent (y) or default spacing
@@ -1141,6 +1149,8 @@ impl Browser {
                     is_image: false,
                     image_data: None,
                     is_hr: true, // Mark as HR for pixel rendering
+                    is_table_cell: false,
+                    is_header_cell: false,
                 });
 
                 // Add spacing after
@@ -1215,6 +1225,8 @@ impl Browser {
                         is_image: true,
                         image_data: cached_image.clone(),
                         is_hr: false,
+                        is_table_cell: false,
+                        is_header_cell: false,
                     });
 
                     // Only queue async load if not cached
@@ -1334,10 +1346,153 @@ impl Browser {
                         is_image: false,
                         image_data: None,
                         is_hr: false,
+                        is_table_cell: false,
+                        is_header_cell: false,
                     });
 
                     current_y = new_y + element_height + 2;
                 }
+                return (x, current_y);
+            }
+            "table" => {
+                // Tables - parse rows and cells, layout in grid
+                const CELL_PADDING: usize = 8; // Padding inside cells
+                const BORDER_WIDTH: usize = 1; // Border thickness
+
+                // Add spacing before table
+                if !self.layout.is_empty() {
+                    current_y += element_height + 4;
+                }
+
+                // First pass: collect rows and determine column count
+                let mut rows: Vec<Vec<&Node>> = Vec::new();
+                let mut max_cols = 0;
+
+                for child in &node.children {
+                    if let NodeType::Element(child_elem) = &child.node_type {
+                        if child_elem.tag_name == "tr" {
+                            let mut cells: Vec<&Node> = Vec::new();
+                            for cell in &child.children {
+                                if let NodeType::Element(cell_elem) = &cell.node_type {
+                                    if cell_elem.tag_name == "td" || cell_elem.tag_name == "th" {
+                                        cells.push(cell);
+                                    }
+                                }
+                            }
+                            max_cols = max_cols.max(cells.len());
+                            rows.push(cells);
+                        }
+                    }
+                }
+
+                if rows.is_empty() {
+                    return (x, current_y);
+                }
+
+                // Calculate column width (equal width for all columns)
+                let table_width = max_width.saturating_sub(20); // Leave margins
+                let col_width = if max_cols > 0 {
+                    table_width / max_cols
+                } else {
+                    100
+                };
+
+                let table_x = x + 10;
+                let mut table_y = current_y;
+
+                // Second pass: layout cells
+                for row_cells in &rows {
+                    let row_start_y = table_y;
+                    let mut row_height = 0;
+
+                    // Layout all cells in this row first to determine row height
+                    let mut cell_layouts: Vec<(usize, usize, Vec<LayoutBox>)> = Vec::new();
+
+                    for (col_idx, cell) in row_cells.iter().enumerate() {
+                        let cell_x = table_x + col_idx * col_width;
+                        let content_x = cell_x + CELL_PADDING;
+                        let content_y = row_start_y + CELL_PADDING;
+                        let content_width = col_width.saturating_sub(CELL_PADDING * 2);
+
+                        // Check if this is a header cell
+                        let is_header = if let NodeType::Element(cell_elem) = &cell.node_type {
+                            cell_elem.tag_name == "th"
+                        } else {
+                            false
+                        };
+
+                        // Save layout state
+                        let layout_start = self.layout.len();
+
+                        // Layout cell content
+                        let cell_bold = bold || is_header;
+                        for cell_child in &cell.children {
+                            self.layout_node(cell_child, content_x, content_y, content_width, color, cell_bold, italic, font_size_level, element_id);
+                        }
+
+                        // Calculate cell content height
+                        let mut cell_height = CELL_PADDING * 2; // Min height with padding
+                        if self.layout.len() > layout_start {
+                            let min_y = self.layout[layout_start].y;
+                            let max_y = self.layout[layout_start..].iter()
+                                .map(|b| b.y + b.height)
+                                .max()
+                                .unwrap_or(content_y);
+                            cell_height = cell_height.max(max_y - min_y + CELL_PADDING * 2);
+                        }
+
+                        row_height = row_height.max(cell_height);
+
+                        // Store cell layout info
+                        let cell_boxes: Vec<LayoutBox> = self.layout[layout_start..].iter().cloned().collect();
+                        self.layout.truncate(layout_start); // Remove temporarily
+                        cell_layouts.push((cell_x, cell_height, cell_boxes));
+                    }
+
+                    // Now add all cells with correct row height
+                    for (col_idx, (cell_x, _, cell_boxes)) in cell_layouts.iter().enumerate() {
+                        let cell = row_cells[col_idx];
+                        let is_header = if let NodeType::Element(cell_elem) = &cell.node_type {
+                            cell_elem.tag_name == "th"
+                        } else {
+                            false
+                        };
+
+                        // Create cell background box
+                        let bg_color = if is_header {
+                            Color::new(230, 230, 230) // Light gray for headers
+                        } else {
+                            Color::new(255, 255, 255) // White for cells
+                        };
+
+                        self.layout.push(LayoutBox {
+                            x: *cell_x,
+                            y: row_start_y,
+                            width: col_width,
+                            height: row_height,
+                            text: String::new(),
+                            color: bg_color,
+                            font_size: font_size_level,
+                            is_link: false,
+                            link_url: String::new(),
+                            bold: false,
+                            italic: false,
+                            element_id: element_id.to_string(),
+                            is_image: false,
+                            image_data: None,
+                            is_hr: false,
+                            is_table_cell: true,
+                            is_header_cell: is_header,
+                        });
+
+                        // Add cell content boxes back
+                        self.layout.extend(cell_boxes.clone());
+                    }
+
+                    table_y += row_height;
+                }
+
+                current_y = table_y + element_height;
                 return (x, current_y);
             }
             _ => {}
@@ -1348,7 +1503,7 @@ impl Browser {
             // For block-level children (like nested lists), pass the base x position
             // For inline children (like text), pass current_x (continues on same line)
             let child_is_block = if let NodeType::Element(child_elem) = &child.node_type {
-                matches!(child_elem.tag_name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "br" | "hr")
+                matches!(child_elem.tag_name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "br" | "hr" | "table")
             } else {
                 false
             };
@@ -1489,6 +1644,69 @@ impl Browser {
                                     let swapped = a | (r << 16) | (g << 8) | b;
                                     fb[fb_y * fb_width + fb_x] = swapped;
                                 }
+                            }
+                        }
+                    }
+                }
+            } else if layout_box.is_table_cell {
+                // Draw table cell with background and border
+                if y_signed >= 0 && y_signed < content_height as isize {
+                    // Draw cell background
+                    for cell_y in 0..layout_box.height {
+                        let fb_y = content_y + (y_signed as usize).saturating_add(cell_y);
+                        if fb_y < fb_height {
+                            for cell_x in 0..layout_box.width {
+                                let fb_x = win_x + layout_box.x + cell_x;
+                                if fb_x < fb_width {
+                                    fb[fb_y * fb_width + fb_x] = layout_box.color.to_u32();
+                                }
+                            }
+                        }
+                    }
+
+                    // Draw borders (1px solid)
+                    let border_color = Color::new(180, 180, 180).to_u32(); // Gray
+
+                    // Top border
+                    let fb_y_top = content_y + y_signed as usize;
+                    if fb_y_top < fb_height {
+                        for cell_x in 0..layout_box.width {
+                            let fb_x = win_x + layout_box.x + cell_x;
+                            if fb_x < fb_width {
+                                fb[fb_y_top * fb_width + fb_x] = border_color;
+                            }
+                        }
+                    }
+
+                    // Bottom border
+                    let fb_y_bottom = content_y + (y_signed as usize).saturating_add(layout_box.height.saturating_sub(1));
+                    if fb_y_bottom < fb_height {
+                        for cell_x in 0..layout_box.width {
+                            let fb_x = win_x + layout_box.x + cell_x;
+                            if fb_x < fb_width {
+                                fb[fb_y_bottom * fb_width + fb_x] = border_color;
+                            }
+                        }
+                    }
+
+                    // Left border
+                    for cell_y in 0..layout_box.height {
+                        let fb_y = content_y + (y_signed as usize).saturating_add(cell_y);
+                        if fb_y < fb_height {
+                            let fb_x = win_x + layout_box.x;
+                            if fb_x < fb_width {
+                                fb[fb_y * fb_width + fb_x] = border_color;
+                            }
+                        }
+                    }
+
+                    // Right border
+                    for cell_y in 0..layout_box.height {
+                        let fb_y = content_y + (y_signed as usize).saturating_add(cell_y);
+                        if fb_y < fb_height {
+                            let fb_x = win_x + layout_box.x + layout_box.width.saturating_sub(1);
+                            if fb_x < fb_width {
+                                fb[fb_y * fb_width + fb_x] = border_color;
                             }
                         }
                     }
