@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>rOSt - Modern Operating System</title>
+    <link rel="stylesheet" href="modern.css">
+    <style>
+        /* Inline styles to test <style> tag support */
+        .inline-styled {
+            background-color: #9b59b6;
+            color: white;
+            padding: 15px;
+            margin: 10px;
+        }
+
+        #special-section {
+            background-color: #16a085;
+            color: white;
+            padding: 25px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation Bar -->
+    <nav>
+        <div class="logo">rOSt Browser</div>
+        <div class="nav-links">Home | Features | About | Contact</div>
+    </nav>
+
+    <!-- Hero Section -->
+    <header class="hero">
+        <h1>Welcome to rOSt</h1>
+        <p class="hero-subtitle">A Modern Operating System Built in Rust for ARM64</p>
+        <p>Experience the power of systems programming with safety and performance.</p>
+    </header>
+
+    <!-- This should be hidden with display: none -->
+    <div class="hidden">
+        <p>This text should NOT be visible! If you see this, display:none is broken.</p>
+    </div>
+
+    <!-- Features Section -->
+    <section class="features">
+        <h2>Key Features</h2>
+
+        <article class="card">
+            <div class="card-icon">→</div>
+            <h3>External CSS Support</h3>
+            <p>Full support for external stylesheets with element, class, and ID selectors. This card is styled using modern.css!</p>
+        </article>
+
+        <article class="card">
+            <div class="card-icon">☆</div>
+            <h3>HTML5 Semantic Elements</h3>
+            <p>Support for <strong>header</strong>, <strong>nav</strong>, <strong>section</strong>, <strong>article</strong>, <strong>footer</strong>, and more!</p>
+        </article>
+
+        <article class="card">
+            <div class="card-icon">♦</div>
+            <h3>CSS Cascade System</h3>
+            <p>Proper specificity: <em>inline</em> > <span class="highlight">ID</span> > <span class="highlight">class</span> > element</p>
+        </article>
+    </section>
+
+    <!-- Inline Style Test -->
+    <section class="inline-styled">
+        <h2>Inline Style Tag Test</h2>
+        <p>This section uses styles from the &lt;style&gt; tag in the &lt;head&gt; (not external CSS). Purple background proves inline stylesheet parsing works!</p>
+    </section>
+
+    <!-- ID Selector Test -->
+    <section id="special-section">
+        <h2>ID Selector Test</h2>
+        <p>This section has id="special-section" and gets teal background from the inline &lt;style&gt; tag.</p>
+    </section>
+
+    <!-- Stats Section -->
+    <section class="stats">
+        <h2>Browser Capabilities</h2>
+
+        <div class="stat-item">
+            <div class="stat-number">100%</div>
+            <div class="stat-label">Rust Code</div>
+        </div>
+
+        <div class="stat-item">
+            <div class="stat-number">3</div>
+            <div class="stat-label">CSS Selector Types</div>
+        </div>
+
+        <div class="stat-item">
+            <div class="stat-number">∞</div>
+            <div class="stat-label">Possibilities</div>
+        </div>
+    </section>
+
+    <!-- Status Messages -->
+    <main>
+        <div class="success">
+            <h3>Success!</h3>
+            <p>All rendering systems operational. External CSS, inline styles, and modern HTML5 elements working perfectly!</p>
+        </div>
+
+        <div class="warning">
+            <h3>Warning</h3>
+            <p>This is what a modern 2025 website looks like in rOSt browser!</p>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer>
+        <p>rOSt Browser - Built with Rust, ARM64, and Determination</p>
+        <p><em>Powered by:</em> VirtIO GPU, smoltcp TCP/IP Stack, TrueType Fonts</p>
+        <p>© 2025 rOSt Project - <cite>Making Operating Systems Fun Again</cite></p>
+    </footer>
+</body>
+</html>

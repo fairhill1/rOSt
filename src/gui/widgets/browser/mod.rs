@@ -472,7 +472,7 @@ impl Browser {
                                             crate::kernel::uart_write_string("Image dimensions changed, reflowing layout\r\n");
                                             if let Some(ref dom) = self.dom.clone() {
                                                 self.layout.clear();
-                                                layout::layout_node(self, &dom, 10, 10, 1260, &Color::BLACK, &None, false, false, 1, "");
+                                                layout::layout_node(self, &dom, 10, 10, 1260, &Color::BLACK, &None, false, false, 1, "", &[]);
 
                                                 // Add bottom padding after reflow
                                                 if let Some(last_box) = self.layout.last() {
@@ -677,7 +677,7 @@ impl Browser {
                                         // Trigger reflow to apply styles
                                         if let Some(ref dom) = self.dom.clone() {
                                             self.layout.clear();
-                                            layout::layout_node(self, &dom, 10, 10, 1260, &Color::BLACK, &None, false, false, 1, "");
+                                            layout::layout_node(self, &dom, 10, 10, 1260, &Color::BLACK, &None, false, false, 1, "", &[]);
 
                                             // Add bottom padding after reflow
                                             if let Some(last_box) = self.layout.last() {
@@ -989,7 +989,7 @@ pub fn render_at(instance_id: usize, x: usize, y: usize, width: usize, height: u
                 if let Some(ref dom) = browser.dom.clone() {
                     browser.layout.clear();
                     let content_width = width.saturating_sub(20); // Subtract margins/padding
-                    layout::layout_node(browser, &dom, 10, 10, content_width, &Color::BLACK, &None, false, false, 1, "");
+                    layout::layout_node(browser, &dom, 10, 10, content_width, &Color::BLACK, &None, false, false, 1, "", &[]);
 
                     // Add bottom padding after reflow
                     if let Some(last_box) = browser.layout.last() {
