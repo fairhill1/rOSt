@@ -132,6 +132,12 @@ impl Browser {
         self.history.push(url.clone());
         self.history_index = self.history.len();
 
+        // Load the page
+        self.load_url(url);
+    }
+
+    /// Load a URL without modifying history (used by back/forward)
+    fn load_url(&mut self, url: String) {
         self.url = url.clone();
         self.url_input.set_text(&url);
         self.scroll_offset = 0;
@@ -863,18 +869,18 @@ impl Browser {
             self.url_focused
         );
 
-        // Back button
+        // Back button (22px tall, centered on 24px input field)
         let back_btn_x = win_x + win_width - 80;
-        let back_btn_y = win_y + 3;
+        let back_btn_y = win_y + 4; // 3 + (24-22)/2 = 4
         let back_btn_width = 32;
-        let back_btn_height = 24;
+        let back_btn_height = 22;
         self.draw_button(fb, fb_width, fb_height, back_btn_x, back_btn_y, back_btn_width, back_btn_height, "<");
 
-        // Forward button
+        // Forward button (22px tall, centered on 24px input field)
         let fwd_btn_x = win_x + win_width - 44;
-        let fwd_btn_y = win_y + 3;
+        let fwd_btn_y = win_y + 4; // 3 + (24-22)/2 = 4
         let fwd_btn_width = 32;
-        let fwd_btn_height = 24;
+        let fwd_btn_height = 22;
         self.draw_button(fb, fb_width, fb_height, fwd_btn_x, fwd_btn_y, fwd_btn_width, fwd_btn_height, ">");
 
         // Content area
@@ -1069,12 +1075,12 @@ impl Browser {
             let input_width = win_width.saturating_sub(130);
             let input_height = 24;
 
-            // Back button (32px wide, starting at win_width - 80)
+            // Back button (32px wide, 22px tall, starting at win_width - 80, y=4)
             let back_btn_x = win_width.saturating_sub(80);
-            if rel_x >= back_btn_x && rel_x < back_btn_x + 32 && rel_y >= 3 && rel_y < 27 {
+            if rel_x >= back_btn_x && rel_x < back_btn_x + 32 && rel_y >= 4 && rel_y < 26 {
                 self.go_back();
-            // Forward button (32px wide, starting at win_width - 44)
-            } else if rel_x >= win_width.saturating_sub(44) && rel_x < win_width.saturating_sub(12) && rel_y >= 3 && rel_y < 27 {
+            // Forward button (32px wide, 22px tall, starting at win_width - 44, y=4)
+            } else if rel_x >= win_width.saturating_sub(44) && rel_x < win_width.saturating_sub(12) && rel_y >= 4 && rel_y < 26 {
                 self.go_forward();
             } else if rel_x >= input_x && rel_x < input_x + input_width
                    && rel_y >= input_y && rel_y < input_y + input_height {
@@ -1206,11 +1212,9 @@ impl Browser {
         if self.history_index > 1 {
             self.history_index -= 1;
             let url = self.history[self.history_index - 1].clone();
-            self.url = url.clone();
-            self.url_input.set_text(&url);
 
-            // Reload page (simplified - in real browser we'd use cache)
-            self.navigate(url);
+            // Load page without modifying history
+            self.load_url(url);
         }
     }
 
@@ -1219,11 +1223,9 @@ impl Browser {
         if self.history_index < self.history.len() {
             self.history_index += 1;
             let url = self.history[self.history_index - 1].clone();
-            self.url = url.clone();
-            self.url_input.set_text(&url);
 
-            // Reload page
-            self.navigate(url);
+            // Load page without modifying history
+            self.load_url(url);
         }
     }
 }
