@@ -145,6 +145,7 @@ pub struct LayoutBox {
     pub element_id: String, // HTML element ID attribute
     pub is_image: bool,
     pub image_data: Option<BmpImage>,
+    pub is_hr: bool, // Horizontal rule - render as solid line
 }
 
 pub struct Browser {
@@ -991,6 +992,7 @@ impl Browser {
                         element_id: element_id.to_string(),
                         is_image: false,
                         image_data: None,
+                        is_hr: false,
                     });
 
                     current_x += word_width;
@@ -1069,30 +1071,22 @@ impl Browser {
                 return (x, current_y + element_height + 2);
             }
             "hr" => {
-                // Horizontal rule - draw a line across the page
+                // Horizontal rule - draw a solid pixel line across the page
                 // Add spacing before
                 if !self.layout.is_empty() {
                     current_y += element_height + 4;
                 }
 
-                // Draw horizontal line using dashes
+                // Create HR layout box - will be rendered as actual pixel line
                 let line_width = max_width.saturating_sub(20); // Leave 10px margin on each side
-                let char_width_hr = if crate::gui::font::is_available() {
-                    let font_size_px = get_font_size_px(font_size_level);
-                    crate::gui::font::measure_string("-", font_size_px) as usize
-                } else {
-                    CHAR_WIDTH * font_size_level
-                };
-                let num_dashes = line_width / char_width_hr;
-                let hr_line = alloc::format!("{}", "-".repeat(num_dashes));
 
                 self.layout.push(LayoutBox {
                     x: x + 10,
                     y: current_y,
-                    width: num_dashes * char_width_hr,
-                    height: element_height,
-                    text: hr_line,
-                    color: Color::new(128, 128, 128), // Gray
+                    width: line_width,
+                    height: 2, // 2px thick line
+                    text: String::new(),
+                    color: Color::new(180, 180, 180), // Light gray
                     font_size: font_size_level,
                     is_link: false,
                     link_url: String::new(),
@@ -1101,6 +1095,7 @@ impl Browser {
                     element_id: element_id.to_string(),
                     is_image: false,
                     image_data: None,
+                    is_hr: true, // Mark as HR for pixel rendering
                 });
 
                 // Add spacing after
@@ -1174,6 +1169,7 @@ impl Browser {
                         element_id: element_id.to_string(),
                         is_image: true,
                         image_data: cached_image.clone(),
+                        is_hr: false,
                     });
 
                     // Only queue async load if not cached
@@ -1241,8 +1237,23 @@ impl Browser {
                     // Save the starting Y position for this list item
                     let list_item_y = current_y;
 
-                    // Add bullet or number (use ASCII * since bullet • is not in ASCII)
-                    let bullet = if tag == "ul" { "* " } else { &alloc::format!("{}. ", i + 1) };
+                    // Determine nesting level based on x position
+                    let nesting_level = if current_x <= 10 {
+                        0
+                    } else {
+                        (current_x - 10) / LIST_INDENT
+                    };
+
+                    // Add bullet or number (different bullets for different nesting levels)
+                    let bullet = if tag == "ul" {
+                        match nesting_level {
+                            0 => "• ",      // Filled bullet (U+2022)
+                            1 => "◦ ",      // White circle (U+25E6)
+                            _ => "▪ ",      // Small square (U+25AA)
+                        }
+                    } else {
+                        &alloc::format!("{}. ", i + 1)
+                    };
                     let bullet_width = if crate::gui::font::is_available() {
                         let font_size_px = get_font_size_px(font_size_level);
                         crate::gui::font::measure_string(&bullet, font_size_px) as usize
@@ -1277,6 +1288,7 @@ impl Browser {
                         element_id: element_id.to_string(),
                         is_image: false,
                         image_data: None,
+                        is_hr: false,
                     });
 
                     current_y = new_y + element_height + 2;
@@ -1381,8 +1393,23 @@ impl Browser {
             // Calculate position relative to scroll (can be negative if partially scrolled off top)
             let y_signed = layout_box.y as isize - self.scroll_offset as isize;
 
-            // Check if this is an image or text
-            if layout_box.is_image {
+            // Check if this is an HR, image, or text
+            if layout_box.is_hr {
+                // Draw horizontal rule as solid pixel line
+                if y_signed >= 0 && y_signed < content_height as isize {
+                    for line_y in 0..layout_box.height {
+                        let fb_y = content_y + y_signed as usize + line_y;
+                        if fb_y < fb_height {
+                            for line_x in 0..layout_box.width {
+                                let fb_x = win_x + layout_box.x + line_x;
+                                if fb_x < fb_width {
+                                    fb[fb_y * fb_width + fb_x] = layout_box.color.to_u32();
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if layout_box.is_image {
                 // Draw image (with clipping for partially visible images)
                 if let Some(ref img) = layout_box.image_data {
                     // Render image (decoders output pixels[0] as top-left)
