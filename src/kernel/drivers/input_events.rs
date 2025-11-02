@@ -635,7 +635,9 @@ pub fn test_input_events() -> (bool, bool) {
 
                             match action {
                                 FileExplorerAction::OpenFile(filename) => {
-                                    // Open file in a new editor window
+                                    // Check if file is a BMP image
+                                    let is_bmp = filename.to_lowercase().ends_with(".bmp");
+
                                     if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(explorer_id) {
                                         if let (Some(ref fs), Some(device_idx)) = (&explorer.filesystem, explorer.device_index) {
                                             // Get file info by listing all files
@@ -650,23 +652,39 @@ pub fn test_input_events() -> (bool, bool) {
                                                     if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
                                                         if let Some(device) = devices.get_mut(device_idx) {
                                                             if let Ok(bytes_read) = fs.read_file(device, &filename, &mut buffer) {
-                                                                // Find the actual content length
-                                                                let actual_len = buffer[..bytes_read].iter()
-                                                                    .position(|&b| b == 0)
-                                                                    .unwrap_or(bytes_read);
-
-                                                                if let Ok(text) = core::str::from_utf8(&buffer[..actual_len]) {
-                                                                    let editor_id = crate::gui::widgets::editor::create_editor_with_content(
+                                                                if is_bmp {
+                                                                    // Open in image viewer
+                                                                    let viewer_id = crate::gui::widgets::image_viewer::create_image_viewer_with_data(
                                                                         &filename,
-                                                                        text
+                                                                        &buffer[..bytes_read]
                                                                     );
-                                                                    let title = alloc::format!("Editor - {}", filename);
+                                                                    let title = alloc::format!("Image - {}", filename);
                                                                     let window = crate::gui::window_manager::Window::new(
-                                                                        0, 0, 640, 480, &title,
-                                                                        crate::gui::window_manager::WindowContent::Editor,
-                                                                        editor_id
+                                                                        0, 0, 800, 600, &title,
+                                                                        crate::gui::window_manager::WindowContent::ImageViewer,
+                                                                        viewer_id
                                                                     );
                                                                     crate::gui::window_manager::add_window(window);
+                                                                } else {
+                                                                    // Open in text editor
+                                                                    // Find the actual content length (for text files)
+                                                                    let actual_len = buffer[..bytes_read].iter()
+                                                                        .position(|&b| b == 0)
+                                                                        .unwrap_or(bytes_read);
+
+                                                                    if let Ok(text) = core::str::from_utf8(&buffer[..actual_len]) {
+                                                                        let editor_id = crate::gui::widgets::editor::create_editor_with_content(
+                                                                            &filename,
+                                                                            text
+                                                                        );
+                                                                        let title = alloc::format!("Editor - {}", filename);
+                                                                        let window = crate::gui::window_manager::Window::new(
+                                                                            0, 0, 640, 480, &title,
+                                                                            crate::gui::window_manager::WindowContent::Editor,
+                                                                            editor_id
+                                                                        );
+                                                                        crate::gui::window_manager::add_window(window);
+                                                                    }
                                                                 }
                                                             }
                                                         }

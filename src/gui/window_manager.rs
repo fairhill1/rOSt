@@ -39,6 +39,7 @@ pub enum WindowContent {
     FileExplorer,
     Snake,
     Browser,
+    ImageViewer,
 }
 
 pub struct Window {
@@ -162,6 +163,10 @@ impl Window {
             WindowContent::Snake => {
                 // Snake game content is rendered by the snake system directly
                 // (see main rendering loop which calls snake::render_at())
+            }
+            WindowContent::ImageViewer => {
+                // Image viewer content is rendered by the image_viewer system directly
+                // (see main rendering loop which calls image_viewer::render_at())
             }
             WindowContent::Browser => {
                 // Browser content is rendered by the browser system directly
@@ -516,6 +521,9 @@ impl WindowManager {
                 WindowContent::Snake => {
                     crate::apps::snake::remove_snake_game(window.instance_id);
                 },
+                WindowContent::ImageViewer => {
+                    crate::gui::widgets::image_viewer::remove_image_viewer(window.instance_id);
+                },
                 WindowContent::Browser => {
                     crate::gui::widgets::browser::remove_browser(window.instance_id);
                 },
@@ -525,6 +533,14 @@ impl WindowManager {
             }
 
             self.windows.remove(index);
+
+            // Focus another window if any remain
+            if !self.windows.is_empty() {
+                // Focus the last window (most recently used)
+                let last_idx = self.windows.len() - 1;
+                self.windows[last_idx].is_focused = true;
+            }
+
             // Recalculate tiling layout
             self.calculate_layout();
         }
@@ -574,6 +590,12 @@ impl WindowManager {
                 WindowContent::Browser => {
                     let id = crate::gui::widgets::browser::create_browser();
                     ("Browser", id)
+                },
+                WindowContent::ImageViewer => {
+                    // ImageViewer is not created from menu, but from file explorer
+                    // This case should never be hit in practice
+                    let id = crate::gui::widgets::image_viewer::create_image_viewer();
+                    ("Image Viewer", id)
                 },
                 WindowContent::AboutDialog => {
                     ("About rOSt", 0) // AboutDialog doesn't need an instance
@@ -641,7 +663,9 @@ impl WindowManager {
 
                         match action {
                             FileExplorerAction::OpenFile(filename) => {
-                                // Open file in a new editor window
+                                // Check if file is a BMP image
+                                let is_bmp = filename.to_lowercase().ends_with(".bmp");
+
                                 // Get filesystem from file explorer
                                 if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(instance_id) {
                                     if let (Some(ref fs), Some(device_idx)) = (&explorer.filesystem, explorer.device_index) {
@@ -657,19 +681,31 @@ impl WindowManager {
                                                 if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
                                                     if let Some(device) = devices.get_mut(device_idx) {
                                                         if let Ok(bytes_read) = fs.read_file(device, &filename, &mut buffer) {
-                                                            // Find the actual content length
-                                                            let actual_len = buffer[..bytes_read].iter()
-                                                                .position(|&b| b == 0)
-                                                                .unwrap_or(bytes_read);
-
-                                                            if let Ok(text) = core::str::from_utf8(&buffer[..actual_len]) {
-                                                                let editor_id = crate::gui::widgets::editor::create_editor_with_content(
+                                                            if is_bmp {
+                                                                // Open in image viewer
+                                                                let viewer_id = crate::gui::widgets::image_viewer::create_image_viewer_with_data(
                                                                     &filename,
-                                                                    text
+                                                                    &buffer[..bytes_read]
                                                                 );
-                                                                let title = alloc::format!("Editor - {}", filename);
-                                                                let window = Window::new(0, 0, 640, 480, &title, WindowContent::Editor, editor_id);
+                                                                let title = alloc::format!("Image - {}", filename);
+                                                                let window = Window::new(0, 0, 800, 600, &title, WindowContent::ImageViewer, viewer_id);
                                                                 self.add_window(window);
+                                                            } else {
+                                                                // Open in text editor
+                                                                // Find the actual content length (for text files)
+                                                                let actual_len = buffer[..bytes_read].iter()
+                                                                    .position(|&b| b == 0)
+                                                                    .unwrap_or(bytes_read);
+
+                                                                if let Ok(text) = core::str::from_utf8(&buffer[..actual_len]) {
+                                                                    let editor_id = crate::gui::widgets::editor::create_editor_with_content(
+                                                                        &filename,
+                                                                        text
+                                                                    );
+                                                                    let title = alloc::format!("Editor - {}", filename);
+                                                                    let window = Window::new(0, 0, 640, 480, &title, WindowContent::Editor, editor_id);
+                                                                    self.add_window(window);
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -910,6 +946,17 @@ impl WindowManager {
             })
             .collect()
     }
+
+    /// Get all image viewer windows with their instance IDs and content bounds
+    pub fn get_all_image_viewers(&self) -> Vec<(usize, i32, i32, u32, u32)> {
+        self.windows.iter()
+            .filter(|w| w.content == WindowContent::ImageViewer && w.visible)
+            .map(|w| {
+                let (x, y, width, height) = w.get_content_bounds();
+                (w.instance_id, x, y, width, height)
+            })
+            .collect()
+    }
 }
 
 static mut WINDOW_MANAGER: Option<WindowManager> = None;
@@ -1096,6 +1143,17 @@ pub fn get_all_browsers() -> Vec<(usize, i32, i32, u32, u32)> {
     unsafe {
         if let Some(ref wm) = WINDOW_MANAGER {
             wm.get_all_browsers()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// Get all image viewer windows
+pub fn get_all_image_viewers() -> Vec<(usize, i32, i32, u32, u32)> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.get_all_image_viewers()
         } else {
             Vec::new()
         }

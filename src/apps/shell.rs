@@ -107,6 +107,7 @@ impl Shell {
             "arp" => self.cmd_arp(),
             "nslookup" | "dig" => self.cmd_nslookup(&parts),
             "http" | "wget" => self.cmd_http(&parts),
+            "download" | "dl" => self.cmd_download(&parts),
             _ => {
                 self.write_output("Unknown command: ");
                 self.write_output(parts[0]);
@@ -130,6 +131,7 @@ impl Shell {
         self.write_output("  ping <ip>             - Ping a host (e.g. ping 8.8.8.8)\r\n");
         self.write_output("  nslookup <domain>     - Resolve domain to IP (e.g. nslookup google.com)\r\n");
         self.write_output("  http <url>            - HTTP GET request (e.g. http example.com)\r\n");
+        self.write_output("  download <url>        - Download file (e.g. download 10.0.2.2:8888/font.ttf)\r\n");
         self.write_output("  arp                   - Show ARP cache\r\n");
         self.write_output("  help                  - Show this help\r\n");
     }
@@ -544,6 +546,159 @@ impl Shell {
                 }
             } else {
                 self.write_output("Network stack not initialized\r\n");
+            }
+        }
+    }
+
+    fn cmd_download(&mut self, parts: &[&str]) {
+        if parts.len() < 2 {
+            self.write_output("Usage: download <host:port/path>\r\n");
+            self.write_output("Example: download 10.0.2.2:8888/font.ttf\r\n");
+            return;
+        }
+
+        let mut url = parts[1];
+
+        // Strip http:// or https:// prefix if present
+        if url.starts_with("http://") {
+            url = &url[7..];
+        } else if url.starts_with("https://") {
+            url = &url[8..];
+        }
+
+        // Parse URL: host:port/path
+        let (host, port, path) = if let Some(slash_pos) = url.find('/') {
+            let host_port = &url[..slash_pos];
+            let path = &url[slash_pos..];
+
+            if let Some(colon_pos) = host_port.find(':') {
+                let host = &host_port[..colon_pos];
+                let port = host_port[colon_pos + 1..].parse::<u16>().unwrap_or(80);
+                (host, port, path)
+            } else {
+                (host_port, 80, path)
+            }
+        } else {
+            self.write_output("Invalid URL format. Expected: host:port/path\r\n");
+            return;
+        };
+
+        // Extract filename from path
+        let mut filename = if let Some(last_slash) = path.rfind('/') {
+            &path[last_slash + 1..]
+        } else {
+            path
+        };
+
+        if filename.is_empty() {
+            self.write_output("Cannot extract filename from URL\r\n");
+            return;
+        }
+
+        // SimpleFS has 8-character filename limit - truncate if needed
+        let final_filename = if filename.len() > 8 {
+            // Try to preserve extension
+            if let Some(dot_pos) = filename.rfind('.') {
+                let ext = &filename[dot_pos..]; // includes the dot
+                let name = &filename[..dot_pos];
+
+                // If extension is reasonable length (<=4 chars including dot), keep it
+                if ext.len() <= 4 && ext.len() < filename.len() {
+                    let max_name_len = 8 - ext.len();
+                    if name.len() > max_name_len {
+                        alloc::format!("{}{}", &name[..max_name_len], ext)
+                    } else {
+                        alloc::string::String::from(filename)
+                    }
+                } else {
+                    // Extension too long, just truncate whole filename
+                    alloc::string::String::from(&filename[..8])
+                }
+            } else {
+                // No extension, just truncate
+                alloc::string::String::from(&filename[..8])
+            }
+        } else {
+            alloc::string::String::from(filename)
+        };
+
+        if final_filename != filename {
+            self.write_output(&alloc::format!("Note: Filename truncated to '{}' (8 char limit)\r\n", final_filename));
+        }
+
+        self.write_output(&alloc::format!("Downloading http://{}:{}{}\r\n", host, port, path));
+        self.write_output(&alloc::format!("Saving to: {}\r\n", final_filename));
+
+        // Download file using smoltcp
+        let response_data = unsafe {
+            if let Some(ref mut stack) = crate::kernel::NETWORK_STACK.as_mut() {
+                match crate::system::net::helpers::http_get(stack, host, path, port, 30000) {
+                    Ok(response_data) => {
+                        self.write_output(&alloc::format!("Downloaded {} bytes (with headers)\r\n", response_data.len()));
+                        response_data
+                    }
+                    Err(e) => {
+                        self.write_output(&alloc::format!("Download failed: {}\r\n", e));
+                        return;
+                    }
+                }
+            } else {
+                self.write_output("Network stack not initialized\r\n");
+                return;
+            }
+        };
+
+        // Extract body from HTTP response (strip headers)
+        let data = if let Some(body_start) = response_data.windows(4).position(|w| w == b"\r\n\r\n") {
+            let body = &response_data[body_start + 4..];
+            self.write_output(&alloc::format!("Body size: {} bytes\r\n", body.len()));
+            body
+        } else {
+            self.write_output("Warning: Could not find HTTP header separator, saving entire response\r\n");
+            &response_data[..]
+        };
+
+        // Save to filesystem
+        let result = if let (Some(ref mut fs), Some(idx)) = (&mut self.filesystem, self.device_index) {
+            unsafe {
+                if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                    if let Some(device) = devices.get_mut(idx) {
+                        // Create file with appropriate size
+                        match fs.create_file(device, &final_filename, data.len() as u32) {
+                            Ok(()) => {
+                                // Write data to file
+                                match fs.write_file(device, &final_filename, &data) {
+                                    Ok(()) => {
+                                        // Refresh file explorers
+                                        crate::gui::widgets::file_explorer::refresh_all_explorers();
+                                        Ok(data.len())
+                                    }
+                                    Err(e) => Err(alloc::format!("Failed to write file: {}", e))
+                                }
+                            }
+                            Err(e) => Err(alloc::format!("Failed to create file: {}", e))
+                        }
+                    } else {
+                        Err(alloc::string::String::from("Block device not available"))
+                    }
+                } else {
+                    Err(alloc::string::String::from("Block devices not initialized"))
+                }
+            }
+        } else {
+            Err(alloc::string::String::from("Filesystem not mounted"))
+        };
+
+        // Output results
+        match result {
+            Ok(size) => {
+                self.write_output(&alloc::format!(
+                    "Successfully saved {} bytes to '{}'\r\n",
+                    size, final_filename
+                ));
+            }
+            Err(e) => {
+                self.write_output(&alloc::format!("{}\r\n", e));
             }
         }
     }
