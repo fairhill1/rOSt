@@ -3,9 +3,17 @@
 use fontdue::Font;
 use alloc::vec::Vec;
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum FontMode {
+    Auto,      // Use TTF if available, fallback to bitmap
+    TrueType,  // Force TTF only (error if not loaded)
+    Bitmap,    // Force bitmap font
+}
+
 static mut FONT: Option<Font> = None;
 static mut FONT_SIZE: f32 = 18.0; // Default font size (18px for better readability)
 static mut FONT_LOAD_ATTEMPTED: bool = false; // Track if we've tried loading
+static mut FONT_PREFERENCE: FontMode = FontMode::Auto; // User's font preference
 
 /// Try to lazy-load the font from filesystem on first use
 fn try_load_font() {
@@ -77,13 +85,31 @@ fn try_load_font() {
 }
 
 /// Check if fontdue is available (lazy loads on first call)
+/// Returns true if TrueType font should be used based on preference and availability
 pub fn is_available() -> bool {
     unsafe {
         if !FONT_LOAD_ATTEMPTED {
             try_load_font();
         }
-        FONT.is_some()
+
+        match FONT_PREFERENCE {
+            FontMode::Auto => FONT.is_some(),      // Use TTF if loaded
+            FontMode::TrueType => FONT.is_some(),  // Force TTF (will fail if not loaded)
+            FontMode::Bitmap => false,             // Force bitmap
+        }
     }
+}
+
+/// Set font preference (Auto, TrueType, or Bitmap)
+pub fn set_font_mode(mode: FontMode) {
+    unsafe {
+        FONT_PREFERENCE = mode;
+    }
+}
+
+/// Get current font preference
+pub fn get_font_mode() -> FontMode {
+    unsafe { FONT_PREFERENCE }
 }
 
 /// Set the default font size
@@ -102,18 +128,24 @@ pub fn get_size() -> f32 {
 /// Returns height in pixels (suitable for cursor rendering)
 pub fn get_char_height() -> u32 {
     unsafe {
-        if let Some(ref font) = FONT {
-            if let Some(metrics) = font.horizontal_line_metrics(FONT_SIZE) {
-                // Use font's natural height (ascent + descent)
-                let height = metrics.ascent - metrics.descent;
-                // Round up (no_std compatible - add 1 if has fractional part)
-                let truncated = height as u32;
-                if height > truncated as f32 { truncated + 1 } else { truncated }
+        // Check if we should use TrueType based on preference
+        if is_available() {
+            if let Some(ref font) = FONT {
+                if let Some(metrics) = font.horizontal_line_metrics(FONT_SIZE) {
+                    // Use font's natural height (ascent + descent)
+                    let height = metrics.ascent - metrics.descent;
+                    // Round up (no_std compatible - add 1 if has fractional part)
+                    let truncated = height as u32;
+                    if height > truncated as f32 { truncated + 1 } else { truncated }
+                } else {
+                    16 // Fallback if metrics unavailable
+                }
             } else {
-                16 // Fallback if metrics unavailable
+                // Bitmap font fallback: 16px char height
+                16
             }
         } else {
-            // Bitmap font fallback: 16px char height
+            // Bitmap font: 16px char height
             16
         }
     }
@@ -123,21 +155,27 @@ pub fn get_char_height() -> u32 {
 /// Returns height in pixels (suitable for use in LINE_HEIGHT constants)
 pub fn get_line_height() -> u32 {
     unsafe {
-        if let Some(ref font) = FONT {
-            if let Some(metrics) = font.horizontal_line_metrics(FONT_SIZE) {
-                // Use font's natural line height (ascent + descent + line gap)
-                let height = metrics.ascent - metrics.descent + metrics.line_gap;
-                // Add a small spacing buffer (20% of font size, min 2px)
-                let spacing = (FONT_SIZE * 0.2).max(2.0);
-                let total = height + spacing;
-                // Round up (no_std compatible - add 1 if has fractional part)
-                let truncated = total as u32;
-                if total > truncated as f32 { truncated + 1 } else { truncated }
+        // Check if we should use TrueType based on preference
+        if is_available() {
+            if let Some(ref font) = FONT {
+                if let Some(metrics) = font.horizontal_line_metrics(FONT_SIZE) {
+                    // Use font's natural line height (ascent + descent + line gap)
+                    let height = metrics.ascent - metrics.descent + metrics.line_gap;
+                    // Add a small spacing buffer (20% of font size, min 2px)
+                    let spacing = (FONT_SIZE * 0.2).max(2.0);
+                    let total = height + spacing;
+                    // Round up (no_std compatible - add 1 if has fractional part)
+                    let truncated = total as u32;
+                    if total > truncated as f32 { truncated + 1 } else { truncated }
+                } else {
+                    20 // Fallback if metrics unavailable
+                }
             } else {
-                20 // Fallback if metrics unavailable
+                // Bitmap font fallback: 16px char + 4px spacing
+                20
             }
         } else {
-            // Bitmap font fallback: 16px char + 4px spacing
+            // Bitmap font: 16px char + 4px spacing
             20
         }
     }

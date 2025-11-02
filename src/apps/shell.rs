@@ -102,6 +102,7 @@ impl Shell {
             "write" => self.cmd_write(&parts),
             "edit" => self.cmd_edit(&parts),
             "clear" => self.cmd_clear(),
+            "setfont" => self.cmd_setfont(&parts),
             "ifconfig" => self.cmd_ifconfig(),
             "ping" => self.cmd_ping(&parts),
             "arp" => self.cmd_arp(),
@@ -126,6 +127,7 @@ impl Shell {
         self.write_output("  write <file> <text>   - Write text to file\r\n");
         self.write_output("  edit <filename>       - Open file in editor\r\n");
         self.write_output("  clear                 - Clear screen\r\n");
+        self.write_output("  setfont <mode>        - Set font (ttf, bitmap, auto)\r\n");
         self.write_output("\r\nNetwork commands:\r\n");
         self.write_output("  ifconfig              - Show network configuration\r\n");
         self.write_output("  ping <ip>             - Ping a host (e.g. ping 8.8.8.8)\r\n");
@@ -418,6 +420,34 @@ impl Shell {
         uart_write_string("\x1b[2J\x1b[H");
         // Clear GUI console
         console::clear(self.console_id);
+    }
+
+    fn cmd_setfont(&self, parts: &[&str]) {
+        if parts.len() < 2 {
+            self.write_output("Usage: setfont <mode>\r\n");
+            self.write_output("Modes: ttf, bitmap, auto\r\n");
+            let current = crate::gui::font::get_font_mode();
+            self.write_output(&alloc::format!("Current mode: {:?}\r\n", current));
+            return;
+        }
+
+        let mode = match parts[1] {
+            "ttf" | "truetype" => crate::gui::font::FontMode::TrueType,
+            "bitmap" | "bit" => crate::gui::font::FontMode::Bitmap,
+            "auto" => crate::gui::font::FontMode::Auto,
+            _ => {
+                self.write_output("Invalid mode. Use: ttf, bitmap, or auto\r\n");
+                return;
+            }
+        };
+
+        crate::gui::font::set_font_mode(mode);
+        self.write_output(&alloc::format!("Font mode set to: {:?}\r\n", mode));
+
+        // Check if the font will actually be available
+        if mode == crate::gui::font::FontMode::TrueType && !crate::gui::font::is_available() {
+            self.write_output("Warning: TrueType font not loaded! Falling back to bitmap.\r\n");
+        }
     }
 
     fn cmd_ifconfig(&self) {
