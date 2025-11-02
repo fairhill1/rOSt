@@ -465,10 +465,11 @@ impl FileExplorer {
             }
         }
 
-        // Draw button label (centered)
-        let text_width = label.len() as u32 * CHAR_WIDTH;
+        // Draw button label (centered both horizontally and vertically)
+        let text_width = framebuffer::measure_string(label);
+        let text_height = framebuffer::get_char_height();
         let text_x = x + ((width - text_width) / 2) as i32;
-        let text_y = y + ((height - CHAR_HEIGHT) / 2) as i32;
+        let text_y = y + ((height - text_height) / 2) as i32;
         framebuffer::draw_string(text_x as u32, text_y as u32, label, COLOR_TEXT);
     }
 }
