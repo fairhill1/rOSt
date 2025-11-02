@@ -268,7 +268,7 @@ pub fn layout_element(
     let mut current_y = y;
 
     // Block-level elements start on new line
-    let is_block = matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "br" | "hr" | "table");
+    let is_block = matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "hr" | "table");
     if is_block && !browser.layout.is_empty() {
         current_x = x;
         // Use whichever is lower on page: explicit spacing from parent (y) or default spacing
@@ -300,7 +300,8 @@ pub fn layout_element(
     // Handle special tags
     match tag {
         "br" => {
-            return (x, current_y + element_height + 2);
+            // Line break - just move down one line (no extra spacing)
+            return (x, current_y + element_height);
         }
         "hr" => {
             // Horizontal rule - draw a solid pixel line across the page
@@ -681,13 +682,20 @@ pub fn layout_element(
     for child in &node.children {
         // For block-level children (like nested lists), pass the base x position
         // For inline children (like text), pass current_x (continues on same line)
+        // Special case: <br> needs base x to reset to left margin
         let child_is_block = if let NodeType::Element(child_elem) = &child.node_type {
-            matches!(child_elem.tag_name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "br" | "hr" | "table")
+            matches!(child_elem.tag_name.as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "ul" | "ol" | "li" | "hr" | "table")
         } else {
             false
         };
 
-        let child_x = if child_is_block { x } else { current_x };
+        let is_br = if let NodeType::Element(child_elem) = &child.node_type {
+            child_elem.tag_name == "br"
+        } else {
+            false
+        };
+
+        let child_x = if child_is_block || is_br { x } else { current_x };
         let (new_x, new_y) = layout_node(browser, child, child_x, current_y, max_width, color, bold, italic, font_size_level, element_id);
         current_x = new_x;
         current_y = new_y;
@@ -695,7 +703,8 @@ pub fn layout_element(
 
     // Block elements end with newline
     if is_block {
-        (x, current_y + element_height + 2)
+        // Paragraphs get more spacing, br gets handled above
+        (x, current_y + element_height + 6)
     } else {
         (current_x, current_y)
     }
