@@ -677,32 +677,14 @@ impl Browser {
                                         // Trigger reflow to apply styles
                                         if let Some(ref dom) = self.dom.clone() {
                                             self.layout.clear();
-                                            layout::layout_node(self, &dom, 10, 10, 1260, &Color::BLACK, &None, false, false, 1, "", &[]);
-
-                                            // Add bottom padding after reflow
-                                            if let Some(last_box) = self.layout.last() {
-                                                let bottom_padding_y = last_box.y + last_box.height;
-                                                self.layout.push(LayoutBox {
-                                                    x: 10,
-                                                    y: bottom_padding_y,
-                                                    width: 1,
-                                                    height: 25,
-                                                    text: String::new(),
-                                                    color: Color::new(255, 255, 255),
-                                                    background_color: None,
-                                                    font_size: 1,
-                                                    is_link: false,
-                                                    link_url: String::new(),
-                                                    bold: false,
-                                                    italic: false,
-                                                    element_id: String::new(),
-                                                    is_image: false,
-                                                    image_data: None,
-                                                    is_hr: false,
-                                                    is_table_cell: false,
-                                                    is_header_cell: false,
-                                                });
-                                            }
+                                            // Use find_and_layout_body with actual window width
+                                            // Start at (0, 0) with full width - CSS controls margins/padding
+                                            let layout_width = if self.last_window_width > 0 {
+                                                self.last_window_width
+                                            } else {
+                                                1280
+                                            };
+                                            layout::find_and_layout_body(self, &dom, 0, 0, layout_width);
                                         }
 
                                         needs_redraw = true;
@@ -979,7 +961,8 @@ pub fn render_at(instance_id: usize, x: usize, y: usize, width: usize, height: u
             let browser = &mut BROWSERS[instance_id];
 
             // Check if window width changed - trigger reflow if needed
-            if browser.last_window_width != width && browser.last_window_width != 0 {
+            // Also reflow on first render (last_window_width == 0) if we have a DOM
+            if browser.last_window_width != width {
                 crate::kernel::uart_write_string(&alloc::format!(
                     "Browser: Window resized from {} to {} - reflowing layout\r\n",
                     browser.last_window_width, width
@@ -988,33 +971,9 @@ pub fn render_at(instance_id: usize, x: usize, y: usize, width: usize, height: u
                 // Reflow the layout with new width
                 if let Some(ref dom) = browser.dom.clone() {
                     browser.layout.clear();
-                    let content_width = width.saturating_sub(20); // Subtract margins/padding
-                    layout::layout_node(browser, &dom, 10, 10, content_width, &Color::BLACK, &None, false, false, 1, "", &[]);
-
-                    // Add bottom padding after reflow
-                    if let Some(last_box) = browser.layout.last() {
-                        let bottom_padding_y = last_box.y + last_box.height;
-                        browser.layout.push(LayoutBox {
-                            x: 10,
-                            y: bottom_padding_y,
-                            width: 1,
-                            height: 25,
-                            text: String::new(),
-                            color: Color::new(255, 255, 255),
-                            background_color: None,
-                            font_size: 1,
-                            is_link: false,
-                            link_url: String::new(),
-                            bold: false,
-                            italic: false,
-                            element_id: String::new(),
-                            is_image: false,
-                            image_data: None,
-                            is_hr: false,
-                            is_table_cell: false,
-                            is_header_cell: false,
-                        });
-                    }
+                    // Use find_and_layout_body just like initial load
+                    // Start at (0, 0) with full width - CSS controls margins/padding
+                    layout::find_and_layout_body(browser, &dom, 0, 0, width);
                 }
             }
 
