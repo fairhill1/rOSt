@@ -374,6 +374,17 @@ pub fn draw_string(x: u32, y: u32, text: &str, color: u32) {
     }
 }
 
+/// Measure the width of a string in pixels (works with both TrueType and bitmap fonts)
+pub fn measure_string(text: &str) -> u32 {
+    if crate::gui::font::is_available() {
+        let size = crate::gui::font::get_size();
+        crate::gui::font::measure_string(text, size) as u32
+    } else {
+        // Bitmap font: 16px per character (8x8 scaled 2x)
+        (text.len() * 16) as u32
+    }
+}
+
 /// Draw a string using the bitmap font (fallback)
 fn draw_string_bitmap(x: u32, y: u32, text: &str, color: u32) {
     let mut cur_x = x;
