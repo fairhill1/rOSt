@@ -625,6 +625,14 @@ impl Shell {
             return;
         }
 
+        // Normalize common long extensions to shorter versions
+        let filename = if filename.ends_with(".jpeg") {
+            alloc::format!("{}.jpg", &filename[..filename.len()-5])
+        } else {
+            alloc::string::String::from(filename)
+        };
+        let filename = filename.as_str();
+
         // SimpleFS has 8-character filename limit - truncate if needed
         let final_filename = if filename.len() > 8 {
             // Try to preserve extension
