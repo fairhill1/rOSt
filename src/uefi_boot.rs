@@ -30,7 +30,7 @@ pub extern "efiapi" fn efi_main(
     unsafe {
         let bs = get_boot_services();
         let mut heap_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
-        let heap_size = 1024 * 256; // 256KB heap
+        let heap_size = 1024 * 1024 * 4; // 4MB heap
         
         let status = (bs.allocate_pool)(
             1, // EfiLoaderData

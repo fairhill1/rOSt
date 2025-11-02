@@ -252,22 +252,28 @@ pub fn http_get(
         let mut received_data = false;
         let can_recv = stack.with_tcp_socket(tcp_handle, |socket| socket.can_recv());
 
+        // Drain socket buffer completely - loop until can_recv() is false
         stack.with_tcp_socket(tcp_handle, |socket| {
-            if socket.can_recv() {
+            while socket.can_recv() {
                 if let Ok(_) = socket.recv(|buffer| {
                     let len = buffer.len();
-                    if poll_count % 100 == 0 || len > 0 {
+                    if len > 0 {
                         crate::kernel::uart_write_string(&alloc::format!(
                             "[HTTP] Poll {}: recv {} bytes (total: {})\r\n",
                             poll_count, len, response_data.len() + len
                         ));
+                        response_data.extend_from_slice(buffer);
+                        received_data = true;
                     }
-                    response_data.extend_from_slice(buffer);
                     (len, ())
                 }) {
-                    received_data = true;
+                    // Continue draining
+                } else {
+                    break;
                 }
-            } else if poll_count % 500 == 0 {
+            }
+
+            if !received_data && poll_count % 500 == 0 {
                 // Periodically log socket state during idle time
                 crate::kernel::uart_write_string(&alloc::format!(
                     "[HTTP] Poll {}: can_recv={}, total={} bytes\r\n",

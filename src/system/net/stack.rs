@@ -80,8 +80,8 @@ impl NetworkStack {
     /// Create a new TCP socket
     pub fn create_tcp_socket(&mut self) -> SocketHandle {
         // Create TCP socket with buffers large enough for HTTP responses
-        // Increased to 32KB to handle larger web pages and images
-        let tcp_rx_buffer = tcp::SocketBuffer::new(vec![0; 32768]);
+        // 64KB buffer - larger sizes cause allocation issues
+        let tcp_rx_buffer = tcp::SocketBuffer::new(vec![0; 65536]);
         let tcp_tx_buffer = tcp::SocketBuffer::new(vec![0; 8192]);
         let tcp_socket = tcp::Socket::new(tcp_rx_buffer, tcp_tx_buffer);
 
