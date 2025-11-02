@@ -7,6 +7,7 @@ use crate::gui::widgets::text_input::TextInput;
 use crate::gui::bmp_decoder::BmpImage;
 use crate::gui::bmp_decoder::decode_bmp;
 use crate::gui::png_decoder::decode_png;
+use smoltcp::iface::SocketHandle;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::format;
@@ -16,6 +17,58 @@ static mut BROWSERS: Vec<Browser> = Vec::new();
 
 const CHAR_WIDTH: usize = 8;
 const CHAR_HEIGHT: usize = 8;
+
+/// Async HTTP request state machine
+enum HttpState {
+    Idle,
+    ResolvingDns {
+        host: String,
+        path: String,
+        port: u16,
+        start_time: u64,
+    },
+    Connecting {
+        socket_handle: SocketHandle,
+        http_request: String,
+        start_time: u64,
+    },
+    ReceivingResponse {
+        socket_handle: SocketHandle,
+        response_data: Vec<u8>,
+        last_recv_time: u64,
+    },
+    Complete {
+        html: String,
+    },
+    Error {
+        message: String,
+    },
+}
+
+/// Pending image load request
+struct PendingImage {
+    url: String,
+    layout_box_index: usize,
+}
+
+/// Image loading state machine
+enum ImageLoadState {
+    Idle,
+    Connecting {
+        socket_handle: SocketHandle,
+        http_request: String,
+        start_time: u64,
+        layout_box_index: usize,
+        is_png: bool,
+    },
+    Loading {
+        socket_handle: SocketHandle,
+        response_data: Vec<u8>,
+        last_recv_time: u64,
+        layout_box_index: usize,
+        is_png: bool,
+    },
+}
 
 /// Get the actual font size in pixels based on heading level
 fn get_font_size_px(font_size_level: usize) -> f32 {
@@ -104,6 +157,13 @@ pub struct Browser {
     pub loading: bool,
     pub page_title: Option<String>,
     pub instance_id: usize, // ID for updating window title
+
+    // Async HTTP state
+    http_state: HttpState,
+
+    // Async image loading
+    pending_images: Vec<PendingImage>,
+    image_load_state: ImageLoadState,
 }
 
 impl Browser {
@@ -120,6 +180,9 @@ impl Browser {
             loading: false,
             page_title: None,
             instance_id,
+            http_state: HttpState::Idle,
+            pending_images: Vec::new(),
+            image_load_state: ImageLoadState::Idle,
         }
     }
 
@@ -146,33 +209,422 @@ impl Browser {
         // Handle special URLs
         if url.starts_with("about:") {
             self.load_about_page(&url);
+            self.loading = false;
             return;
         }
 
         // Show loading page first
         self.load_html("<html><body><h1>Loading...</h1><p>Please wait while the page loads. This may take a few seconds.</p></body></html>".to_string());
 
-        crate::kernel::uart_write_string(&alloc::format!("Browser: Navigating to {}\r\n", url));
+        crate::kernel::uart_write_string(&alloc::format!("Browser: Async loading {}\r\n", url));
 
         // Parse URL to get host, port, path
         let (host, port, path) = self.parse_url(&url);
 
         crate::kernel::uart_write_string(&alloc::format!("Browser: Host={}, Port={}, Path={}\r\n", host, port, path));
 
-        // Make HTTP request
-        match self.http_get(&host, port, &path) {
-            Some(html) => {
-                crate::kernel::uart_write_string(&alloc::format!("Browser: HTTP request succeeded, HTML length={}\r\n", html.len()));
-                crate::kernel::uart_write_string(&alloc::format!("Browser: HTML content:\r\n{}\r\n", html));
+        // Start async HTTP request - just initiate DNS resolution
+        self.http_state = HttpState::ResolvingDns {
+            host,
+            path,
+            port,
+            start_time: crate::kernel::drivers::timer::get_time_ms(),
+        };
+
+        // Returns immediately - poll_http() will advance the state machine
+    }
+
+    /// Poll async HTTP request state machine (called each frame)
+    /// Returns true if display needs redraw
+    pub fn poll_http(&mut self) -> bool {
+        // Move state out temporarily to avoid borrow checker issues
+        let current_state = core::mem::replace(&mut self.http_state, HttpState::Idle);
+
+        let mut needs_redraw = false;
+
+        self.http_state = match current_state {
+            HttpState::Idle => HttpState::Idle,
+
+            HttpState::ResolvingDns { host, path, port, start_time } => {
+                // Try to resolve DNS
+                unsafe {
+                    if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                        // Check if host is already an IP (instant)
+                        let server_ip = if let Some(ip) = crate::system::net::network::parse_ip(&host) {
+                            Some(smoltcp::wire::IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(ip[0], ip[1], ip[2], ip[3])))
+                        } else {
+                            // Need DNS - use blocking dns_lookup for now (we'll make it async later)
+                            match crate::system::net::helpers::dns_lookup(stack, &host, 5000) {
+                                Ok(addresses) => {
+                                    if addresses.is_empty() {
+                                        None
+                                    } else {
+                                        let ip = addresses[0];
+                                        Some(smoltcp::wire::IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(ip[0], ip[1], ip[2], ip[3])))
+                                    }
+                                }
+                                Err(_) => None,
+                            }
+                        };
+
+                        if let Some(server_ip) = server_ip {
+                                crate::kernel::uart_write_string(&alloc::format!("DNS resolved, connecting...\r\n"));
+
+                                // Create TCP socket
+                                let tcp_handle = stack.create_tcp_socket();
+
+                                // Generate dynamic local port
+                                static mut LOCAL_PORT_COUNTER: u16 = 49152;
+                                let local_port = unsafe {
+                                    let port = LOCAL_PORT_COUNTER;
+                                    LOCAL_PORT_COUNTER = if LOCAL_PORT_COUNTER >= 65000 { 49152 } else { LOCAL_PORT_COUNTER + 1 };
+                                    port
+                                };
+
+                                // Initiate connection
+                                let remote_endpoint = smoltcp::wire::IpEndpoint::new(server_ip, port);
+                                if let Err(_) = stack.tcp_connect(tcp_handle, remote_endpoint, local_port) {
+                                    stack.remove_socket(tcp_handle);
+                                    HttpState::Error {
+                                        message: "Failed to initiate TCP connection".to_string(),
+                                    }
+                                } else {
+                                    // Build HTTP request
+                                    let http_request = alloc::format!(
+                                        "GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                                        path, host
+                                    );
+
+                                    HttpState::Connecting {
+                                        socket_handle: tcp_handle,
+                                        http_request,
+                                        start_time: crate::kernel::drivers::timer::get_time_ms(),
+                                    }
+                                }
+                            } else {
+                                // DNS still resolving, stay in this state
+                                HttpState::ResolvingDns { host, path, port, start_time }
+                            }
+                        } else {
+                            HttpState::Error {
+                                message: "No network stack available".to_string(),
+                            }
+                        }
+                    }
+            }
+
+            HttpState::Connecting { socket_handle, http_request, start_time } => {
+                // Check timeout (10 seconds for connection)
+                if crate::kernel::drivers::timer::get_time_ms() - start_time > 10000 {
+                    unsafe {
+                        if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                            stack.remove_socket(socket_handle);
+                        }
+                    }
+                    HttpState::Error {
+                        message: "Connection timeout".to_string(),
+                    }
+                } else {
+                    unsafe {
+                        if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                            let is_connected = stack.with_tcp_socket(socket_handle, |socket| {
+                                socket.may_send() && socket.may_recv()
+                            });
+
+                            if is_connected {
+                                crate::kernel::uart_write_string("Connected, sending request...\r\n");
+
+                                // Send HTTP request
+                                stack.with_tcp_socket(socket_handle, |socket| {
+                                    socket.send_slice(http_request.as_bytes()).ok();
+                                });
+
+                                HttpState::ReceivingResponse {
+                                    socket_handle,
+                                    response_data: Vec::new(),
+                                    last_recv_time: crate::kernel::drivers::timer::get_time_ms(),
+                                }
+                            } else {
+                                // Still connecting
+                                HttpState::Connecting { socket_handle, http_request, start_time }
+                            }
+                        } else {
+                            HttpState::Error {
+                                message: "Network stack disappeared".to_string(),
+                            }
+                        }
+                    }
+                }
+            }
+
+            HttpState::ReceivingResponse { socket_handle, mut response_data, last_recv_time } => {
+                unsafe {
+                    if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                        let mut received_data = false;
+                        let mut connection_closed = false;
+
+                        stack.with_tcp_socket(socket_handle, |socket| {
+                            // Receive data
+                            while socket.can_recv() {
+                                if let Ok(_) = socket.recv(|buffer| {
+                                    let len = buffer.len();
+                                    if len > 0 {
+                                        response_data.extend_from_slice(buffer);
+                                        received_data = true;
+                                    }
+                                    (len, ())
+                                }) {}
+                            }
+
+                            // Check if connection closed
+                            if !socket.may_recv() {
+                                connection_closed = true;
+                            }
+                        });
+
+                        let new_last_recv_time = if received_data {
+                            crate::kernel::drivers::timer::get_time_ms()
+                        } else {
+                            last_recv_time
+                        };
+
+                        if connection_closed {
+                            crate::kernel::uart_write_string(&alloc::format!("Received {} bytes total\r\n", response_data.len()));
+                            stack.remove_socket(socket_handle);
+
+                            // Parse HTTP response
+                            if let Ok(response) = core::str::from_utf8(&response_data) {
+                                // Find the blank line that separates headers from body
+                                let html = if let Some(body_start) = response.find("\r\n\r\n") {
+                                    response[body_start + 4..].to_string()
+                                } else if let Some(body_start) = response.find("\n\n") {
+                                    response[body_start + 2..].to_string()
+                                } else {
+                                    response.to_string()
+                                };
+
+                                HttpState::Complete { html }
+                            } else {
+                                HttpState::Error {
+                                    message: "Invalid UTF-8 in response".to_string(),
+                                }
+                            }
+                        } else {
+                            // Check timeout (30 seconds of no data)
+                            if crate::kernel::drivers::timer::get_time_ms() - new_last_recv_time > 30000 {
+                                stack.remove_socket(socket_handle);
+                                HttpState::Error {
+                                    message: "Receive timeout".to_string(),
+                                }
+                            } else {
+                                HttpState::ReceivingResponse {
+                                    socket_handle,
+                                    response_data,
+                                    last_recv_time: new_last_recv_time,
+                                }
+                            }
+                        }
+                    } else {
+                        HttpState::Error {
+                            message: "Network stack disappeared".to_string(),
+                        }
+                    }
+                }
+            }
+
+            HttpState::Complete { html } => {
+                crate::kernel::uart_write_string(&alloc::format!("Page loaded, {} bytes\r\n", html.len()));
                 self.load_html(html);
+                self.loading = false;
+                needs_redraw = true; // Trigger redraw!
+                HttpState::Idle
             }
-            None => {
-                crate::kernel::uart_write_string("Browser: HTTP request failed\r\n");
-                self.load_error_page("HTTP request failed. Check network connection and URL.");
+
+            HttpState::Error { message } => {
+                crate::kernel::uart_write_string(&alloc::format!("HTTP error: {}\r\n", message));
+                self.load_error_page(&message);
+                self.loading = false;
+                needs_redraw = true; // Trigger redraw!
+                HttpState::Idle
             }
+        };
+
+        // Also poll async image loading
+        if let ImageLoadState::Idle = self.image_load_state {
+            // Start next pending image load
+            if let Some(pending) = self.pending_images.pop() {
+                crate::kernel::uart_write_string(&alloc::format!("Starting async image load: {}\r\n", pending.url));
+
+                // Parse URL and initiate TCP connection
+                let (host, port, path) = self.parse_url(&pending.url);
+                let is_png = pending.url.ends_with(".png");
+
+                unsafe {
+                    if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                        // Resolve DNS
+                        let server_ip = if let Some(ip) = crate::system::net::network::parse_ip(&host) {
+                            Some(smoltcp::wire::IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(ip[0], ip[1], ip[2], ip[3])))
+                        } else {
+                            match crate::system::net::helpers::dns_lookup(stack, &host, 5000) {
+                                Ok(addresses) => {
+                                    if !addresses.is_empty() {
+                                        let ip = addresses[0];
+                                        Some(smoltcp::wire::IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(ip[0], ip[1], ip[2], ip[3])))
+                                    } else {
+                                        None
+                                    }
+                                }
+                                Err(_) => None,
+                            }
+                        };
+
+                        if let Some(server_ip) = server_ip {
+                            let tcp_handle = stack.create_tcp_socket();
+
+                            static mut IMG_LOCAL_PORT: u16 = 50000;
+                            let local_port = unsafe {
+                                let port = IMG_LOCAL_PORT;
+                                IMG_LOCAL_PORT = if IMG_LOCAL_PORT >= 60000 { 50000 } else { IMG_LOCAL_PORT + 1 };
+                                port
+                            };
+
+                            let remote_endpoint = smoltcp::wire::IpEndpoint::new(server_ip, port);
+                            if stack.tcp_connect(tcp_handle, remote_endpoint, local_port).is_ok() {
+                                // Prepare HTTP request
+                                let http_request = alloc::format!(
+                                    "GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                                    path, host
+                                );
+
+                                self.image_load_state = ImageLoadState::Connecting {
+                                    socket_handle: tcp_handle,
+                                    http_request,
+                                    start_time: crate::kernel::drivers::timer::get_time_ms(),
+                                    layout_box_index: pending.layout_box_index,
+                                    is_png,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Poll current image load
+            let current_state = core::mem::replace(&mut self.image_load_state, ImageLoadState::Idle);
+
+            self.image_load_state = match current_state {
+                ImageLoadState::Idle => ImageLoadState::Idle,
+
+                ImageLoadState::Connecting { socket_handle, http_request, start_time, layout_box_index, is_png } => {
+                    unsafe {
+                        if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                            let connected = stack.with_tcp_socket(socket_handle, |socket| {
+                                socket.may_send() && socket.may_recv()
+                            });
+
+                            if connected {
+                                // Send HTTP request
+                                stack.with_tcp_socket(socket_handle, |socket| {
+                                    socket.send_slice(http_request.as_bytes()).ok();
+                                });
+
+                                ImageLoadState::Loading {
+                                    socket_handle,
+                                    response_data: Vec::new(),
+                                    last_recv_time: crate::kernel::drivers::timer::get_time_ms(),
+                                    layout_box_index,
+                                    is_png,
+                                }
+                            } else if crate::kernel::drivers::timer::get_time_ms() - start_time > 10000 {
+                                stack.remove_socket(socket_handle);
+                                ImageLoadState::Idle
+                            } else {
+                                ImageLoadState::Connecting { socket_handle, http_request, start_time, layout_box_index, is_png }
+                            }
+                        } else {
+                            ImageLoadState::Idle
+                        }
+                    }
+                }
+
+                ImageLoadState::Loading { socket_handle, mut response_data, last_recv_time, layout_box_index, is_png } => {
+                    unsafe {
+                        if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                            let mut received_data = false;
+                            let mut connection_closed = false;
+
+                            stack.with_tcp_socket(socket_handle, |socket| {
+                                while socket.can_recv() {
+                                    if let Ok(_) = socket.recv(|buffer| {
+                                        let len = buffer.len();
+                                        if len > 0 {
+                                            response_data.extend_from_slice(buffer);
+                                            received_data = true;
+                                        }
+                                        (len, ())
+                                    }) {}
+                                }
+
+                                if !socket.may_recv() {
+                                    connection_closed = true;
+                                }
+                            });
+
+                            let new_last_recv_time = if received_data {
+                                crate::kernel::drivers::timer::get_time_ms()
+                            } else {
+                                last_recv_time
+                            };
+
+                            if connection_closed {
+                                stack.remove_socket(socket_handle);
+
+                                // Parse HTTP response and decode image
+                                if let Some(body_start) = response_data.windows(4).position(|w| w == b"\r\n\r\n") {
+                                    let image_data = &response_data[body_start + 4..];
+
+                                    let decoded_image = if is_png {
+                                        decode_png(image_data)
+                                    } else {
+                                        decode_bmp(image_data)
+                                    };
+
+                                    if let Some(img) = decoded_image {
+                                        crate::kernel::uart_write_string(&alloc::format!("Image loaded: {}x{}\r\n", img.width, img.height));
+
+                                        // Update layout box
+                                        if layout_box_index < self.layout.len() {
+                                            self.layout[layout_box_index].image_data = Some(img.clone());
+                                            self.layout[layout_box_index].width = img.width as usize;
+                                            self.layout[layout_box_index].height = img.height as usize;
+                                            self.layout[layout_box_index].text = String::new();
+                                            needs_redraw = true;
+                                        }
+                                    }
+                                }
+
+                                ImageLoadState::Idle
+                            } else if crate::kernel::drivers::timer::get_time_ms() - new_last_recv_time > 30000 {
+                                stack.remove_socket(socket_handle);
+                                ImageLoadState::Idle
+                            } else {
+                                ImageLoadState::Loading {
+                                    socket_handle,
+                                    response_data,
+                                    last_recv_time: new_last_recv_time,
+                                    layout_box_index,
+                                    is_png,
+                                }
+                            }
+                        } else {
+                            ImageLoadState::Idle
+                        }
+                    }
+                }
+            };
         }
 
-        self.loading = false;
+        needs_redraw
     }
 
     /// Parse URL into (host, port, path)
@@ -648,67 +1100,42 @@ impl Browser {
                         alloc::format!("{}/{}", base_url, src)
                     };
 
-                    crate::kernel::uart_write_string(&alloc::format!("layout_element: Fetching image from: {}\r\n", img_url));
+                    crate::kernel::uart_write_string(&alloc::format!("layout_element: Queuing async load for: {}\r\n", img_url));
 
-                    // Parse URL and fetch image
-                    let (host, port, path) = self.parse_url(&img_url);
-                    if let Some(image_data) = self.http_get_binary(&host, port, &path) {
-                        crate::kernel::uart_write_string(&alloc::format!("layout_element: Fetched {} bytes\r\n", image_data.len()));
-
-                        // Detect image format by magic bytes
-                        let is_png = image_data.len() >= 8 &&
-                                     image_data[0] == 0x89 && image_data[1] == 0x50 &&
-                                     image_data[2] == 0x4E && image_data[3] == 0x47;
-                        let is_bmp = image_data.len() >= 2 &&
-                                     image_data[0] == 0x42 && image_data[1] == 0x4D;
-
-                        // Decode image (try PNG first if detected, otherwise BMP)
-                        let decoded_image = if is_png {
-                            decode_png(&image_data)
-                        } else if is_bmp {
-                            decode_bmp(&image_data)
-                        } else {
-                            None
-                        };
-
-                        if let Some(img) = decoded_image {
-                            let format_name = if is_png { "PNG" } else { "BMP" };
-                            crate::kernel::uart_write_string(&alloc::format!("layout_element: Decoded {} {}x{}\r\n", format_name, img.width, img.height));
-
-                            // Add spacing before image if needed
-                            if !self.layout.is_empty() {
-                                current_y += 4;
-                            }
-
-                            // Create layout box for image
-                            self.layout.push(LayoutBox {
-                                x: current_x,
-                                y: current_y,
-                                width: img.width as usize,
-                                height: img.height as usize,
-                                text: String::new(),
-                                color: Color::BLACK,
-                                font_size: font_size_level,
-                                is_link: false,
-                                link_url: String::new(),
-                                bold: false,
-                                italic: false,
-                                element_id: element_id.to_string(),
-                                is_image: true,
-                                image_data: Some(img),
-                            });
-
-                            // Move to next line after image
-                            current_y += self.layout.last().unwrap().height + 4;
-                            return (x, current_y);
-                        } else {
-                            crate::kernel::uart_write_string("layout_element: Failed to decode BMP\r\n");
-                        }
-                    } else {
-                        crate::kernel::uart_write_string("layout_element: Failed to fetch image\r\n");
+                    // Add spacing before image if needed
+                    if !self.layout.is_empty() {
+                        current_y += 4;
                     }
+
+                    // Create placeholder layout box for image (will be filled later)
+                    let layout_box_index = self.layout.len();
+                    self.layout.push(LayoutBox {
+                        x: current_x,
+                        y: current_y,
+                        width: 100, // Placeholder size
+                        height: 100,
+                        text: String::from("[Loading image...]"),
+                        color: Color::new(128, 128, 128),
+                        font_size: font_size_level,
+                        is_link: false,
+                        link_url: String::new(),
+                        bold: false,
+                        italic: false,
+                        element_id: element_id.to_string(),
+                        is_image: true,
+                        image_data: None, // Will be filled async
+                    });
+
+                    // Queue async image load
+                    self.pending_images.push(PendingImage {
+                        url: img_url,
+                        layout_box_index,
+                    });
+
+                    // Move to next line after image placeholder
+                    current_y += self.layout.last().unwrap().height + 4;
+                    return (x, current_y);
                 }
-                // If image fetch/decode failed, just continue
                 return (current_x, current_y);
             }
             "a" => {
@@ -1259,6 +1686,20 @@ pub fn get_browser(id: usize) -> Option<&'static mut Browser> {
         } else {
             None
         }
+    }
+}
+
+/// Poll all browsers' async HTTP state machines (call from main loop)
+/// Returns true if any browser needs redraw
+pub fn poll_all_browsers() -> bool {
+    unsafe {
+        let mut needs_redraw = false;
+        for browser in BROWSERS.iter_mut() {
+            if browser.poll_http() {
+                needs_redraw = true;
+            }
+        }
+        needs_redraw
     }
 }
 

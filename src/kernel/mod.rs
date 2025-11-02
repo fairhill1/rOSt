@@ -790,6 +790,8 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     let mut last_minute = drivers::rtc::get_datetime().minute; // Track last rendered minute
 
     loop {
+        // Worker threads scheduled via timer preemption only (every 10ms)
+
         // Check if minute has changed - redraw clock every minute
         let current_minute = drivers::rtc::get_datetime().minute;
         if current_minute != last_minute {
@@ -805,6 +807,11 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
             if let Some(ref mut stack) = NETWORK_STACK {
                 stack.poll();
             }
+        }
+
+        // Poll browser async HTTP state machines
+        if crate::gui::widgets::browser::poll_all_browsers() {
+            needs_full_render = true;
         }
 
         // Process queued input events - returns (needs_full_redraw, needs_cursor_redraw)

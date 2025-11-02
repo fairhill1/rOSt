@@ -108,7 +108,25 @@ impl Scheduler {
         let current_id = self.current_thread;
 
         // Don't switch if already running this thread
+        // UNLESS we have a kernel context to yield to (cooperative multitasking)
         if current_id == Some(next_id) {
+            // Same thread wants to yield - return to kernel if available
+            if let Some(kernel_ctx) = self.kernel_context {
+                let current_ptr = self.threads
+                    .iter_mut()
+                    .find(|t| t.id == next_id)
+                    .map(|t| &mut t.context as *mut _)
+                    .unwrap_or(core::ptr::null_mut());
+
+                // Mark thread as ready and ADD BACK TO QUEUE (it was removed by pick_next)
+                if let Some(thread) = self.threads.iter_mut().find(|t| t.id == next_id) {
+                    thread.state = ThreadState::Ready;
+                }
+                self.ready_queue.push_back(next_id); // Critical: re-add to queue!
+
+                self.current_thread = None;
+                return Some((current_ptr, kernel_ctx as *const _, false));
+            }
             return None;
         }
 
@@ -148,6 +166,56 @@ unsafe impl Sync for Scheduler {}
 
 // Global scheduler instance
 pub static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler::new());
+
+/// Run pending threads cooperatively (called from main loop)
+/// Gives ready threads a time slice and then returns to caller
+pub fn run_pending_threads() {
+    // Check if there are any ready threads
+    let has_ready = {
+        let sched = SCHEDULER.lock();
+        !sched.ready_queue.is_empty()
+    };
+
+    if !has_ready {
+        return; // No threads to run
+    }
+
+    // Create a context for the main loop so threads can yield back
+    let mut main_context = crate::kernel::thread::ThreadContext {
+        x19: 0, x20: 0, x21: 0, x22: 0, x23: 0, x24: 0,
+        x25: 0, x26: 0, x27: 0, x28: 0, x29: 0, x30: 0, sp: 0,
+    };
+
+    // Register main context so threads can yield back to us
+    {
+        let mut sched = SCHEDULER.lock();
+        sched.set_kernel_context(&mut main_context as *mut _);
+    }
+
+    // Get next thread to run
+    let switch_info = {
+        let mut sched = SCHEDULER.lock();
+        sched.schedule()
+    };
+
+    // Switch to thread (will save our context and can return here)
+    if let Some((current_ptr, next_ptr, is_first)) = switch_info {
+        unsafe {
+            if is_first || current_ptr.is_null() {
+                // Use context_switch anyway to save main_context
+                crate::kernel::thread::context_switch(&mut main_context as *mut _, next_ptr);
+            } else {
+                crate::kernel::thread::context_switch(current_ptr, next_ptr);
+            }
+        }
+    }
+
+    // Thread yielded back to us, clear kernel context
+    {
+        let mut sched = SCHEDULER.lock();
+        sched.kernel_context = None;
+    }
+}
 
 /// Start the scheduler (free function that handles lock properly)
 pub fn start_scheduler() {
