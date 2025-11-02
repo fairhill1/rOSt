@@ -12,6 +12,7 @@ linked_list_allocator = "0.10.5"
 smoltcp = { version = "0.12", default-features = false, features = ["proto-ipv4", "proto-ipv6", "proto-dhcpv4", "proto-dns", "socket-tcp", "socket-udp", "socket-icmp", "socket-raw", "socket-dhcpv4", "socket-dns", "async", "medium-ethernet", "alloc"] }
 minipng = { version = "1.0.0", default-features = false }
 fontdue = { version = "0.9.3", default-features = false, features = ["hashbrown"] }
+spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex"] }
 
 [profile.release]
 opt-level = 2
