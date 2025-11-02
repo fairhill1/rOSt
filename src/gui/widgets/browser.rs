@@ -618,7 +618,29 @@ impl Browser {
                                             crate::kernel::uart_write_string("Image dimensions changed, reflowing layout\r\n");
                                             if let Some(ref dom) = self.dom.clone() {
                                                 self.layout.clear();
-                                                self.layout_node(&dom, 10, 10, 780, &Color::BLACK, false, false, 1, "");
+                                                self.layout_node(&dom, 10, 10, 1260, &Color::BLACK, false, false, 1, "");
+
+                                                // Add bottom padding after reflow
+                                                if let Some(last_box) = self.layout.last() {
+                                                    let bottom_padding_y = last_box.y + last_box.height;
+                                                    self.layout.push(LayoutBox {
+                                                        x: 10,
+                                                        y: bottom_padding_y,
+                                                        width: 1,
+                                                        height: 25,
+                                                        text: String::new(),
+                                                        color: Color::new(255, 255, 255),
+                                                        font_size: 1,
+                                                        is_link: false,
+                                                        link_url: String::new(),
+                                                        bold: false,
+                                                        italic: false,
+                                                        element_id: String::new(),
+                                                        is_image: false,
+                                                        image_data: None,
+                                                        is_hr: false,
+                                                    });
+                                                }
                                             }
                                             needs_redraw = true;
                                         } else {
@@ -837,7 +859,8 @@ impl Browser {
         crate::kernel::uart_write_string("load_html: Starting layout\r\n");
 
         // Find and layout the <body> element (it might be nested in malformed HTML)
-        self.find_and_layout_body(&dom, 10, 10, 1000);
+        // Use wider layout width to accommodate larger windows (most common is 1280px)
+        self.find_and_layout_body(&dom, 10, 10, 1260);
 
         crate::kernel::uart_write_string(&alloc::format!("load_html: Layout complete, {} layout boxes created\r\n", self.layout.len()));
 
@@ -872,6 +895,28 @@ impl Browser {
                     crate::kernel::uart_write_string("find_and_layout_body: Found <body> element\r\n");
                     // Body text uses font_size_level = 1 (18px TTF / 8px bitmap)
                     self.layout_node(node, x, y, max_width, &Color::BLACK, false, false, 1, "");
+
+                    // Add bottom padding (spacer box at end of page)
+                    if let Some(last_box) = self.layout.last() {
+                        let bottom_padding_y = last_box.y + last_box.height;
+                        self.layout.push(LayoutBox {
+                            x: 10,
+                            y: bottom_padding_y,
+                            width: 1,
+                            height: 25, // 25px tall spacer creates bottom padding
+                            text: String::new(),
+                            color: Color::new(255, 255, 255), // White (invisible on white bg)
+                            font_size: 1,
+                            is_link: false,
+                            link_url: String::new(),
+                            bold: false,
+                            italic: false,
+                            element_id: String::new(),
+                            is_image: false,
+                            image_data: None,
+                            is_hr: false,
+                        });
+                    }
                     return;
                 }
                 // Not body, recurse into children to find it
