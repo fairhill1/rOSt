@@ -1368,26 +1368,43 @@ impl Browser {
         let content_height = win_height.saturating_sub(35);
 
         for layout_box in &self.layout {
-            // Apply scroll offset
-            if layout_box.y < self.scroll_offset {
+            // Skip boxes completely above the viewport (scrolled off top)
+            if layout_box.y + layout_box.height <= self.scroll_offset {
                 continue;
             }
-            let y = layout_box.y - self.scroll_offset;
 
-            if y + layout_box.height > content_height {
-                break;
+            // Skip boxes completely below the viewport
+            if layout_box.y >= self.scroll_offset + content_height {
+                continue;
             }
+
+            // Calculate position relative to scroll (can be negative if partially scrolled off top)
+            let y_signed = layout_box.y as isize - self.scroll_offset as isize;
 
             // Check if this is an image or text
             if layout_box.is_image {
-                // Draw image
+                // Draw image (with clipping for partially visible images)
                 if let Some(ref img) = layout_box.image_data {
                     // Render image (decoders output pixels[0] as top-left)
                     for img_y in 0..img.height as usize {
                         for img_x in 0..img.width as usize {
-                            let fb_x = win_x + layout_box.x + img_x;
-                            let fb_y = content_y + y + img_y;
+                            // Calculate screen position
+                            let screen_y = y_signed + img_y as isize;
 
+                            // Skip pixels above viewport
+                            if screen_y < 0 {
+                                continue;
+                            }
+
+                            // Skip pixels below viewport
+                            if screen_y >= content_height as isize {
+                                continue;
+                            }
+
+                            let fb_x = win_x + layout_box.x + img_x;
+                            let fb_y = content_y + screen_y as usize;
+
+                            // Clip to framebuffer bounds
                             if fb_x < fb_width && fb_y < fb_height {
                                 let pixel_idx = img_y * img.width as usize + img_x;
                                 if pixel_idx < img.pixels.len() {
@@ -1405,25 +1422,27 @@ impl Browser {
                     }
                 }
             } else {
-                // Draw text with underline for links
-                self.draw_text(
-                    fb,
-                    fb_width,
-                    fb_height,
-                    win_x + layout_box.x,
-                    content_y + y,
-                    &layout_box.text,
-                    &layout_box.color,
-                    layout_box.font_size,
-                );
+                // Only draw text if fully visible (text is harder to partially clip)
+                if y_signed >= 0 && y_signed + layout_box.height as isize <= content_height as isize {
+                    self.draw_text(
+                        fb,
+                        fb_width,
+                        fb_height,
+                        win_x + layout_box.x,
+                        content_y + y_signed as usize,
+                        &layout_box.text,
+                        &layout_box.color,
+                        layout_box.font_size,
+                    );
 
-                // Underline links
-                if layout_box.is_link {
-                    for x in 0..layout_box.width {
-                        let fb_x = win_x + layout_box.x + x;
-                        let fb_y = content_y + y + layout_box.height;
-                        if fb_x < fb_width && fb_y < fb_height {
-                            fb[fb_y * fb_width + fb_x] = layout_box.color.to_u32();
+                    // Underline links
+                    if layout_box.is_link {
+                        for x in 0..layout_box.width {
+                            let fb_x = win_x + layout_box.x + x;
+                            let fb_y = content_y + y_signed as usize + layout_box.height;
+                            if fb_x < fb_width && fb_y < fb_height {
+                                fb[fb_y * fb_width + fb_x] = layout_box.color.to_u32();
+                            }
                         }
                     }
                 }
