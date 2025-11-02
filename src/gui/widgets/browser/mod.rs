@@ -49,6 +49,9 @@ pub struct Browser {
 
     // Image cache to prevent re-downloading on layout reflow
     image_cache: alloc::collections::BTreeMap<String, BmpImage>,
+
+    // Track window width for reflow on resize
+    last_window_width: usize,
 }
 
 impl Browser {
@@ -70,6 +73,7 @@ impl Browser {
             pending_images: Vec::new(),
             image_load_state: ImageLoadState::Idle,
             image_cache: alloc::collections::BTreeMap::new(),
+            last_window_width: 0,
         }
     }
 
@@ -757,7 +761,48 @@ pub fn poll_all_browsers() -> bool {
 pub fn render_at(instance_id: usize, x: usize, y: usize, width: usize, height: usize) {
     unsafe {
         if instance_id < BROWSERS.len() {
-            let browser = &BROWSERS[instance_id];
+            let browser = &mut BROWSERS[instance_id];
+
+            // Check if window width changed - trigger reflow if needed
+            if browser.last_window_width != width && browser.last_window_width != 0 {
+                crate::kernel::uart_write_string(&alloc::format!(
+                    "Browser: Window resized from {} to {} - reflowing layout\r\n",
+                    browser.last_window_width, width
+                ));
+
+                // Reflow the layout with new width
+                if let Some(ref dom) = browser.dom.clone() {
+                    browser.layout.clear();
+                    let content_width = width.saturating_sub(20); // Subtract margins/padding
+                    layout::layout_node(browser, &dom, 10, 10, content_width, &Color::BLACK, false, false, 1, "");
+
+                    // Add bottom padding after reflow
+                    if let Some(last_box) = browser.layout.last() {
+                        let bottom_padding_y = last_box.y + last_box.height;
+                        browser.layout.push(LayoutBox {
+                            x: 10,
+                            y: bottom_padding_y,
+                            width: 1,
+                            height: 25,
+                            text: String::new(),
+                            color: Color::new(255, 255, 255),
+                            font_size: 1,
+                            is_link: false,
+                            link_url: String::new(),
+                            bold: false,
+                            italic: false,
+                            element_id: String::new(),
+                            is_image: false,
+                            image_data: None,
+                            is_hr: false,
+                            is_table_cell: false,
+                            is_header_cell: false,
+                        });
+                    }
+                }
+            }
+
+            browser.last_window_width = width;
 
             // Get framebuffer
             let fb = crate::gui::framebuffer::get_back_buffer();
