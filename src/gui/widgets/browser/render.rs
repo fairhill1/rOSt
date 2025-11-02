@@ -203,17 +203,29 @@ pub fn render(
             }
         } else {
             // Draw background color if specified (for full-width backgrounds or text backgrounds)
+            // Clip pixel-by-pixel like images do - render visible portion even if partially off-screen
             if let Some(bg_color) = &layout_box.background_color {
-                if y_signed >= 0 && y_signed + layout_box.height as isize <= content_height as isize {
-                    let bg_color_u32 = bg_color.to_u32();
-                    for bg_y in 0..layout_box.height {
-                        let fb_y = content_y + y_signed as usize + bg_y;
-                        if fb_y < fb_height {
-                            for bg_x in 0..layout_box.width {
-                                let fb_x = win_x + layout_box.x + bg_x;
-                                if fb_x < fb_width {
-                                    fb[fb_y * fb_width + fb_x] = bg_color_u32;
-                                }
+                let bg_color_u32 = bg_color.to_u32();
+                for bg_y in 0..layout_box.height {
+                    // Calculate screen position (can be negative if scrolled off top)
+                    let screen_y = y_signed + bg_y as isize;
+
+                    // Skip pixels above viewport
+                    if screen_y < 0 {
+                        continue;
+                    }
+
+                    // Skip pixels below viewport
+                    if screen_y >= content_height as isize {
+                        continue;
+                    }
+
+                    let fb_y = content_y + screen_y as usize;
+                    if fb_y < fb_height {
+                        for bg_x in 0..layout_box.width {
+                            let fb_x = win_x + layout_box.x + bg_x;
+                            if fb_x < fb_width {
+                                fb[fb_y * fb_width + fb_x] = bg_color_u32;
                             }
                         }
                     }

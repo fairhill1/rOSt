@@ -474,8 +474,9 @@ pub fn layout_element(
     );
     if is_block && !browser.layout.is_empty() {
         current_x = x;
-        // Use whichever is lower on page: explicit spacing from parent (y) or default spacing
-        let default_y = browser.layout.last().map(|b| b.y + b.height + 4).unwrap_or(y);
+        // Use whichever is lower on page: explicit spacing from parent (y) or end of last element
+        // No hardcoded spacing - CSS margin/padding controls all spacing
+        let default_y = browser.layout.last().map(|b| b.y + b.height).unwrap_or(y);
         current_y = default_y.max(y);
     }
 
@@ -1055,11 +1056,14 @@ pub fn layout_element(
 
     // Block elements end with newline
     if is_block {
-        // Apply bottom margin
+        // Only add CSS margin if specified - no hardcoded spacing
+        // Exception: headings get minimal spacing for readability
         let bottom_spacing = if css_margin > 0 {
-            element_height + 6 + css_margin
+            css_margin
+        } else if matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+            8  // Small spacing after headings for readability
         } else {
-            element_height + 6
+            0  // No spacing - CSS controls all layout
         };
         (x, current_y + bottom_spacing)
     } else {
