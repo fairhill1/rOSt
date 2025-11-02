@@ -350,24 +350,27 @@ impl WindowManager {
             }
         }
 
+        // Calculate vertically centered Y position for menu bar text
+        let text_height = framebuffer::get_char_height();
+        let centered_text_y = MENU_START_Y + (MENU_ITEM_HEIGHT - text_height) / 2;
+
         // Draw time in top right corner
         let datetime = crate::kernel::drivers::rtc::get_datetime();
         let time_str = datetime.format_time();
         let time_width = framebuffer::measure_string(&time_str);
         let time_x = self.screen_width.saturating_sub(time_width + 8); // 8px padding from right edge
-        let time_y = MENU_START_Y + 4;
-        framebuffer::draw_string(time_x, time_y, &time_str, COLOR_TEXT);
+        framebuffer::draw_string(time_x, centered_text_y, &time_str, COLOR_TEXT);
 
         // Check if we're in close confirmation mode
         if crate::kernel::drivers::input_events::is_confirming_close() {
             // Show close confirmation prompt
             let prompt_text = "Close without saving? (y/n)";
-            framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, prompt_text, COLOR_TEXT);
+            framebuffer::draw_string(MENU_START_X, centered_text_y, prompt_text, COLOR_TEXT);
         } else if crate::kernel::drivers::input_events::is_confirming_delete() {
             // Show delete confirmation prompt
             if let Some(filename) = crate::kernel::drivers::input_events::get_delete_confirm_filename() {
                 let prompt_text = alloc::format!("Delete '{}'? (y/n)", filename);
-                framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &prompt_text, COLOR_TEXT);
+                framebuffer::draw_string(MENU_START_X, centered_text_y, &prompt_text, COLOR_TEXT);
             }
         } else if crate::kernel::drivers::input_events::is_prompting_filename() {
             // Show filename prompt instead of menu items
@@ -376,14 +379,14 @@ impl WindowManager {
 
             if let Some(filename) = crate::kernel::drivers::input_events::get_filename_prompt() {
                 let prompt_text = alloc::format!("{}{}_", prompt_label, filename);
-                framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &prompt_text, COLOR_TEXT);
+                framebuffer::draw_string(MENU_START_X, centered_text_y, &prompt_text, COLOR_TEXT);
             } else {
                 let prompt_text = alloc::format!("{}_", prompt_label);
-                framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &prompt_text, COLOR_TEXT);
+                framebuffer::draw_string(MENU_START_X, centered_text_y, &prompt_text, COLOR_TEXT);
             }
         } else if let Some(status_msg) = crate::kernel::drivers::input_events::get_menu_status() {
             // Show status message instead of menu items
-            framebuffer::draw_string(MENU_START_X, MENU_START_Y + 4, &status_msg, COLOR_TEXT);
+            framebuffer::draw_string(MENU_START_X, centered_text_y, &status_msg, COLOR_TEXT);
         } else {
             // Get cursor position for hover detection
             let (cursor_x, cursor_y) = framebuffer::get_cursor_pos();
@@ -427,10 +430,11 @@ impl WindowManager {
                                    item_width - 2, MENU_ITEM_HEIGHT - 2,
                                    bg_color);
 
-                // Draw menu item text (centered horizontally)
+                // Draw menu item text (centered both horizontally and vertically)
                 let text_width = framebuffer::measure_string(item.label);
+                let text_height = framebuffer::get_char_height();
                 let text_x = current_x + (item_width - text_width) / 2;
-                let text_y = item_y + 4;
+                let text_y = item_y + (MENU_ITEM_HEIGHT - text_height) / 2;
                 framebuffer::draw_string(text_x, text_y, item.label, text_color);
 
                 // Move to next position
