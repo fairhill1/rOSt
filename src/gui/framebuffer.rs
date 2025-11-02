@@ -385,6 +385,18 @@ pub fn measure_string(text: &str) -> u32 {
     }
 }
 
+/// Get the character height for the current font
+/// Useful for cursor rendering and vertical positioning
+pub fn get_char_height() -> u32 {
+    crate::gui::font::get_char_height()
+}
+
+/// Get the line height for the current font
+/// Useful for calculating row positions in text editors and terminals
+pub fn get_line_height() -> u32 {
+    crate::gui::font::get_line_height()
+}
+
 /// Draw a string using the bitmap font (fallback)
 fn draw_string_bitmap(x: u32, y: u32, text: &str, color: u32) {
     let mut cur_x = x;

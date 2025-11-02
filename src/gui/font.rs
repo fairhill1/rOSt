@@ -98,6 +98,51 @@ pub fn get_size() -> f32 {
     unsafe { FONT_SIZE }
 }
 
+/// Get the character height for the current font (without line spacing)
+/// Returns height in pixels (suitable for cursor rendering)
+pub fn get_char_height() -> u32 {
+    unsafe {
+        if let Some(ref font) = FONT {
+            if let Some(metrics) = font.horizontal_line_metrics(FONT_SIZE) {
+                // Use font's natural height (ascent + descent)
+                let height = metrics.ascent - metrics.descent;
+                // Round up (no_std compatible - add 1 if has fractional part)
+                let truncated = height as u32;
+                if height > truncated as f32 { truncated + 1 } else { truncated }
+            } else {
+                16 // Fallback if metrics unavailable
+            }
+        } else {
+            // Bitmap font fallback: 16px char height
+            16
+        }
+    }
+}
+
+/// Get the recommended line height for the current font
+/// Returns height in pixels (suitable for use in LINE_HEIGHT constants)
+pub fn get_line_height() -> u32 {
+    unsafe {
+        if let Some(ref font) = FONT {
+            if let Some(metrics) = font.horizontal_line_metrics(FONT_SIZE) {
+                // Use font's natural line height (ascent + descent + line gap)
+                let height = metrics.ascent - metrics.descent + metrics.line_gap;
+                // Add a small spacing buffer (20% of font size, min 2px)
+                let spacing = (FONT_SIZE * 0.2).max(2.0);
+                let total = height + spacing;
+                // Round up (no_std compatible - add 1 if has fractional part)
+                let truncated = total as u32;
+                if total > truncated as f32 { truncated + 1 } else { truncated }
+            } else {
+                20 // Fallback if metrics unavailable
+            }
+        } else {
+            // Bitmap font fallback: 16px char + 4px spacing
+            20
+        }
+    }
+}
+
 /// Render a single character and return its metrics and bitmap
 /// Returns (width, height, advance_width, bitmap) where bitmap is grayscale 0-255
 pub fn rasterize_char(ch: char, size: f32) -> Option<(usize, usize, f32, Vec<u8>)> {
