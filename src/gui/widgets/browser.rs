@@ -17,6 +17,25 @@ static mut BROWSERS: Vec<Browser> = Vec::new();
 const CHAR_WIDTH: usize = 8;
 const CHAR_HEIGHT: usize = 8;
 
+/// Get the actual font size in pixels based on heading level
+fn get_font_size_px(font_size_level: usize) -> f32 {
+    // When using TTF, use real pixel sizes
+    // When using bitmap, use multipliers of 8px
+    if crate::gui::font::is_available() {
+        match font_size_level {
+            5 => 36.0,  // h1: large
+            4 => 28.0,  // h2: medium-large
+            3 => 24.0,  // h3: medium
+            2 => 20.0,  // h4-h6: slightly larger than body
+            1 => 18.0,  // body text
+            _ => 18.0,
+        }
+    } else {
+        // Bitmap font - return multiplier * 8
+        (font_size_level * 8) as f32
+    }
+}
+
 /// Find the end of HTTP headers in binary data
 /// Returns (start_of_separator, length_of_separator)
 fn find_header_end(data: &[u8]) -> Option<(usize, usize)> {
@@ -363,7 +382,8 @@ impl Browser {
                 if elem.tag_name == "body" {
                     // Found the body! Layout it (which will recursively layout its children)
                     crate::kernel::uart_write_string("find_and_layout_body: Found <body> element\r\n");
-                    self.layout_node(node, x, y, max_width, &Color::BLACK, false, false, 2, "");
+                    // Body text uses font_size_level = 1 (18px TTF / 8px bitmap)
+                    self.layout_node(node, x, y, max_width, &Color::BLACK, false, false, 1, "");
                     return;
                 }
                 // Not body, recurse into children to find it
@@ -441,11 +461,26 @@ impl Browser {
                 let words: Vec<&str> = text.split_whitespace().collect();
                 let mut current_x = x;
                 let mut current_y = y;
-                let char_width = CHAR_WIDTH * font_size;
-                let char_height = CHAR_HEIGHT * font_size;
+
+                // Calculate dimensions based on font type
+                let (char_width, char_height) = if crate::gui::font::is_available() {
+                    let font_size_px = get_font_size_px(font_size);
+                    let space_width = crate::gui::font::measure_string(" ", font_size_px) as usize;
+                    let height = crate::gui::font::get_char_height() as usize;
+                    (space_width, height)
+                } else {
+                    (CHAR_WIDTH * font_size, CHAR_HEIGHT * font_size)
+                };
 
                 for word in words {
-                    let word_width = word.len() * char_width;
+                    // Measure actual word width
+                    let word_width = if crate::gui::font::is_available() {
+                        let font_size_px = get_font_size_px(font_size);
+                        let text_with_space = alloc::format!("{} ", word);
+                        crate::gui::font::measure_string(&text_with_space, font_size_px) as usize
+                    } else {
+                        (word.len() + 1) * char_width
+                    };
 
                     // Check if word fits on current line
                     if current_x + word_width > max_width && current_x > x {
@@ -471,7 +506,7 @@ impl Browser {
                         image_data: None,
                     });
 
-                    current_x += word_width + char_width;
+                    current_x += word_width;
                 }
 
                 (current_x, current_y)
@@ -520,45 +555,58 @@ impl Browser {
             current_y = default_y.max(y);
         }
 
-        // Determine color, style, and font size
+        // Determine color, style, and font size level
         let color = parent_color;
         let bold = parent_bold || matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "b" | "strong");
         let italic = parent_italic || matches!(tag, "i" | "em");
-        let font_size = match tag {
-            "h1" => 5,
-            "h2" => 4,
-            "h3" => 3,
-            "h4" => 2,
-            "h5" => 2,
-            "h6" => 2,
+        let font_size_level = match tag {
+            "h1" => 5,  // 36px TTF / 40px bitmap
+            "h2" => 4,  // 28px TTF / 32px bitmap
+            "h3" => 3,  // 24px TTF / 24px bitmap
+            "h4" => 2,  // 20px TTF / 16px bitmap
+            "h5" => 2,  // 20px TTF / 16px bitmap
+            "h6" => 2,  // 20px TTF / 16px bitmap
             _ => parent_font_size,
+        };
+
+        // Get actual height for spacing calculations
+        let element_height = if crate::gui::font::is_available() {
+            crate::gui::font::get_char_height() as usize
+        } else {
+            CHAR_HEIGHT * font_size_level
         };
 
         // Handle special tags
         match tag {
             "br" => {
-                return (x, current_y + CHAR_HEIGHT + 2);
+                return (x, current_y + element_height + 2);
             }
             "hr" => {
                 // Horizontal rule - draw a line across the page
                 // Add spacing before
                 if !self.layout.is_empty() {
-                    current_y += CHAR_HEIGHT + 4;
+                    current_y += element_height + 4;
                 }
 
                 // Draw horizontal line using dashes
                 let line_width = max_width.saturating_sub(20); // Leave 10px margin on each side
-                let num_dashes = line_width / (CHAR_WIDTH * font_size);
+                let char_width_hr = if crate::gui::font::is_available() {
+                    let font_size_px = get_font_size_px(font_size_level);
+                    crate::gui::font::measure_string("-", font_size_px) as usize
+                } else {
+                    CHAR_WIDTH * font_size_level
+                };
+                let num_dashes = line_width / char_width_hr;
                 let hr_line = alloc::format!("{}", "-".repeat(num_dashes));
 
                 self.layout.push(LayoutBox {
                     x: x + 10,
                     y: current_y,
-                    width: num_dashes * CHAR_WIDTH * font_size,
-                    height: CHAR_HEIGHT * font_size,
+                    width: num_dashes * char_width_hr,
+                    height: element_height,
                     text: hr_line,
                     color: Color::new(128, 128, 128), // Gray
-                    font_size,
+                    font_size: font_size_level,
                     is_link: false,
                     link_url: String::new(),
                     bold: false,
@@ -569,7 +617,7 @@ impl Browser {
                 });
 
                 // Add spacing after
-                current_y += CHAR_HEIGHT * font_size + 4;
+                current_y += element_height + 4;
                 return (x, current_y);
             }
             "img" => {
@@ -634,7 +682,7 @@ impl Browser {
                                 height: img.height as usize,
                                 text: String::new(),
                                 color: Color::BLACK,
-                                font_size,
+                                font_size: font_size_level,
                                 is_link: false,
                                 link_url: String::new(),
                                 bold: false,
@@ -664,7 +712,7 @@ impl Browser {
 
                 for child in &node.children {
                     let start_idx = self.layout.len();
-                    let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, &link_color, bold, italic, font_size, element_id);
+                    let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, &link_color, bold, italic, font_size_level, element_id);
 
                     // Mark all boxes created for this link
                     for i in start_idx..self.layout.len() {
@@ -681,17 +729,17 @@ impl Browser {
                 // Headings - larger font size with proportional spacing
                 // Only add spacing before if there's already content above
                 if !self.layout.is_empty() {
-                    current_y += font_size * CHAR_HEIGHT; // Extra spacing before heading (scales with size)
+                    current_y += element_height; // Extra spacing before heading
                 }
 
                 for child in &node.children {
-                    let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic, font_size, element_id);
+                    let (new_x, new_y) = self.layout_node(child, current_x, current_y, max_width, color, bold, italic, font_size_level, element_id);
                     current_x = new_x;
                     current_y = new_y;
                 }
 
-                // Add height of the text + spacing after (2x for text height + bottom spacing)
-                current_y += 2 * font_size * CHAR_HEIGHT;
+                // Add height of the text + spacing after
+                current_y += element_height * 2;
                 return (x, current_y);
             }
             "ul" | "ol" => {
@@ -700,7 +748,7 @@ impl Browser {
 
                 // Add extra spacing before nested lists (x > 10 means we're indented)
                 if !self.layout.is_empty() && x > 10 {
-                    current_y += CHAR_HEIGHT * font_size / 2; // Extra space before nested list
+                    current_y += element_height / 2; // Extra space before nested list
                 }
 
                 for (i, child) in node.children.iter().enumerate() {
@@ -709,11 +757,16 @@ impl Browser {
 
                     // Add bullet or number (use ASCII * since bullet • is not in ASCII)
                     let bullet = if tag == "ul" { "* " } else { &alloc::format!("{}. ", i + 1) };
-                    let bullet_width = bullet.len() * CHAR_WIDTH * font_size;
+                    let bullet_width = if crate::gui::font::is_available() {
+                        let font_size_px = get_font_size_px(font_size_level);
+                        crate::gui::font::measure_string(&bullet, font_size_px) as usize
+                    } else {
+                        bullet.len() * CHAR_WIDTH * font_size_level
+                    };
 
                     // Layout the list item content first to get its starting position
                     let content_start_idx = self.layout.len();
-                    let (_, new_y) = self.layout_node(child, current_x + LIST_INDENT, list_item_y, max_width - LIST_INDENT, color, bold, italic, font_size, element_id);
+                    let (_, new_y) = self.layout_node(child, current_x + LIST_INDENT, list_item_y, max_width - LIST_INDENT, color, bold, italic, font_size_level, element_id);
 
                     // Find the Y position where the content actually started
                     let content_y = if self.layout.len() > content_start_idx {
@@ -727,10 +780,10 @@ impl Browser {
                         x: current_x,
                         y: content_y,
                         width: bullet_width,
-                        height: CHAR_HEIGHT * font_size,
+                        height: element_height,
                         text: bullet.to_string(),
                         color: *color,
-                        font_size,
+                        font_size: font_size_level,
                         is_link: false,
                         link_url: String::new(),
                         bold,
@@ -740,7 +793,7 @@ impl Browser {
                         image_data: None,
                     });
 
-                    current_y = new_y + CHAR_HEIGHT * font_size + 2;
+                    current_y = new_y + element_height + 2;
                 }
                 return (x, current_y);
             }
@@ -758,14 +811,14 @@ impl Browser {
             };
 
             let child_x = if child_is_block { x } else { current_x };
-            let (new_x, new_y) = self.layout_node(child, child_x, current_y, max_width, color, bold, italic, font_size, element_id);
+            let (new_x, new_y) = self.layout_node(child, child_x, current_y, max_width, color, bold, italic, font_size_level, element_id);
             current_x = new_x;
             current_y = new_y;
         }
 
         // Block elements end with newline
         if is_block {
-            (x, current_y + CHAR_HEIGHT * font_size + 2)
+            (x, current_y + element_height + 2)
         } else {
             (current_x, current_y)
         }
@@ -884,31 +937,39 @@ impl Browser {
         }
     }
 
-    /// Draw text
-    fn draw_text(&self, fb: &mut [u32], fb_width: usize, fb_height: usize, x: usize, y: usize, text: &str, color: &Color, font_size: usize) {
-        let mut current_x = x;
-        for ch in text.chars() {
-            if ch.is_ascii() {
-                let glyph = FONT_8X8[ch as usize];
-                // Scale the 8x8 bitmap by font_size
-                for row in 0..8 {
-                    for col in 0..8 {
-                        if (glyph[row] & (1 << (7 - col))) != 0 {
-                            // Draw a font_size x font_size block for each pixel in the glyph
-                            for dy in 0..font_size {
-                                for dx in 0..font_size {
-                                    let fb_x = current_x + col * font_size + dx;
-                                    let fb_y = y + row * font_size + dy;
-                                    if fb_x < fb_width && fb_y < fb_height {
-                                        fb[fb_y * fb_width + fb_x] = color.to_u32();
+    /// Draw text using TrueType font if available, otherwise bitmap font
+    fn draw_text(&self, fb: &mut [u32], fb_width: usize, fb_height: usize, x: usize, y: usize, text: &str, color: &Color, font_size_level: usize) {
+        if crate::gui::font::is_available() {
+            // Use TrueType font
+            let font_size_px = get_font_size_px(font_size_level);
+            let color_u32 = color.to_u32();
+            crate::gui::font::draw_string(x as i32, y as i32, text, color_u32, font_size_px);
+        } else {
+            // Fallback to bitmap font
+            let mut current_x = x;
+            for ch in text.chars() {
+                if ch.is_ascii() {
+                    let glyph = FONT_8X8[ch as usize];
+                    // Scale the 8x8 bitmap by font_size_level
+                    for row in 0..8 {
+                        for col in 0..8 {
+                            if (glyph[row] & (1 << (7 - col))) != 0 {
+                                // Draw a font_size_level x font_size_level block for each pixel in the glyph
+                                for dy in 0..font_size_level {
+                                    for dx in 0..font_size_level {
+                                        let fb_x = current_x + col * font_size_level + dx;
+                                        let fb_y = y + row * font_size_level + dy;
+                                        if fb_x < fb_width && fb_y < fb_height {
+                                            fb[fb_y * fb_width + fb_x] = color.to_u32();
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+                current_x += CHAR_WIDTH * font_size_level;
             }
-            current_x += CHAR_WIDTH * font_size;
         }
     }
 
