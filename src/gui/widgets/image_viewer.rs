@@ -60,6 +60,12 @@ impl ImageViewer {
 
         // Display image if loaded
         if let Some(ref img) = self.image {
+            // Get framebuffer for direct pixel writes (like browser does)
+            let fb = framebuffer::get_back_buffer();
+            let (fb_width_u32, fb_height_u32) = framebuffer::get_screen_dimensions();
+            let fb_width = fb_width_u32 as usize;
+            let fb_height = fb_height_u32 as usize;
+
             // Calculate centering offsets
             let img_width = img.width as i32;
             let img_height = img.height as i32;
@@ -88,10 +94,20 @@ impl ImageViewer {
                     if src_x >= 0 && src_x < img_width && src_y >= 0 && src_y < img_height {
                         let pixel_idx = (src_y * img_width + src_x) as usize;
                         if pixel_idx < img.pixels.len() {
-                            let pixel = img.pixels[pixel_idx];
-                            let dest_x = (offset_x + x) as u32;
-                            let dest_y = (offset_y + y) as u32;
-                            framebuffer::draw_pixel(dest_x, dest_y, pixel);
+                            let dest_x = (offset_x + x) as usize;
+                            let dest_y = (offset_y + y) as usize;
+
+                            // Write directly to framebuffer
+                            // Swap R and B channels: convert 0xAABBGGRR to 0xAARRGGBB
+                            if dest_x < fb_width && dest_y < fb_height {
+                                let pixel = img.pixels[pixel_idx];
+                                let r = pixel & 0xFF;
+                                let g = (pixel >> 8) & 0xFF;
+                                let b = (pixel >> 16) & 0xFF;
+                                let a = pixel & 0xFF000000;
+                                let swapped = a | (r << 16) | (g << 8) | b;
+                                fb[dest_y * fb_width + dest_x] = swapped;
+                            }
                         }
                     }
                 }
