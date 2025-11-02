@@ -4,7 +4,7 @@ use fontdue::Font;
 use alloc::vec::Vec;
 
 static mut FONT: Option<Font> = None;
-static mut FONT_SIZE: f32 = 16.0; // Default font size (16px for better readability)
+static mut FONT_SIZE: f32 = 18.0; // Default font size (18px for better readability)
 static mut FONT_LOAD_ATTEMPTED: bool = false; // Track if we've tried loading
 
 /// Try to lazy-load the font from filesystem on first use
