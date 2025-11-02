@@ -786,36 +786,6 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     uart_write_string("Kernel ready! Open a terminal window from the menu.\r\n");
 
-    // Test threading system
-    uart_write_string("\r\n==== Testing Thread System ====\r\n");
-    fn test_thread_1() {
-        for i in 0..5 {
-            crate::kernel::uart_write_string(&alloc::format!("  [Thread 1] Count: {}\r\n", i));
-            crate::kernel::thread::yield_now();
-        }
-        crate::kernel::uart_write_string("  [Thread 1] Exiting\r\n");
-        crate::kernel::thread::exit();
-    }
-
-    fn test_thread_2() {
-        for i in 0..5 {
-            crate::kernel::uart_write_string(&alloc::format!("  [Thread 2] Count: {}\r\n", i));
-            crate::kernel::thread::yield_now();
-        }
-        crate::kernel::uart_write_string("  [Thread 2] Exiting\r\n");
-        crate::kernel::thread::exit();
-    }
-
-    uart_write_string("Spawning test threads...\r\n");
-    let thread1_id = crate::kernel::thread::spawn(test_thread_1);
-    let thread2_id = crate::kernel::thread::spawn(test_thread_2);
-    uart_write_string(&alloc::format!("Spawned threads {} and {}\r\n", thread1_id, thread2_id));
-
-    scheduler::start_scheduler();
-
-    uart_write_string("Scheduler returned (all threads finished)\r\n");
-    uart_write_string("==== Thread System Test Complete ====\r\n\r\n");
-
     let mut needs_full_render = true; // Force initial render
     let mut last_minute = drivers::rtc::get_datetime().minute; // Track last rendered minute
 
