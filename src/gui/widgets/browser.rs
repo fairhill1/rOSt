@@ -595,8 +595,15 @@ impl Browser {
                                         // Update layout box
                                         if layout_box_index < self.layout.len() {
                                             self.layout[layout_box_index].image_data = Some(img.clone());
-                                            self.layout[layout_box_index].width = img.width as usize;
-                                            self.layout[layout_box_index].height = img.height as usize;
+
+                                            // Only override dimensions if they're still the default (100x100)
+                                            // This preserves HTML-specified width/height attributes
+                                            if self.layout[layout_box_index].width == 100 &&
+                                               self.layout[layout_box_index].height == 100 {
+                                                self.layout[layout_box_index].width = img.width as usize;
+                                                self.layout[layout_box_index].height = img.height as usize;
+                                            }
+
                                             self.layout[layout_box_index].text = String::new();
                                             needs_redraw = true;
                                         }
@@ -1102,6 +1109,14 @@ impl Browser {
 
                     crate::kernel::uart_write_string(&alloc::format!("layout_element: Queuing async load for: {}\r\n", img_url));
 
+                    // Parse width/height attributes if present (prevents layout reflow)
+                    let img_width = elem.attributes.get("width")
+                        .and_then(|w| w.parse::<usize>().ok())
+                        .unwrap_or(100); // Default 100px if not specified
+                    let img_height = elem.attributes.get("height")
+                        .and_then(|h| h.parse::<usize>().ok())
+                        .unwrap_or(100);
+
                     // Add spacing before image if needed
                     if !self.layout.is_empty() {
                         current_y += 4;
@@ -1112,8 +1127,8 @@ impl Browser {
                     self.layout.push(LayoutBox {
                         x: current_x,
                         y: current_y,
-                        width: 100, // Placeholder size
-                        height: 100,
+                        width: img_width,
+                        height: img_height,
                         text: String::from("[Loading image...]"),
                         color: Color::new(128, 128, 128),
                         font_size: font_size_level,
