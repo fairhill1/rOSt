@@ -864,10 +864,18 @@ impl Browser {
         );
 
         // Back button
-        self.draw_text(fb, fb_width, fb_height, win_x + win_width - 80, win_y + 7, "[<]", &Color::new(100, 100, 100), 2);
+        let back_btn_x = win_x + win_width - 80;
+        let back_btn_y = win_y + 3;
+        let back_btn_width = 32;
+        let back_btn_height = 24;
+        self.draw_button(fb, fb_width, fb_height, back_btn_x, back_btn_y, back_btn_width, back_btn_height, "<");
 
         // Forward button
-        self.draw_text(fb, fb_width, fb_height, win_x + win_width - 50, win_y + 7, "[>]", &Color::new(100, 100, 100), 2);
+        let fwd_btn_x = win_x + win_width - 44;
+        let fwd_btn_y = win_y + 3;
+        let fwd_btn_width = 32;
+        let fwd_btn_height = 24;
+        self.draw_button(fb, fb_width, fb_height, fwd_btn_x, fwd_btn_y, fwd_btn_width, fwd_btn_height, ">");
 
         // Content area
         let content_y = win_y + 35;
@@ -973,6 +981,52 @@ impl Browser {
         }
     }
 
+    /// Draw a button with border, background, and centered text (like menu bar buttons)
+    fn draw_button(&self, fb: &mut [u32], fb_width: usize, fb_height: usize, x: usize, y: usize, width: usize, height: usize, text: &str) {
+        const COLOR_BUTTON_BORDER: u32 = 0xFF555555;
+        const COLOR_BUTTON_BG: u32 = 0xFF3D3D3D;
+        const COLOR_BUTTON_TEXT: u32 = 0xFFFFFFFF;
+
+        // Draw border
+        for py in y..y+height {
+            for px in x..x+width {
+                if px < fb_width && py < fb_height {
+                    fb[py * fb_width + px] = COLOR_BUTTON_BORDER;
+                }
+            }
+        }
+
+        // Draw background (inset by 1 pixel for border)
+        for py in y+1..y+height-1 {
+            for px in x+1..x+width-1 {
+                if px < fb_width && py < fb_height {
+                    fb[py * fb_width + px] = COLOR_BUTTON_BG;
+                }
+            }
+        }
+
+        // Draw centered text
+        let text_width = if crate::gui::font::is_available() {
+            crate::gui::font::measure_string(text, 18.0) as usize
+        } else {
+            text.len() * 8
+        };
+        let text_height = if crate::gui::font::is_available() {
+            crate::gui::font::get_char_height() as usize
+        } else {
+            8
+        };
+
+        let text_x = x + (width - text_width) / 2;
+        let text_y = y + (height - text_height) / 2;
+
+        if crate::gui::font::is_available() {
+            crate::gui::font::draw_string(text_x as i32, text_y as i32, text, COLOR_BUTTON_TEXT, 18.0);
+        } else {
+            self.draw_text(fb, fb_width, fb_height, text_x, text_y, text, &Color::new(255, 255, 255), 1);
+        }
+    }
+
     /// Handle keyboard input
     pub fn handle_key(&mut self, key: char, ctrl: bool, shift: bool) {
         if self.url_focused {
@@ -1015,11 +1069,12 @@ impl Browser {
             let input_width = win_width.saturating_sub(130);
             let input_height = 24;
 
-            if rel_x > win_width - 80 && rel_x < win_width - 60 {
-                // Back button
+            // Back button (32px wide, starting at win_width - 80)
+            let back_btn_x = win_width.saturating_sub(80);
+            if rel_x >= back_btn_x && rel_x < back_btn_x + 32 && rel_y >= 3 && rel_y < 27 {
                 self.go_back();
-            } else if rel_x > win_width - 50 && rel_x < win_width - 30 {
-                // Forward button
+            // Forward button (32px wide, starting at win_width - 44)
+            } else if rel_x >= win_width.saturating_sub(44) && rel_x < win_width.saturating_sub(12) && rel_y >= 3 && rel_y < 27 {
                 self.go_forward();
             } else if rel_x >= input_x && rel_x < input_x + input_width
                    && rel_y >= input_y && rel_y < input_y + input_height {
