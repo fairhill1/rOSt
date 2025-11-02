@@ -1016,11 +1016,11 @@ pub fn layout_element(
             block_end_y = current_y;
         }
 
-        // Add padding if specified (top padding already in positions, add bottom padding to height)
+        // Calculate background height: content height + bottom padding
         let block_height = if css_padding > 0 {
-            block_end_y.saturating_sub(block_start_y) + css_padding + 6
+            block_end_y.saturating_sub(block_start_y) + css_padding
         } else {
-            block_end_y.saturating_sub(block_start_y) + 6
+            block_end_y.saturating_sub(block_start_y)
         };
 
         // Clear background_color from child text boxes (full-width bg will handle it)
