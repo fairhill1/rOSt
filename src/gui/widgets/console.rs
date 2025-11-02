@@ -114,36 +114,50 @@ impl Console {
 
         // Don't clear screen - the window manager handles that now
 
-        // Draw all characters with offset, but only those that fit in the window
+        // Draw all lines at once for proper character spacing with variable-width fonts
         for y in 0..CONSOLE_HEIGHT.min(max_chars_y) {
-            for x in 0..CONSOLE_WIDTH.min(max_chars_x) {
-                let ch = self.buffer[y][x];
-                if ch != b' ' {
-                    // Draw character directly instead of using draw_string
-                    let char_x = offset_x + ((x as i32) * CHAR_WIDTH as i32);
-                    let char_y = offset_y + ((y as i32) * LINE_HEIGHT as i32);
+            let line_y = offset_y + ((y as i32) * LINE_HEIGHT as i32);
 
-                    if char_x >= 0 && char_y >= 0 {
-                        // Use a temporary buffer to create a string from the char
-                        let mut buf = [0u8; 1];
-                        buf[0] = ch;
-                        if let Ok(s) = core::str::from_utf8(&buf) {
-                            framebuffer::draw_string(char_x as u32, char_y as u32, s, self.fg_color);
-                        }
+            if line_y >= 0 {
+                // Convert buffer row to string, trimming trailing spaces
+                let line_bytes = &self.buffer[y][..CONSOLE_WIDTH.min(max_chars_x)];
+                if let Ok(line_str) = core::str::from_utf8(line_bytes) {
+                    // Trim trailing spaces for cleaner rendering
+                    let trimmed = line_str.trim_end();
+                    if !trimmed.is_empty() {
+                        framebuffer::draw_string(offset_x as u32, line_y as u32, trimmed, self.fg_color);
                     }
                 }
             }
         }
 
-        // Draw cursor (solid block)
+        // Draw cursor (solid block) using measured character widths
         if self.cursor_x < CONSOLE_WIDTH && self.cursor_y < CONSOLE_HEIGHT {
-            let cursor_x = offset_x + ((self.cursor_x as i32) * CHAR_WIDTH as i32);
+            // Calculate actual pixel position of cursor by measuring text up to cursor
+            let line_bytes = &self.buffer[self.cursor_y][..self.cursor_x.min(CONSOLE_WIDTH)];
+            let cursor_pixel_offset = if let Ok(prefix) = core::str::from_utf8(line_bytes) {
+                framebuffer::measure_string(prefix) as i32
+            } else {
+                (self.cursor_x as i32) * CHAR_WIDTH as i32
+            };
+
+            let cursor_x = offset_x + cursor_pixel_offset;
             let cursor_y = offset_y + ((self.cursor_y as i32) * LINE_HEIGHT as i32);
 
             if cursor_x >= 0 && cursor_y >= 0 {
+                // Get width of character at cursor (or default CHAR_WIDTH)
+                let ch = self.buffer[self.cursor_y][self.cursor_x];
+                let mut buf = [0u8; 1];
+                buf[0] = ch;
+                let char_width = if let Ok(s) = core::str::from_utf8(&buf) {
+                    framebuffer::measure_string(s)
+                } else {
+                    CHAR_WIDTH
+                };
+
                 // Draw a solid block cursor with bright green color
                 for dy in 0..CHAR_HEIGHT {
-                    for dx in 0..CHAR_WIDTH {
+                    for dx in 0..char_width {
                         let px = cursor_x as u32 + dx as u32;
                         let py = cursor_y as u32 + dy as u32;
                         framebuffer::draw_pixel(px, py, 0xFF00FF00); // Bright green
@@ -151,10 +165,7 @@ impl Console {
                 }
 
                 // Draw the character at cursor position in black so it's visible on green
-                let ch = self.buffer[self.cursor_y][self.cursor_x];
                 if ch != b' ' {
-                    let mut buf = [0u8; 1];
-                    buf[0] = ch;
                     if let Ok(s) = core::str::from_utf8(&buf) {
                         framebuffer::draw_string(cursor_x as u32, cursor_y as u32, s, 0xFF000000);
                     }
