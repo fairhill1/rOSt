@@ -809,12 +809,12 @@ pub fn layout_element(
         _ => {}
     }
 
-    // Apply padding to content position
-    let content_x = if css_padding > 0 { current_x + css_padding } else { current_x };
-    let content_y = if css_padding > 0 { current_y + css_padding } else { current_y };
-    let content_max_width = if css_padding > 0 { max_width.saturating_sub(css_padding * 2) } else { max_width };
+    // Apply padding to content position (only for block elements - inline padding doesn't shift baseline)
+    let content_x = if css_padding > 0 && is_block { current_x + css_padding } else { current_x };
+    let content_y = if css_padding > 0 && is_block { current_y + css_padding } else { current_y };
+    let content_max_width = if css_padding > 0 && is_block { max_width.saturating_sub(css_padding * 2) } else { max_width };
 
-    if css_padding > 0 {
+    if css_padding > 0 && is_block {
         current_x = content_x;
         current_y = content_y;
     }
@@ -836,19 +836,15 @@ pub fn layout_element(
             false
         };
 
-        let child_base_x = if css_padding > 0 { content_x } else { x };
+        let child_base_x = if css_padding > 0 && is_block { content_x } else { x };
         let child_x = if child_is_block || is_br { child_base_x } else { current_x };
         let (new_x, new_y) = layout_node(browser, child, child_x, current_y, content_max_width, color, &background_color, bold, italic, font_size_level, element_id);
         current_x = new_x;
-        // Only update Y if child is block OR parent is block
-        // For inline parent with inline children, stay on same line
-        if is_block || child_is_block {
-            current_y = new_y;
-        }
+        current_y = new_y;
     }
 
-    // Add bottom padding
-    if css_padding > 0 {
+    // Add bottom padding (only for block elements)
+    if css_padding > 0 && is_block {
         current_y += css_padding;
     }
 
