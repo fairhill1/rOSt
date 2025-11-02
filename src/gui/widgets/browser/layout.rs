@@ -5,6 +5,7 @@
 /// that can be rendered to the screen.
 
 use crate::gui::html_parser::{Parser, Node, NodeType, ElementData};
+use crate::gui::css_parser::InlineStyle;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::format;
@@ -118,7 +119,7 @@ pub fn find_and_layout_body(browser: &mut Browser, node: &Node, x: usize, y: usi
                 // Found the body! Layout it (which will recursively layout its children)
                 crate::kernel::uart_write_string("find_and_layout_body: Found <body> element\r\n");
                 // Body text uses font_size_level = 1 (18px TTF / 8px bitmap)
-                layout_node(browser, node, x, y, max_width, &Color::BLACK, false, false, 1, "");
+                layout_node(browser, node, x, y, max_width, &Color::BLACK, &None, false, false, 1, "");
 
                 // Add bottom padding (spacer box at end of page)
                 if let Some(last_box) = browser.layout.last() {
@@ -130,6 +131,7 @@ pub fn find_and_layout_body(browser: &mut Browser, node: &Node, x: usize, y: usi
                         height: 25, // 25px tall spacer creates bottom padding
                         text: String::new(),
                         color: Color::new(255, 255, 255), // White (invisible on white bg)
+                        background_color: None,
                         font_size: 1,
                         is_link: false,
                         link_url: String::new(),
@@ -164,6 +166,7 @@ pub fn layout_node(
     y: usize,
     max_width: usize,
     color: &Color,
+    background_color: &Option<Color>,
     bold: bool,
     italic: bool,
     font_size: usize,
@@ -214,6 +217,7 @@ pub fn layout_node(
                     height: char_height,
                     text: word.to_string() + " ",
                     color: *color,
+                    background_color: *background_color,
                     font_size,
                     is_link: false,
                     link_url: String::new(),
@@ -264,6 +268,11 @@ pub fn layout_element(
         .map(|s| s.as_str())
         .unwrap_or(parent_element_id);
 
+    // Parse inline CSS styles if present
+    let inline_style = elem.attributes.get("style")
+        .map(|s| InlineStyle::parse(s))
+        .unwrap_or_default();
+
     let mut current_x = x;
     let mut current_y = y;
 
@@ -276,11 +285,13 @@ pub fn layout_element(
         current_y = default_y.max(y);
     }
 
-    // Determine color, style, and font size level
-    let color = parent_color;
+    // Determine color, style, and font size level - CSS can override
+    let color = inline_style.color.as_ref().unwrap_or(parent_color);
     let bold = parent_bold || matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "b" | "strong");
     let italic = parent_italic || matches!(tag, "i" | "em");
-    let font_size_level = match tag {
+
+    // Determine font size - tag-based defaults, potentially overridden by CSS
+    let default_font_size_level = match tag {
         "h1" => 5,  // 36px TTF / 40px bitmap
         "h2" => 4,  // 28px TTF / 32px bitmap
         "h3" => 3,  // 24px TTF / 24px bitmap
@@ -289,6 +300,22 @@ pub fn layout_element(
         "h6" => 2,  // 20px TTF / 16px bitmap
         _ => parent_font_size,
     };
+
+    // Apply CSS font-size if specified (convert px to level: px / 8 for bitmap, use directly for TTF)
+    let font_size_level = if let Some(css_font_size) = inline_style.font_size {
+        if crate::gui::font::is_available() {
+            // TTF: use pixel size directly (will be applied in render)
+            (css_font_size / 8).max(1)  // Rough approximation for now
+        } else {
+            // Bitmap: convert to multiplier (8px = 1, 16px = 2, etc.)
+            (css_font_size / 8).max(1)
+        }
+    } else {
+        default_font_size_level
+    };
+
+    // Store background color from CSS
+    let background_color = inline_style.background_color;
 
     // Get actual height for spacing calculations
     let element_height = if crate::gui::font::is_available() {
@@ -320,6 +347,7 @@ pub fn layout_element(
                 height: 2, // 2px thick line
                 text: String::new(),
                 color: Color::new(180, 180, 180), // Light gray
+                background_color: None,
                 font_size: font_size_level,
                 is_link: false,
                 link_url: String::new(),
@@ -396,6 +424,7 @@ pub fn layout_element(
                     height: final_height,
                     text: if cached_image.is_some() { String::new() } else { String::from("[Loading image...]") },
                     color: Color::new(128, 128, 128),
+                    background_color: None,
                     font_size: font_size_level,
                     is_link: false,
                     link_url: String::new(),
@@ -431,7 +460,7 @@ pub fn layout_element(
 
             for child in &node.children {
                 let start_idx = browser.layout.len();
-                let (new_x, new_y) = layout_node(browser, child, current_x, current_y, max_width, &link_color, bold, italic, font_size_level, element_id);
+                let (new_x, new_y) = layout_node(browser, child, current_x, current_y, max_width, &link_color, &background_color, bold, italic, font_size_level, element_id);
 
                 // Mark all boxes created for this link
                 for i in start_idx..browser.layout.len() {
@@ -452,7 +481,7 @@ pub fn layout_element(
             }
 
             for child in &node.children {
-                let (new_x, new_y) = layout_node(browser, child, current_x, current_y, max_width, color, bold, italic, font_size_level, element_id);
+                let (new_x, new_y) = layout_node(browser, child, current_x, current_y, max_width, color, &background_color, bold, italic, font_size_level, element_id);
                 current_x = new_x;
                 current_y = new_y;
             }
@@ -500,7 +529,7 @@ pub fn layout_element(
 
                 // Layout the list item content first to get its starting position
                 let content_start_idx = browser.layout.len();
-                let (_, new_y) = layout_node(browser, child, current_x + LIST_INDENT, list_item_y, max_width - LIST_INDENT, color, bold, italic, font_size_level, element_id);
+                let (_, new_y) = layout_node(browser, child, current_x + LIST_INDENT, list_item_y, max_width - LIST_INDENT, color, &background_color, bold, italic, font_size_level, element_id);
 
                 // Find the Y position where the content actually started
                 let content_y = if browser.layout.len() > content_start_idx {
@@ -517,6 +546,7 @@ pub fn layout_element(
                     height: element_height,
                     text: bullet.to_string(),
                     color: *color,
+                    background_color: None,
                     font_size: font_size_level,
                     is_link: false,
                     link_url: String::new(),
@@ -609,7 +639,7 @@ pub fn layout_element(
                     // Layout cell content
                     let cell_bold = bold || is_header;
                     for cell_child in &cell.children {
-                        layout_node(browser, cell_child, content_x, content_y, content_width, color, cell_bold, italic, font_size_level, element_id);
+                        layout_node(browser, cell_child, content_x, content_y, content_width, color, &background_color, cell_bold, italic, font_size_level, element_id);
                     }
 
                     // Calculate cell content height
@@ -654,6 +684,7 @@ pub fn layout_element(
                         height: row_height,
                         text: String::new(),
                         color: bg_color,
+                        background_color: None,
                         font_size: font_size_level,
                         is_link: false,
                         link_url: String::new(),
@@ -698,7 +729,7 @@ pub fn layout_element(
         };
 
         let child_x = if child_is_block || is_br { x } else { current_x };
-        let (new_x, new_y) = layout_node(browser, child, child_x, current_y, max_width, color, bold, italic, font_size_level, element_id);
+        let (new_x, new_y) = layout_node(browser, child, child_x, current_y, max_width, color, &background_color, bold, italic, font_size_level, element_id);
         current_x = new_x;
         current_y = new_y;
     }

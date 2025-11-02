@@ -204,6 +204,22 @@ pub fn render(
         } else {
             // Only draw text if fully visible (text is harder to partially clip)
             if y_signed >= 0 && y_signed + layout_box.height as isize <= content_height as isize {
+                // Draw background color if specified
+                if let Some(bg_color) = &layout_box.background_color {
+                    let bg_color_u32 = bg_color.to_u32();
+                    for bg_y in 0..layout_box.height {
+                        let fb_y = content_y + y_signed as usize + bg_y;
+                        if fb_y < fb_height {
+                            for bg_x in 0..layout_box.width {
+                                let fb_x = win_x + layout_box.x + bg_x;
+                                if fb_x < fb_width {
+                                    fb[fb_y * fb_width + fb_x] = bg_color_u32;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 draw_text(
                     fb,
                     fb_width,
