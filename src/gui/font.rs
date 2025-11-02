@@ -4,7 +4,7 @@ use fontdue::Font;
 use alloc::vec::Vec;
 
 static mut FONT: Option<Font> = None;
-static mut FONT_SIZE: f32 = 14.0; // Default font size
+static mut FONT_SIZE: f32 = 16.0; // Default font size (16px for better readability)
 static mut FONT_LOAD_ATTEMPTED: bool = false; // Track if we've tried loading
 
 /// Try to lazy-load the font from filesystem on first use
@@ -135,13 +135,17 @@ pub fn draw_char(x: i32, y: i32, ch: char, color: u32, size: f32) -> i32 {
                     let px = x + metrics.xmin + col as i32;
                     let py = y + baseline_offset + row as i32;
 
-                    // Blend the character color with background using alpha
-                    let blended_color = if alpha == 255 {
-                        // Fully opaque - use color directly
+                    // For sharper rendering: threshold alpha instead of full blending
+                    // This trades some smoothness for crispness
+                    let blended_color = if alpha > 127 {
+                        // Above threshold - draw full color (sharper)
                         color
-                    } else {
-                        // Blend with existing pixel
+                    } else if alpha > 64 {
+                        // Light antialiasing only at edges
                         blend_with_background(px, py, color, alpha)
+                    } else {
+                        // Too transparent, skip
+                        continue;
                     };
 
                     crate::gui::framebuffer::draw_pixel(px as u32, py as u32, blended_color);

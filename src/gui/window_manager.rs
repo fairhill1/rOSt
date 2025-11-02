@@ -333,7 +333,7 @@ impl WindowManager {
 
     /// Calculate menu item width based on text length
     fn calculate_menu_item_width(label: &str) -> u32 {
-        let text_width = label.len() as u32 * CHAR_WIDTH;
+        let text_width = framebuffer::measure_string(label);
         text_width + MENU_ITEM_PADDING_X * 2 // Add padding on both sides
     }
 
@@ -349,7 +349,7 @@ impl WindowManager {
         // Draw time in top right corner
         let datetime = crate::kernel::drivers::rtc::get_datetime();
         let time_str = datetime.format_time();
-        let time_width = time_str.len() as u32 * CHAR_WIDTH;
+        let time_width = framebuffer::measure_string(&time_str);
         let time_x = self.screen_width.saturating_sub(time_width + 8); // 8px padding from right edge
         let time_y = MENU_START_Y + 4;
         framebuffer::draw_string(time_x, time_y, &time_str, COLOR_TEXT);
@@ -423,8 +423,9 @@ impl WindowManager {
                                    item_width - 2, MENU_ITEM_HEIGHT - 2,
                                    bg_color);
 
-                // Draw menu item text (centered with padding)
-                let text_x = current_x + MENU_ITEM_PADDING_X;
+                // Draw menu item text (centered horizontally)
+                let text_width = framebuffer::measure_string(item.label);
+                let text_x = current_x + (item_width - text_width) / 2;
                 let text_y = item_y + 4;
                 framebuffer::draw_string(text_x, text_y, item.label, text_color);
 
