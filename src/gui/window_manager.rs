@@ -117,17 +117,19 @@ impl Window {
             title_color
         );
 
-        // Draw title text
+        // Draw title text (vertically centered in title bar)
+        let text_height = framebuffer::get_char_height();
+        let title_y = self.y + ((TITLE_BAR_HEIGHT - text_height) / 2) as i32;
         framebuffer::draw_string(
             (self.x + 8) as u32,
-            (self.y + 4) as u32,
+            title_y as u32,
             &self.title,
             COLOR_TEXT
         );
 
-        // Draw close button (red square with X)
+        // Draw close button (red square with X, vertically centered in title bar)
         let btn_x = self.x + self.width as i32 - CLOSE_BUTTON_SIZE as i32 - 4;
-        let btn_y = self.y + 4;
+        let btn_y = self.y + ((TITLE_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2) as i32;
         self.draw_rect(btn_x, btn_y, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE, COLOR_CLOSE_BTN);
 
         // Draw X in close button (centered both horizontally and vertically)
