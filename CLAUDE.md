@@ -4,10 +4,12 @@ Production-grade ARM64 OS written in Rust. **Last Updated:** 2025-11-02
 
 ## Features
 
-**GUI:** Tiling window manager, text editor (syntax highlighting, undo/redo), file explorer, web browser (HTML, BMP images, smoltcp TCP/IP), image viewer
+**GUI:** Tiling window manager, text editor (syntax highlighting, undo/redo), file explorer, web browser (async HTTP, progressive image loading, HTML/BMP/PNG), image viewer
+**Browser:** Event-driven async I/O, image caching, auto-reflow, viewport clipping, width/height attribute parsing
 **Filesystem:** SimpleFS (32 files, 10MB, persistent across reboots)
 **Hardware:** VirtIO GPU/Input/Block/Net, ARM Generic Timer, PL031 RTC
 **Networking:** smoltcp 0.12 stack, DNS, HTTP/1.0 client, ping, download command
+**Kernel:** Preemptive multitasking, round-robin scheduler, ARM64 context switching
 **Shell:** Interactive terminal with filesystem and network commands
 
 ## Quick Start
@@ -60,14 +62,14 @@ ping <ip>, nslookup <domain>, http <url>, download <url>, ifconfig, arp
 
 ### Codebase Structure
 ```
-src/kernel/          - Core (mod, memory, dtb)
+src/kernel/          - Core (mod, memory, dtb, scheduler, thread, interrupts)
   drivers/           - PCI, timer, RTC, input_events
     virtio/          - gpu, input, blk, net
 src/system/
   fs/                - filesystem (SimpleFS)
-  net/               - network, dns, tcp (deprecated, using smoltcp)
-src/gui/             - framebuffer, window_manager, html_parser, bmp_decoder, clipboard
-  widgets/           - browser, editor, console, file_explorer, text_input, image_viewer
+  net/               - network, dns, helpers (smoltcp-based)
+src/gui/             - framebuffer, window_manager, html_parser, bmp_decoder, png_decoder, clipboard
+  widgets/           - browser (async), editor, console, file_explorer, text_input, image_viewer
 src/apps/            - shell, snake
 ```
 
@@ -98,8 +100,20 @@ src/apps/            - shell, snake
 - BMP decoder outputs 0xAABBGGRR format
 - Browser writes pixels directly, image viewer swaps R/B channels
 
+**Browser/Async:**
+- Async I/O uses state machines, not threads (HttpState, ImageLoadState)
+- Images default to 0x0 when no width/height attributes specified
+- Reflow triggered when image dimensions change from 0x0 → actual size
+- Image cache keyed by full URL, reused on layout recalculation
+- Viewport clipping uses signed arithmetic (isize) to handle negative positions
+- Text hidden when partially off-screen, images clip pixel-by-pixel
+
 ## Key Wins
 
+- **Async browser:** Event-driven HTTP/image loading, stays responsive during network I/O (no blocking)
+- **Image caching & reflow:** Smart layout recalculation when dimensions change, prevents duplicate downloads
+- **Viewport clipping:** Pixel-perfect image clipping at viewport edges using signed arithmetic
+- **Preemptive multitasking:** ARM64 threading infrastructure with round-robin scheduler (10ms time slices)
 - **smoltcp migration:** Production TCP/IP stack, 91% code reduction (834→76 lines)
 - **Buffer exhaustion fix:** Auto-replenish RX buffers after each packet
 - **ARM Generic Timer:** Hardware-independent timing (no CPU-dependent delays)
