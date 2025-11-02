@@ -130,8 +130,12 @@ impl Window {
         let btn_y = self.y + 4;
         self.draw_rect(btn_x, btn_y, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE, COLOR_CLOSE_BTN);
 
-        // Draw X in close button (centered - X is 16px wide, button is 16px, so start at btn_x)
-        framebuffer::draw_string(btn_x as u32, btn_y as u32, "X", COLOR_TEXT);
+        // Draw X in close button (centered both horizontally and vertically)
+        let x_width = framebuffer::measure_string("X");
+        // Subtract 1px to account for font bearing/offset
+        let x_x = btn_x as u32 + (CLOSE_BUTTON_SIZE - x_width) / 2 - 1;
+        let x_y = btn_y as u32; // No vertical offset - baseline alignment handles it
+        framebuffer::draw_string(x_x, x_y, "X", COLOR_TEXT);
 
         // Draw content area background
         let (cx, cy, cw, ch) = self.get_content_bounds();
