@@ -13,6 +13,7 @@ mod navigation;
 pub use types::*;
 
 use crate::gui::html_parser::{Parser, Node, NodeType, ElementData};
+use crate::gui::css_parser::Stylesheet;
 use crate::gui::framebuffer::FONT_8X8;
 use crate::gui::widgets::text_input::TextInput;
 use crate::gui::bmp_decoder::BmpImage;
@@ -51,6 +52,13 @@ pub struct Browser {
     // Image cache to prevent re-downloading on layout reflow
     image_cache: alloc::collections::BTreeMap<String, BmpImage>,
 
+    // Async CSS loading
+    pending_css: Vec<PendingCss>,
+    css_load_state: CssLoadState,
+
+    // Loaded stylesheets
+    pub stylesheets: Vec<Stylesheet>,
+
     // Track window width for reflow on resize
     last_window_width: usize,
 }
@@ -74,6 +82,9 @@ impl Browser {
             pending_images: Vec::new(),
             image_load_state: ImageLoadState::Idle,
             image_cache: alloc::collections::BTreeMap::new(),
+            pending_css: Vec::new(),
+            css_load_state: CssLoadState::Idle,
+            stylesheets: Vec::new(),
             last_window_width: 0,
         }
     }
@@ -516,6 +527,202 @@ impl Browser {
                             }
                         } else {
                             ImageLoadState::Idle
+                        }
+                    }
+                }
+            };
+        }
+
+        // Poll async CSS loading
+        if let CssLoadState::Idle = self.css_load_state {
+            // Start next pending CSS load
+            if let Some(pending) = self.pending_css.pop() {
+                crate::kernel::uart_write_string(&alloc::format!("Starting async CSS load: {}\r\n", pending.url));
+
+                // Parse URL and initiate TCP connection
+                let (host, port, path) = http::parse_url(&pending.url);
+
+                unsafe {
+                    if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                        // Resolve DNS
+                        let server_ip = if let Some(ip) = crate::system::net::network::parse_ip(&host) {
+                            Some(smoltcp::wire::IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(ip[0], ip[1], ip[2], ip[3])))
+                        } else {
+                            match crate::system::net::helpers::dns_lookup(stack, &host, 5000) {
+                                Ok(addresses) => {
+                                    if !addresses.is_empty() {
+                                        let ip = addresses[0];
+                                        Some(smoltcp::wire::IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(ip[0], ip[1], ip[2], ip[3])))
+                                    } else {
+                                        None
+                                    }
+                                }
+                                Err(_) => None,
+                            }
+                        };
+
+                        if let Some(server_ip) = server_ip {
+                            let tcp_handle = stack.create_tcp_socket();
+
+                            static mut CSS_LOCAL_PORT: u16 = 51000;
+                            let local_port = unsafe {
+                                let port = CSS_LOCAL_PORT;
+                                CSS_LOCAL_PORT = if CSS_LOCAL_PORT >= 61000 { 51000 } else { CSS_LOCAL_PORT + 1 };
+                                port
+                            };
+
+                            let remote_endpoint = smoltcp::wire::IpEndpoint::new(server_ip, port);
+                            if stack.tcp_connect(tcp_handle, remote_endpoint, local_port).is_ok() {
+                                // Prepare HTTP request
+                                let http_request = alloc::format!(
+                                    "GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                                    path, host
+                                );
+
+                                self.css_load_state = CssLoadState::Connecting {
+                                    socket_handle: tcp_handle,
+                                    http_request,
+                                    start_time: crate::kernel::drivers::timer::get_time_ms(),
+                                    url: pending.url,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Poll current CSS load
+            let current_state = core::mem::replace(&mut self.css_load_state, CssLoadState::Idle);
+
+            self.css_load_state = match current_state {
+                CssLoadState::Idle => CssLoadState::Idle,
+
+                CssLoadState::Connecting { socket_handle, http_request, start_time, url } => {
+                    unsafe {
+                        if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                            let connected = stack.with_tcp_socket(socket_handle, |socket| {
+                                socket.may_send() && socket.may_recv()
+                            });
+
+                            if connected {
+                                // Send HTTP request
+                                stack.with_tcp_socket(socket_handle, |socket| {
+                                    socket.send_slice(http_request.as_bytes()).ok();
+                                });
+
+                                CssLoadState::Loading {
+                                    socket_handle,
+                                    response_data: Vec::new(),
+                                    last_recv_time: crate::kernel::drivers::timer::get_time_ms(),
+                                    url,
+                                }
+                            } else if crate::kernel::drivers::timer::get_time_ms() - start_time > 10000 {
+                                stack.remove_socket(socket_handle);
+                                CssLoadState::Idle
+                            } else {
+                                CssLoadState::Connecting { socket_handle, http_request, start_time, url }
+                            }
+                        } else {
+                            CssLoadState::Idle
+                        }
+                    }
+                }
+
+                CssLoadState::Loading { socket_handle, mut response_data, last_recv_time, url } => {
+                    unsafe {
+                        if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                            let mut received_data = false;
+                            let mut connection_closed = false;
+
+                            stack.with_tcp_socket(socket_handle, |socket| {
+                                while socket.can_recv() {
+                                    if let Ok(_) = socket.recv(|buffer| {
+                                        let len = buffer.len();
+                                        if len > 0 {
+                                            response_data.extend_from_slice(buffer);
+                                            received_data = true;
+                                        }
+                                        (len, ())
+                                    }) {}
+                                }
+
+                                if !socket.may_recv() {
+                                    connection_closed = true;
+                                }
+                            });
+
+                            let new_last_recv_time = if received_data {
+                                crate::kernel::drivers::timer::get_time_ms()
+                            } else {
+                                last_recv_time
+                            };
+
+                            if connection_closed {
+                                stack.remove_socket(socket_handle);
+
+                                // Parse HTTP response and extract CSS
+                                if let Some(body_start) = response_data.windows(4).position(|w| w == b"\r\n\r\n") {
+                                    let css_data = &response_data[body_start + 4..];
+
+                                    if let Ok(css_text) = core::str::from_utf8(css_data) {
+                                        crate::kernel::uart_write_string(&alloc::format!("CSS loaded: {} bytes\r\n", css_text.len()));
+
+                                        // Parse the CSS
+                                        let stylesheet = crate::gui::css_parser::Stylesheet::parse(css_text);
+                                        crate::kernel::uart_write_string(&alloc::format!("Parsed {} CSS rules\r\n", stylesheet.rules.len()));
+
+                                        // Add to stylesheets
+                                        self.stylesheets.push(stylesheet);
+
+                                        // Trigger reflow to apply styles
+                                        if let Some(ref dom) = self.dom.clone() {
+                                            self.layout.clear();
+                                            layout::layout_node(self, &dom, 10, 10, 1260, &Color::BLACK, &None, false, false, 1, "");
+
+                                            // Add bottom padding after reflow
+                                            if let Some(last_box) = self.layout.last() {
+                                                let bottom_padding_y = last_box.y + last_box.height;
+                                                self.layout.push(LayoutBox {
+                                                    x: 10,
+                                                    y: bottom_padding_y,
+                                                    width: 1,
+                                                    height: 25,
+                                                    text: String::new(),
+                                                    color: Color::new(255, 255, 255),
+                                                    background_color: None,
+                                                    font_size: 1,
+                                                    is_link: false,
+                                                    link_url: String::new(),
+                                                    bold: false,
+                                                    italic: false,
+                                                    element_id: String::new(),
+                                                    is_image: false,
+                                                    image_data: None,
+                                                    is_hr: false,
+                                                    is_table_cell: false,
+                                                    is_header_cell: false,
+                                                });
+                                            }
+                                        }
+
+                                        needs_redraw = true;
+                                    }
+                                }
+
+                                CssLoadState::Idle
+                            } else if crate::kernel::drivers::timer::get_time_ms() - new_last_recv_time > 30000 {
+                                stack.remove_socket(socket_handle);
+                                CssLoadState::Idle
+                            } else {
+                                CssLoadState::Loading {
+                                    socket_handle,
+                                    response_data,
+                                    last_recv_time: new_last_recv_time,
+                                    url,
+                                }
+                            }
+                        } else {
+                            CssLoadState::Idle
                         }
                     }
                 }
