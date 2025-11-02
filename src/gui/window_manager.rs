@@ -674,13 +674,17 @@ impl WindowManager {
 
                         match action {
                             FileExplorerAction::OpenFile(filename) => {
-                                // Check if file is an image (BMP or PNG)
-                                let lower = filename.to_lowercase();
-                                let is_image = lower.ends_with(".bmp") || lower.ends_with(".png");
+                                // Check window limit before loading file
+                                if self.windows.len() >= 4 {
+                                    crate::kernel::drivers::input_events::set_menu_status("Cannot open: 4 windows max");
+                                } else {
+                                    // Check if file is an image (BMP or PNG)
+                                    let lower = filename.to_lowercase();
+                                    let is_image = lower.ends_with(".bmp") || lower.ends_with(".png");
 
-                                // Get filesystem from file explorer
-                                if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(instance_id) {
-                                    if let (Some(ref fs), Some(device_idx)) = (&explorer.filesystem, explorer.device_index) {
+                                    // Get filesystem from file explorer
+                                    if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(instance_id) {
+                                        if let (Some(ref fs), Some(device_idx)) = (&explorer.filesystem, explorer.device_index) {
                                         // Get file info by listing all files
                                         let file_list = fs.list_files();
                                         let file_entry = file_list.iter().find(|e| e.get_name() == filename);
@@ -725,6 +729,7 @@ impl WindowManager {
                                             }
                                         }
                                     }
+                                }
                                 }
                             },
                             FileExplorerAction::Refresh => {
@@ -1261,6 +1266,17 @@ pub fn get_focused_window_index() -> Option<usize> {
             wm.windows.iter().position(|w| w.is_focused)
         } else {
             None
+        }
+    }
+}
+
+/// Get the current number of windows
+pub fn get_window_count() -> usize {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.windows.len()
+        } else {
+            0
         }
     }
 }
