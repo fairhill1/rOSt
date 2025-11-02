@@ -163,17 +163,13 @@ impl PageTableEntry {
 pub fn init_virtual_memory() {
     // For now, we'll use identity mapping (virtual = physical)
     // This is simpler and sufficient for early kernel development
-    
-    unsafe {
-        // Get translation table base register
-        let mut ttbr0: u64;
-        core::arch::asm!("mrs {}, ttbr0_el1", out(reg) ttbr0);
-        
-        // We're already using UEFI's page tables
-        // Later we'll create our own
-        
-        // For now, just ensure memory barriers
-        core::arch::asm!("dsb sy");
-        core::arch::asm!("isb");
-    }
+
+    use aarch64_cpu::asm::barrier;
+
+    // We're already using UEFI's page tables
+    // Later we'll create our own
+
+    // For now, just ensure memory barriers
+    barrier::dsb(barrier::SY);
+    barrier::isb(barrier::SY);
 }

@@ -13,6 +13,7 @@ smoltcp = { version = "0.12", default-features = false, features = ["proto-ipv4"
 minipng = { version = "1.0.0", default-features = false }
 fontdue = { version = "0.9.3", default-features = false, features = ["hashbrown"] }
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex"] }
+aarch64-cpu = "11.1"
 
 [profile.release]
 opt-level = 2
