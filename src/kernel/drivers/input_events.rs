@@ -639,9 +639,9 @@ pub fn test_input_events() -> (bool, bool) {
                                     if crate::gui::window_manager::get_window_count() >= 4 {
                                         set_menu_status("Cannot open: 4 windows max");
                                     } else {
-                                        // Check if file is an image (BMP or PNG)
+                                        // Check if file is an image (BMP, PNG, or JPEG)
                                         let lower = filename.to_lowercase();
-                                        let is_image = lower.ends_with(".bmp") || lower.ends_with(".png");
+                                        let is_image = lower.ends_with(".bmp") || lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg");
 
                                         if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(explorer_id) {
                                         if let (Some(ref fs), Some(device_idx)) = (&explorer.filesystem, explorer.device_index) {
