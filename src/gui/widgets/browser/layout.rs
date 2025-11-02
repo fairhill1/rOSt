@@ -532,6 +532,8 @@ pub fn layout_element(
 
                 current_y = new_y + element_height + 2;
             }
+            // Remove the spacing after the last item (block element will add its own spacing)
+            current_y -= element_height + 2;
             return (x, current_y);
         }
         "table" => {
