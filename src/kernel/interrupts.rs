@@ -224,8 +224,8 @@ pub fn init_timer() {
         // Read timer frequency from system register
         let freq = CNTFRQ_EL0.get();
 
-        // Set timer for 1 second from now
-        let tval = freq; // 1 second worth of ticks
+        // Set timer for 10ms intervals (100 Hz) - standard for preemptive multitasking
+        let tval = freq / 100; // 10ms worth of ticks
         CNTP_TVAL_EL0.set(tval);
 
         // Enable the timer (ENABLE bit)
@@ -244,14 +244,14 @@ fn handle_timer_interrupt() {
         // Acknowledge the timer interrupt
         CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::CLEAR);
 
-        // Reset timer for next interrupt (1 second)
+        // Reset timer for next interrupt (10ms)
         let freq = CNTFRQ_EL0.get();
-        CNTP_TVAL_EL0.set(freq);
+        CNTP_TVAL_EL0.set(freq / 100); // 10ms intervals
         CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
 
-        // Preemptive multitasking - switch threads every N ticks
+        // Preemptive multitasking - preempt every tick (10ms time slices)
         static mut TICK_COUNT: u64 = 0;
-        const PREEMPT_TICKS: u64 = 10; // Preempt every 10 timer interrupts (10 seconds with current setup)
+        const PREEMPT_TICKS: u64 = 1; // Preempt every 10ms
 
         TICK_COUNT += 1;
         if TICK_COUNT >= PREEMPT_TICKS {
