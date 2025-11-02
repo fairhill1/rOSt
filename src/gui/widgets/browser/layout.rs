@@ -314,8 +314,17 @@ pub fn layout_element(
         default_font_size_level
     };
 
-    // Store background color from CSS
+    // Store background color and spacing from CSS
     let background_color = inline_style.background_color;
+
+    // Default margins for certain elements (like browsers do)
+    let default_margin = match tag {
+        "p" => 8,  // Paragraphs get default top/bottom margin
+        _ => 0,
+    };
+
+    let css_margin = inline_style.margin.unwrap_or(default_margin);
+    let css_padding = inline_style.padding.unwrap_or(0);
 
     // Get actual height for spacing calculations
     let element_height = if crate::gui::font::is_available() {
@@ -323,6 +332,15 @@ pub fn layout_element(
     } else {
         CHAR_HEIGHT * font_size_level
     };
+
+    // Apply margin (spacing before element) - this creates white space BEFORE the element
+    if is_block && css_margin > 0 {
+        current_y += css_margin;
+    }
+
+    // Track starting position for full-width backgrounds (AFTER margin applied)
+    let block_start_y = current_y;
+    let block_start_idx = browser.layout.len();
 
     // Handle special tags
     match tag {
@@ -480,10 +498,26 @@ pub fn layout_element(
                 current_y += element_height; // Extra spacing before heading
             }
 
+            // Apply padding to content position
+            if css_padding > 0 {
+                current_x += css_padding;
+                current_y += css_padding;
+            }
+
             for child in &node.children {
-                let (new_x, new_y) = layout_node(browser, child, current_x, current_y, max_width, color, &background_color, bold, italic, font_size_level, element_id);
+                let child_max_width = if css_padding > 0 {
+                    max_width.saturating_sub(css_padding * 2)
+                } else {
+                    max_width
+                };
+                let (new_x, new_y) = layout_node(browser, child, current_x, current_y, child_max_width, color, &background_color, bold, italic, font_size_level, element_id);
                 current_x = new_x;
                 current_y = new_y;
+            }
+
+            // Add bottom padding
+            if css_padding > 0 {
+                current_y += css_padding;
             }
 
             // Add height of the text + spacing after
@@ -711,6 +745,16 @@ pub fn layout_element(
         _ => {}
     }
 
+    // Apply padding to content position
+    let content_x = if css_padding > 0 { current_x + css_padding } else { current_x };
+    let content_y = if css_padding > 0 { current_y + css_padding } else { current_y };
+    let content_max_width = if css_padding > 0 { max_width.saturating_sub(css_padding * 2) } else { max_width };
+
+    if css_padding > 0 {
+        current_x = content_x;
+        current_y = content_y;
+    }
+
     // Render children
     for child in &node.children {
         // For block-level children (like nested lists), pass the base x position
@@ -728,16 +772,75 @@ pub fn layout_element(
             false
         };
 
-        let child_x = if child_is_block || is_br { x } else { current_x };
-        let (new_x, new_y) = layout_node(browser, child, child_x, current_y, max_width, color, &background_color, bold, italic, font_size_level, element_id);
+        let child_base_x = if css_padding > 0 { content_x } else { x };
+        let child_x = if child_is_block || is_br { child_base_x } else { current_x };
+        let (new_x, new_y) = layout_node(browser, child, child_x, current_y, content_max_width, color, &background_color, bold, italic, font_size_level, element_id);
         current_x = new_x;
         current_y = new_y;
     }
 
+    // Add bottom padding
+    if css_padding > 0 {
+        current_y += css_padding;
+    }
+
+    // Add full-width background for block elements with background color
+    if is_block && background_color.is_some() && browser.layout.len() > block_start_idx {
+        let bg_color = background_color.unwrap();
+
+        // Calculate the actual height of the block content by finding max Y of all child boxes
+        let mut block_end_y = block_start_y;
+        for i in block_start_idx..browser.layout.len() {
+            let box_end = browser.layout[i].y + browser.layout[i].height;
+            if box_end > block_end_y {
+                block_end_y = box_end;
+            }
+        }
+
+        // Add padding if specified (top padding already in positions, add bottom padding to height)
+        let block_height = if css_padding > 0 {
+            block_end_y.saturating_sub(block_start_y) + css_padding + 6
+        } else {
+            block_end_y.saturating_sub(block_start_y) + 6
+        };
+
+        // Clear background_color from child boxes (full-width bg will handle it)
+        for i in block_start_idx..browser.layout.len() {
+            browser.layout[i].background_color = None;
+        }
+
+        // Insert full-width background box at the beginning (so it renders behind content)
+        browser.layout.insert(block_start_idx, LayoutBox {
+            x,
+            y: block_start_y,
+            width: max_width,
+            height: block_height,
+            text: String::new(),
+            color: bg_color,
+            background_color: Some(bg_color),
+            font_size: font_size_level,
+            is_link: false,
+            link_url: String::new(),
+            bold: false,
+            italic: false,
+            element_id: element_id.to_string(),
+            is_image: false,
+            image_data: None,
+            is_hr: false,
+            is_table_cell: false,
+            is_header_cell: false,
+        });
+    }
+
     // Block elements end with newline
     if is_block {
-        // Paragraphs get more spacing, br gets handled above
-        (x, current_y + element_height + 6)
+        // Apply bottom margin
+        let bottom_spacing = if css_margin > 0 {
+            element_height + 6 + css_margin
+        } else {
+            element_height + 6
+        };
+        (x, current_y + bottom_spacing)
     } else {
         (current_x, current_y)
     }

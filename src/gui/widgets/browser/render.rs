@@ -202,10 +202,9 @@ pub fn render(
                 }
             }
         } else {
-            // Only draw text if fully visible (text is harder to partially clip)
-            if y_signed >= 0 && y_signed + layout_box.height as isize <= content_height as isize {
-                // Draw background color if specified
-                if let Some(bg_color) = &layout_box.background_color {
+            // Draw background color if specified (for full-width backgrounds or text backgrounds)
+            if let Some(bg_color) = &layout_box.background_color {
+                if y_signed >= 0 && y_signed + layout_box.height as isize <= content_height as isize {
                     let bg_color_u32 = bg_color.to_u32();
                     for bg_y in 0..layout_box.height {
                         let fb_y = content_y + y_signed as usize + bg_y;
@@ -219,25 +218,30 @@ pub fn render(
                         }
                     }
                 }
+            }
 
-                draw_text(
-                    fb,
-                    fb_width,
-                    fb_height,
-                    win_x + layout_box.x,
-                    content_y + y_signed as usize,
-                    &layout_box.text,
-                    &layout_box.color,
-                    layout_box.font_size,
-                );
+            // Only draw text if there is text and it's fully visible
+            if !layout_box.text.is_empty() {
+                if y_signed >= 0 && y_signed + layout_box.height as isize <= content_height as isize {
+                    draw_text(
+                        fb,
+                        fb_width,
+                        fb_height,
+                        win_x + layout_box.x,
+                        content_y + y_signed as usize,
+                        &layout_box.text,
+                        &layout_box.color,
+                        layout_box.font_size,
+                    );
 
-                // Underline links
-                if layout_box.is_link {
-                    for x in 0..layout_box.width {
-                        let fb_x = win_x + layout_box.x + x;
-                        let fb_y = content_y + y_signed as usize + layout_box.height;
-                        if fb_x < fb_width && fb_y < fb_height {
-                            fb[fb_y * fb_width + fb_x] = layout_box.color.to_u32();
+                    // Underline links
+                    if layout_box.is_link {
+                        for x in 0..layout_box.width {
+                            let fb_x = win_x + layout_box.x + x;
+                            let fb_y = content_y + y_signed as usize + layout_box.height;
+                            if fb_x < fb_width && fb_y < fb_height {
+                                fb[fb_y * fb_width + fb_x] = layout_box.color.to_u32();
+                            }
                         }
                     }
                 }
