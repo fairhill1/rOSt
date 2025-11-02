@@ -861,6 +861,11 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                     crate::gui::widgets::browser::render_at(instance_id, cx as usize, cy as usize, cw as usize, ch as usize);
                 }
 
+                // Render all image viewer windows INSIDE their windows
+                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_image_viewers() {
+                    crate::gui::widgets::image_viewer::render_at(instance_id, cx, cy, cw, ch);
+                }
+
                 // Hardware cursor is now handled by VirtIO GPU, no need for software cursor
                 // crate::gui::framebuffer::draw_cursor();
 
