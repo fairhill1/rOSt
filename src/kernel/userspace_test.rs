@@ -121,6 +121,20 @@ struct FbInfo {
     pixel_format: u32,
 }
 
+/// Input event structure (must match kernel definition)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct InputEvent {
+    event_type: u32,  // 0=None, 1=KeyPressed, 2=KeyReleased, 3=MouseMove, 4=MouseButton, 5=MouseWheel
+    key: u8,
+    modifiers: u8,
+    button: u8,
+    pressed: u8,
+    x_delta: i8,
+    y_delta: i8,
+    wheel_delta: i8,
+}
+
 /// sys_fb_info wrapper
 fn sys_fb_info() -> Option<FbInfo> {
     let mut info = FbInfo {
@@ -176,6 +190,35 @@ fn sys_fb_flush() -> i32 {
     }
 }
 
+/// sys_poll_event wrapper - polls for input events
+fn sys_poll_event() -> Option<InputEvent> {
+    let mut event = InputEvent {
+        event_type: 0,
+        key: 0,
+        modifiers: 0,
+        button: 0,
+        pressed: 0,
+        x_delta: 0,
+        y_delta: 0,
+        wheel_delta: 0,
+    };
+
+    let result = unsafe {
+        syscall(
+            18, // SyscallNumber::PollEvent
+            &mut event as *mut _ as u64,
+            0,
+            0
+        )
+    };
+
+    if result > 0 && event.event_type != 0 {
+        Some(event)
+    } else {
+        None
+    }
+}
+
 /// Test user program - runs at EL0
 #[no_mangle]
 pub extern "C" fn user_test_program() -> ! {
@@ -216,72 +259,52 @@ pub extern "C" fn user_test_program() -> ! {
         }
     };
 
-    // Test 4: Draw colored rectangles to screen
-    print_debug("Drawing to framebuffer...");
+    // Test 4: Poll for input events continuously
+    print_debug("=== INPUT EVENT TEST ===");
+    print_debug("Move mouse or press keys NOW!");
+    print_debug("Polling for 3 seconds...");
 
-    unsafe {
-        let stride = fb_info.stride;
-
-        // Test: Write and read back a single pixel
-        let test_offset = (100 * stride + 100) as isize;
-        core::ptr::write_volatile(fb_ptr.offset(test_offset), 0x00FF0000);
-        let readback = core::ptr::read_volatile(fb_ptr.offset(test_offset));
-        if readback == 0x00FF0000 {
-            print_debug("Pixel write/read verified!");
-        } else {
-            print_debug("Pixel readback FAILED - writes not working!");
-        }
-
-        // Draw red rectangle (100x100) at (100, 100)
-        for y in 100..200 {
-            for x in 100..200 {
-                let offset = (y * stride + x) as isize;
-                core::ptr::write_volatile(fb_ptr.offset(offset), 0x00FF0000); // Red
-            }
-        }
-
-        // Draw green rectangle (100x100) at (250, 100)
-        for y in 100..200 {
-            for x in 250..350 {
-                let offset = (y * stride + x) as isize;
-                core::ptr::write_volatile(fb_ptr.offset(offset), 0x0000FF00); // Green
-            }
-        }
-
-        // Draw blue rectangle (100x100) at (400, 100)
-        for y in 100..200 {
-            for x in 400..500 {
-                let offset = (y * stride + x) as isize;
-                core::ptr::write_volatile(fb_ptr.offset(offset), 0x000000FF); // Blue
-            }
-        }
-    }
-
-    print_debug("Drawing complete!");
-
-    // Flush framebuffer to display
-    print_debug("Flushing framebuffer...");
-    if sys_fb_flush() == 0 {
-        print_debug("Flush successful!");
-    } else {
-        print_debug("Flush failed!");
-    }
-
-    // Wait so we can see the rectangles before shell redraws
-    print_debug("Rectangles visible - waiting 10 seconds...");
     let start_time = get_time();
-    let target_time = start_time + 10000; // 10 seconds in milliseconds
+    let mut event_count = 0;
+    let mut key_count = 0;
+    let mut mouse_move_count = 0;
+    let mut mouse_button_count = 0;
 
-    loop {
-        let current_time = get_time();
-        if current_time >= target_time {
-            break;
+    // Poll rapidly for 3 seconds
+    while get_time() - start_time < 3000 {
+        if let Some(event) = sys_poll_event() {
+            event_count += 1;
+            match event.event_type {
+                1 => {
+                    key_count += 1;
+                    print_debug("Event: Key pressed");
+                }
+                2 => print_debug("Event: Key released"),
+                3 => {
+                    mouse_move_count += 1;
+                    print_debug("Event: Mouse moved");
+                }
+                4 => {
+                    mouse_button_count += 1;
+                    if event.pressed != 0 {
+                        print_debug("Event: Mouse button pressed");
+                    } else {
+                        print_debug("Event: Mouse button released");
+                    }
+                }
+                5 => print_debug("Event: Mouse wheel"),
+                _ => {}
+            }
         }
-        // Yield CPU occasionally to be cooperative
-        unsafe { core::arch::asm!("wfe"); }
     }
 
-    // Test 5: Exit
-    print_debug("User program exiting...");
+    print_debug("=== RESULTS ===");
+    if event_count > 0 {
+        print_debug("SUCCESS: Input events detected!");
+    } else {
+        print_debug("WARNING: No events detected (try moving mouse/keys)");
+    }
+
+    print_debug("Test complete - exiting");
     exit(0);
 }

@@ -38,6 +38,9 @@ pub enum SyscallNumber {
     FbInfo = 15,
     FbMap = 16,
     FbFlush = 17,
+
+    // Input operations
+    PollEvent = 18,
 }
 
 impl SyscallNumber {
@@ -62,6 +65,7 @@ impl SyscallNumber {
             15 => Some(Self::FbInfo),
             16 => Some(Self::FbMap),
             17 => Some(Self::FbFlush),
+            18 => Some(Self::PollEvent),
             _ => None,
         }
     }
@@ -97,6 +101,20 @@ pub struct FbInfo {
     pub height: u32,
     pub stride: u32,        // pixels_per_scanline
     pub pixel_format: u32,  // 0=RGB, 1=BGR
+}
+
+/// Input event returned to userspace
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct InputEventUser {
+    pub event_type: u32,  // 0=None, 1=KeyPressed, 2=KeyReleased, 3=MouseMove, 4=MouseButton, 5=MouseWheel
+    pub key: u8,
+    pub modifiers: u8,
+    pub button: u8,
+    pub pressed: u8,      // boolean as u8
+    pub x_delta: i8,
+    pub y_delta: i8,
+    pub wheel_delta: i8,
 }
 
 /// Syscall error codes (returned as negative values in X0)
@@ -166,6 +184,7 @@ pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
         SyscallNumber::FbInfo => sys_fb_info(args.arg0 as *mut FbInfo),
         SyscallNumber::FbMap => sys_fb_map(),
         SyscallNumber::FbFlush => sys_fb_flush(),
+        SyscallNumber::PollEvent => sys_poll_event(args.arg0 as *mut InputEventUser),
         _ => SyscallError::NotImplemented.as_i64(),
     }
 }
@@ -598,4 +617,113 @@ fn sys_fb_flush() -> i64 {
     };
 
     result
+}
+
+// Input syscalls
+
+fn sys_poll_event(event_ptr: *mut InputEventUser) -> i64 {
+    if event_ptr.is_null() {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    crate::kernel::uart_write_string("[SYSCALL] poll_event() called\r\n");
+
+    // Get event from kernel input queue
+    let kernel_event = crate::kernel::drivers::input_events::get_input_event();
+
+    match kernel_event {
+        Some(event) => {
+            crate::kernel::uart_write_string("[SYSCALL] poll_event() -> found event!\r\n");
+
+            // Convert kernel InputEvent to user InputEventUser
+            let user_event = match event {
+                crate::kernel::drivers::input_events::InputEvent::KeyPressed { key, modifiers } => {
+                    InputEventUser {
+                        event_type: 1,
+                        key,
+                        modifiers,
+                        button: 0,
+                        pressed: 0,
+                        x_delta: 0,
+                        y_delta: 0,
+                        wheel_delta: 0,
+                    }
+                }
+                crate::kernel::drivers::input_events::InputEvent::KeyReleased { key, modifiers } => {
+                    InputEventUser {
+                        event_type: 2,
+                        key,
+                        modifiers,
+                        button: 0,
+                        pressed: 0,
+                        x_delta: 0,
+                        y_delta: 0,
+                        wheel_delta: 0,
+                    }
+                }
+                crate::kernel::drivers::input_events::InputEvent::MouseMove { x_delta, y_delta } => {
+                    InputEventUser {
+                        event_type: 3,
+                        key: 0,
+                        modifiers: 0,
+                        button: 0,
+                        pressed: 0,
+                        x_delta,
+                        y_delta,
+                        wheel_delta: 0,
+                    }
+                }
+                crate::kernel::drivers::input_events::InputEvent::MouseButton { button, pressed } => {
+                    InputEventUser {
+                        event_type: 4,
+                        key: 0,
+                        modifiers: 0,
+                        button,
+                        pressed: if pressed { 1 } else { 0 },
+                        x_delta: 0,
+                        y_delta: 0,
+                        wheel_delta: 0,
+                    }
+                }
+                crate::kernel::drivers::input_events::InputEvent::MouseWheel { delta } => {
+                    InputEventUser {
+                        event_type: 5,
+                        key: 0,
+                        modifiers: 0,
+                        button: 0,
+                        pressed: 0,
+                        x_delta: 0,
+                        y_delta: 0,
+                        wheel_delta: delta,
+                    }
+                }
+            };
+
+            // Copy to user buffer
+            unsafe {
+                core::ptr::write_volatile(event_ptr, user_event);
+            }
+
+            1 // Event available
+        }
+        None => {
+            // No event available - write empty event
+            let empty_event = InputEventUser {
+                event_type: 0,
+                key: 0,
+                modifiers: 0,
+                button: 0,
+                pressed: 0,
+                x_delta: 0,
+                y_delta: 0,
+                wheel_delta: 0,
+            };
+
+            unsafe {
+                core::ptr::write_volatile(event_ptr, empty_event);
+            }
+
+            0 // No event
+        }
+    }
 }
