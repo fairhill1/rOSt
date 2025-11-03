@@ -148,6 +148,49 @@ handle_serror_entry:
 .balign 16
 .global drop_to_el0
 drop_to_el0:
+    // Save the original user arguments
+    mov x20, x0      // Save user entry point
+    mov x21, x1      // Save user stack pointer
+
+    // === GET PRE-PREPARED PAGE TABLE ADDRESSES ===
+    // Page tables were prepared during kernel initialization
+    bl get_page_table_addresses
+
+    // Function returns: x0 = user table address, x1 = kernel table address
+    // These were prepared safely during kernel init while on UEFI mappings
+
+    // === ACTUAL MMU SWITCH - USING PRE-PREPARED TABLES ===
+    // CRITICAL: Since we copied UEFI mappings, our code should be mapped in both tables
+
+    // Switch TTBR1 to our kernel tables (TTBR1 was unused by UEFI)
+    msr ttbr1_el1, x1    // Switch TTBR1 to kernel page tables
+
+    // Enable TTBR1 in TCR (TTBR1 was previously disabled)
+    mrs x2, tcr_el1        // Read current TCR
+    orr x2, x2, #0x40000000   // T1SZ = 25 (48-bit addresses)
+    orr x2, x2, #0x30000000   // TG1 = 4KB granule
+    orr x2, x2, #0x03000000   // SH1 = Inner Shareable
+    orr x2, x2, #0x00800000   // ORGN1 = Normal memory
+    orr x2, x2, #0x00400000   // IRGN1 = Normal memory
+    msr tcr_el1, x2        // Enable TTBR1
+
+    // Memory barrier after TTBR1 switch
+    dsb sy
+    isb sy
+
+    // NOW switch TTBR0 - our code should be accessible through TTBR1
+    msr ttbr0_el1, x0    // Switch TTBR0 to user page tables
+
+    // Final memory barrier
+    dsb sy
+    isb sy
+
+    // === MMU SWITCH COMPLETE - ON OUR DUAL TABLES ===
+
+    // Restore the original user arguments
+    mov x0, x20      // Restore user entry point to x0
+    mov x1, x21      // Restore user stack pointer to x1
+
     // Set up ELR_EL1 (exception link register) with user entry point
     msr elr_el1, x0
 
