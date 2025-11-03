@@ -1,6 +1,6 @@
 # rOSt - Rust ARM64 Operating System
 
-Production-grade ARM64 OS written in Rust. **Last Updated:** 2025-11-02
+Production-grade ARM64 OS written in Rust. **Last Updated:** 2025-11-03
 
 ## Features
 
@@ -72,6 +72,74 @@ src/gui/             - framebuffer, window_manager, html_parser, bmp_decoder, pn
   widgets/           - browser (async), editor, console, file_explorer, text_input, image_viewer
 src/apps/            - shell, snake
 ```
+
+## Code Quality Standards (MANDATORY)
+
+**BEFORE writing ANY code, you MUST follow these rules:**
+
+### 1. No Magic Numbers
+Define constants for ANY numeric value that isn't obviously 0, 1, or a direct API requirement.
+
+```rust
+// ❌ BAD
+current_y += 6;
+height: 25,
+if screen_y < 4 { ... }
+
+// ✅ GOOD
+const BLOCK_BOTTOM_SPACING: usize = 6;
+const PAGE_BOTTOM_PADDING: usize = 25;
+const MIN_VISIBLE_PIXELS: isize = 4;
+
+current_y += BLOCK_BOTTOM_SPACING;
+height: PAGE_BOTTOM_PADDING,
+if screen_y < MIN_VISIBLE_PIXELS { ... }
+```
+
+### 2. No Code Duplication
+If you write the same logic twice, extract a shared function IMMEDIATELY.
+
+- Three reflow paths? ONE shared function.
+- Two copies of get_font_size_px? ONE shared location.
+- Same calculation in multiple places? Extract it.
+
+### 3. Minimize Indirection
+Don't convert values back and forth unless necessary for the domain.
+
+```rust
+// ❌ BAD - unnecessary conversions
+css: 48px → divide by 8 → level 6 → multiply by 8 → 48px
+
+// ✅ GOOD - store what you need
+css: 48px → store 48px → render 48px
+```
+
+### 4. Document Non-Obvious Decisions
+Add comments explaining WHY, not WHAT.
+
+```rust
+// ✅ GOOD
+// Layout boxes use signed arithmetic for viewport clipping
+// This allows negative positions when elements are scrolled off-screen
+let y_signed = layout_box.y as isize - scroll_offset as isize;
+
+// ❌ BAD
+// Convert y to signed  (doesn't explain why)
+let y_signed = layout_box.y as isize - scroll_offset as isize;
+```
+
+### 5. Self-Review Before Committing
+Before every commit, review your changes:
+- "Would I understand this in 6 months without context?"
+- Any magic numbers? Add constants.
+- Any duplication? Extract functions.
+- Any confusing indirection? Simplify.
+
+### 6. Proactive Tech Debt Management
+When you notice accumulated issues (magic numbers, duplication, unclear logic):
+**STOP and ask the user:** "I notice the code has [specific issue]. Should I clean this up now or continue with the current task?"
+
+Don't let technical debt accumulate silently.
 
 ## Critical Gotchas
 

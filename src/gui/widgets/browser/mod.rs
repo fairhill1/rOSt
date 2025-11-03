@@ -472,7 +472,7 @@ impl Browser {
                                             crate::kernel::uart_write_string("Image dimensions changed, reflowing layout\r\n");
                                             if let Some(ref dom) = self.dom.clone() {
                                                 self.layout.clear();
-                                                layout::layout_node(self, &dom, 10, 10, 1260, &Color::BLACK, &None, false, false, 1, "", &[]);
+                                                layout::layout_node(self, &dom, 10, 10, 1260, &Color::BLACK, &None, false, false, 18.0, "", &[]);
 
                                                 // Add bottom padding after reflow
                                                 if let Some(last_box) = self.layout.last() {
@@ -485,7 +485,7 @@ impl Browser {
                                                         text: String::new(),
                                                         color: Color::new(255, 255, 255),
                                                         background_color: None,
-                                                        font_size: 1,
+                                                        font_size: 18.0,
                                                         is_link: false,
                                                         link_url: String::new(),
                                                         bold: false,

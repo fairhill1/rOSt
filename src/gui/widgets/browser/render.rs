@@ -263,27 +263,27 @@ pub fn render(
 }
 
 /// Draw text using TrueType font if available, otherwise bitmap font
-pub fn draw_text(fb: &mut [u32], fb_width: usize, fb_height: usize, x: usize, y: usize, text: &str, color: &Color, font_size_level: usize) {
+pub fn draw_text(fb: &mut [u32], fb_width: usize, fb_height: usize, x: usize, y: usize, text: &str, color: &Color, font_size: f32) {
     if crate::gui::font::is_available() {
-        // Use TrueType font
-        let font_size_px = get_font_size_px(font_size_level);
+        // Use TrueType font with pixel size directly
         let color_u32 = color.to_u32();
-        crate::gui::font::draw_string(x as i32, y as i32, text, color_u32, font_size_px);
+        crate::gui::font::draw_string(x as i32, y as i32, text, color_u32, font_size);
     } else {
-        // Fallback to bitmap font
+        // Fallback to bitmap font - calculate multiplier from pixel size
+        let multiplier = ((font_size / 8.0) + 0.5) as usize;
         let mut current_x = x;
         for ch in text.chars() {
             if ch.is_ascii() {
                 let glyph = FONT_8X8[ch as usize];
-                // Scale the 8x8 bitmap by font_size_level
+                // Scale the 8x8 bitmap by multiplier
                 for row in 0..8 {
                     for col in 0..8 {
                         if (glyph[row] & (1 << (7 - col))) != 0 {
-                            // Draw a font_size_level x font_size_level block for each pixel in the glyph
-                            for dy in 0..font_size_level {
-                                for dx in 0..font_size_level {
-                                    let fb_x = current_x + col * font_size_level + dx;
-                                    let fb_y = y + row * font_size_level + dy;
+                            // Draw a multiplier x multiplier block for each pixel in the glyph
+                            for dy in 0..multiplier {
+                                for dx in 0..multiplier {
+                                    let fb_x = current_x + col * multiplier + dx;
+                                    let fb_y = y + row * multiplier + dy;
                                     if fb_x < fb_width && fb_y < fb_height {
                                         fb[fb_y * fb_width + fb_x] = color.to_u32();
                                     }
@@ -293,7 +293,7 @@ pub fn draw_text(fb: &mut [u32], fb_width: usize, fb_height: usize, x: usize, y:
                     }
                 }
             }
-            current_x += CHAR_WIDTH * font_size_level;
+            current_x += CHAR_WIDTH * multiplier;
         }
     }
 }
@@ -340,6 +340,6 @@ pub fn draw_button(fb: &mut [u32], fb_width: usize, fb_height: usize, x: usize, 
     if crate::gui::font::is_available() {
         crate::gui::font::draw_string(text_x as i32, text_y as i32, text, COLOR_BUTTON_TEXT, 18.0);
     } else {
-        draw_text(fb, fb_width, fb_height, text_x, text_y, text, &Color::new(255, 255, 255), 1);
+        draw_text(fb, fb_width, fb_height, text_x, text_y, text, &Color::new(255, 255, 255), 18.0);
     }
 }
