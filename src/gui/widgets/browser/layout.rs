@@ -451,6 +451,7 @@ pub fn layout_element(
 
     // Block-level elements start on new line
     let is_block = matches!(tag,
+        "body" | // Body is a block container
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" |
         "p" | "div" |
         "ul" | "ol" | "li" |
@@ -501,8 +502,14 @@ pub fn layout_element(
         _ => 0,
     };
 
+    // Default padding for certain elements (body gets default padding for visual spacing)
+    let default_padding = match tag {
+        "body" => 8,  // Body gets default padding (overridden by CSS reset in modern pages)
+        _ => 0,
+    };
+
     let css_margin = inline_style.margin.unwrap_or(default_margin);
-    let css_padding = inline_style.padding.unwrap_or(0);
+    let css_padding = inline_style.padding.unwrap_or(default_padding);
 
     // Get actual height for spacing calculations
     let element_height = if crate::gui::font::is_available() {
