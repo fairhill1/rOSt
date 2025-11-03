@@ -12,6 +12,7 @@ Production-grade ARM64 Desktop OS written in Rust. **Last Updated:** 2025-11-03
 **Kernel:** Preemptive multitasking, round-robin scheduler, ARM64 context switching, EL0/EL1 privilege separation with syscalls
 **Memory:** Higher-half kernel (0xFFFF...), dual page tables (TTBR0/TTBR1), MMU-based memory protection
 **Userspace:** Production ELF loader, standalone userspace binaries, microkernel architecture
+**IPC:** Shared memory (cross-process, 16MB regions), message passing (256-byte messages, ring buffers), ready for microkernel migration
 **Shell:** Interactive terminal with filesystem and network commands
 
 ## Quick Start
@@ -110,13 +111,21 @@ userspace/           - Userspace applications (EL0)
 - Spawn as isolated process via scheduler
 
 **Syscall Interface (`librost`):**
-- Process: `exit(code)`
+- Process: `exit(code)`, `getpid()`
 - File I/O: `open(path, flags)`, `read(fd, buf)`, `write(fd, buf)`, `close(fd)`
 - Time: `get_time()`
 - Debug: `print_debug(msg)`
 - Framebuffer: `fb_info()`, `fb_map()`, `fb_flush()`
 - Input: `poll_event()`
 - Network: `socket()`, `connect()`, `send()`, `recv()`
+- IPC: `shm_create(size)`, `shm_map(id)`, `shm_unmap(id)`, `send_message(pid, data)`, `recv_message(buf, timeout)`
+
+**IPC Architecture:**
+- **Shared Memory:** Up to 16MB per region, 32 regions per process, globally accessible across ALL processes
+- **Message Passing:** 256-byte messages, 16 messages per process, ring buffer implementation
+- **Cross-Process Access:** `shm_map()` searches all processes for shared memory ID (not just current process)
+- **Test Programs:** `ipc_sender` and `ipc_receiver` demonstrate end-to-end communication
+- **Microkernel Ready:** Foundation for migrating window manager and GUI apps to userspace
 
 **Testing:**
 ```
@@ -282,20 +291,9 @@ Try the simple explanation first.
 - Viewport clipping uses signed arithmetic (isize) to handle negative positions
 - Text hidden when partially off-screen, images clip pixel-by-pixel
 
-## Key Wins
-
-- **Production userspace:** Cargo workspace, ELF loader, standalone binaries, microkernel architecture
-- **True privilege separation:** EL0 userspace processes, EL1 kernel, syscall interface (librost)
-- **ELF loading:** xmas-elf parsing, segment loading, entry point calculation, process spawning
-- **Higher-half kernel:** TTBR0/TTBR1 split with kernel at 0xFFFF_FF00_0000_0000, full MMU-based memory protection
-- **Async browser:** Event-driven HTTP/image loading, stays responsive during network I/O (no blocking)
-- **Image caching & reflow:** Smart layout recalculation when dimensions change, prevents duplicate downloads
-- **Viewport clipping:** Pixel-perfect image clipping at viewport edges using signed arithmetic
-- **Preemptive multitasking:** ARM64 threading infrastructure with round-robin scheduler (10ms time slices)
-- **smoltcp migration:** Production TCP/IP stack, 91% code reduction (834→76 lines)
-- **Buffer exhaustion fix:** Auto-replenish RX buffers after each packet
-- **ARM Generic Timer:** Hardware-independent timing (no CPU-dependent delays)
-- **Modular architecture:** Clean separation (kernel/librost/userspace)
+**IPC:**
+- Shell commands that spawn processes will freeze (shell isn't a scheduled thread)
+- To test IPC: uncomment auto-spawn section in kernel/src/kernel/mod.rs and rebuild
 
 ---
 

@@ -6,6 +6,8 @@ members = [
     "image_codecs",
     "userspace/shell",
     "userspace/image_viewer",
+    "userspace/ipc_sender",
+    "userspace/ipc_receiver",
 ]
 
 # Shared profile settings for all workspace members

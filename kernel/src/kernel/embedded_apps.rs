@@ -13,3 +13,15 @@ pub static IMAGE_VIEWER_ELF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../target/aarch64-unknown-none/release/image_viewer"
 ));
+
+/// Embedded IPC sender test binary
+pub static IPC_SENDER_ELF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../target/aarch64-unknown-none/release/ipc_sender"
+));
+
+/// Embedded IPC receiver test binary
+pub static IPC_RECEIVER_ELF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../target/aarch64-unknown-none/release/ipc_receiver"
+));

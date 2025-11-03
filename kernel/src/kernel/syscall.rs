@@ -50,6 +50,13 @@ pub enum SyscallNumber {
     Bind = 23,
     Listen = 24,
     Accept = 25,
+
+    // IPC operations
+    ShmCreate = 26,
+    ShmMap = 27,
+    ShmUnmap = 28,
+    SendMessage = 29,
+    RecvMessage = 30,
 }
 
 impl SyscallNumber {
@@ -82,6 +89,11 @@ impl SyscallNumber {
             23 => Some(Self::Bind),
             24 => Some(Self::Listen),
             25 => Some(Self::Accept),
+            26 => Some(Self::ShmCreate),
+            27 => Some(Self::ShmMap),
+            28 => Some(Self::ShmUnmap),
+            29 => Some(Self::SendMessage),
+            30 => Some(Self::RecvMessage),
             _ => None,
         }
     }
@@ -149,6 +161,20 @@ pub struct SockAddrIn {
     pub addr: u32,        // IPv4 address in network byte order
     pub zero: [u8; 8],    // Padding
 }
+
+/// IPC message structure for inter-process communication
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct IpcMessage {
+    pub sender_pid: u32,    // Process ID of sender
+    pub data_len: u32,      // Length of message data
+    pub data: [u8; 256],    // Message payload (max 256 bytes)
+}
+
+/// IPC constants
+pub const MAX_MESSAGE_SIZE: usize = 256;
+pub const MAX_MESSAGES_PER_PROCESS: usize = 16;
+pub const MAX_SHM_REGIONS: usize = 32;
 
 /// Syscall error codes (returned as negative values in X0)
 #[repr(i64)]
@@ -225,6 +251,11 @@ pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
         SyscallNumber::Bind => sys_bind(args.arg0 as i32, args.arg1 as *const SockAddrIn),
         SyscallNumber::Listen => sys_listen(args.arg0 as i32, args.arg1 as u32),
         SyscallNumber::Accept => sys_accept(args.arg0 as i32, args.arg1 as *mut SockAddrIn),
+        SyscallNumber::ShmCreate => sys_shm_create(args.arg0 as usize),
+        SyscallNumber::ShmMap => sys_shm_map(args.arg0 as i32),
+        SyscallNumber::ShmUnmap => sys_shm_unmap(args.arg0 as i32),
+        SyscallNumber::SendMessage => sys_send_message(args.arg0 as u32, args.arg1 as *const u8, args.arg2 as usize),
+        SyscallNumber::RecvMessage => sys_recv_message(args.arg0 as *mut u8, args.arg1 as usize, args.arg2 as u32),
         _ => SyscallError::NotImplemented.as_i64(),
     }
 }
@@ -488,9 +519,21 @@ fn sys_exit(code: i32) -> i64 {
 }
 
 fn sys_getpid() -> i64 {
-    // TODO: Return actual process ID
     crate::kernel::uart_write_string("[SYSCALL] getpid() called\r\n");
-    1 // Dummy PID
+
+    match get_current_process() {
+        Some(pid) => {
+            crate::kernel::uart_write_string("[SYSCALL] getpid() -> ");
+            if pid < 10 {
+                unsafe {
+                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + pid as u8);
+                }
+            }
+            crate::kernel::uart_write_string("\r\n");
+            pid as i64
+        }
+        None => 0, // Should never happen
+    }
 }
 
 fn sys_gettime() -> i64 {
@@ -1146,4 +1189,28 @@ fn sys_accept(sockfd: i32, addr: *mut SockAddrIn) -> i64 {
     // TODO: Implement accept for server sockets
     // For now, return not implemented
     SyscallError::NotImplemented.as_i64()
+}
+
+// ============================================================================
+// IPC syscalls
+// ============================================================================
+
+fn sys_shm_create(size: usize) -> i64 {
+    crate::kernel::syscall_ipc::sys_shm_create(size)
+}
+
+fn sys_shm_map(shm_id: i32) -> i64 {
+    crate::kernel::syscall_ipc::sys_shm_map(shm_id)
+}
+
+fn sys_shm_unmap(shm_id: i32) -> i64 {
+    crate::kernel::syscall_ipc::sys_shm_unmap(shm_id)
+}
+
+fn sys_send_message(dest_pid: u32, data: *const u8, len: usize) -> i64 {
+    crate::kernel::syscall_ipc::sys_send_message(dest_pid, data, len)
+}
+
+fn sys_recv_message(buf: *mut u8, len: usize, timeout_ms: u32) -> i64 {
+    crate::kernel::syscall_ipc::sys_recv_message(buf, len, timeout_ms)
 }

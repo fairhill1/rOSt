@@ -22,6 +22,117 @@ pub enum ProcessType {
     User,    // Runs in EL0, user space with MMU protection
 }
 
+/// IPC message queue for inter-process communication
+pub struct MessageQueue {
+    messages: [Option<crate::kernel::syscall::IpcMessage>; crate::kernel::syscall::MAX_MESSAGES_PER_PROCESS],
+    read_idx: usize,
+    write_idx: usize,
+    count: usize,
+}
+
+impl MessageQueue {
+    pub const fn new() -> Self {
+        Self {
+            messages: [const { None }; crate::kernel::syscall::MAX_MESSAGES_PER_PROCESS],
+            read_idx: 0,
+            write_idx: 0,
+            count: 0,
+        }
+    }
+
+    pub fn push(&mut self, msg: crate::kernel::syscall::IpcMessage) -> bool {
+        if self.count >= crate::kernel::syscall::MAX_MESSAGES_PER_PROCESS {
+            return false; // Queue full
+        }
+        self.messages[self.write_idx] = Some(msg);
+        self.write_idx = (self.write_idx + 1) % crate::kernel::syscall::MAX_MESSAGES_PER_PROCESS;
+        self.count += 1;
+        true
+    }
+
+    pub fn pop(&mut self) -> Option<crate::kernel::syscall::IpcMessage> {
+        if self.count == 0 {
+            return None; // Queue empty
+        }
+        let msg = self.messages[self.read_idx];
+        self.messages[self.read_idx] = None;
+        self.read_idx = (self.read_idx + 1) % crate::kernel::syscall::MAX_MESSAGES_PER_PROCESS;
+        self.count -= 1;
+        msg
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
+/// Shared memory region descriptor
+#[derive(Clone, Copy)]
+pub struct SharedMemoryRegion {
+    pub id: i32,
+    pub size: usize,
+    pub physical_addr: u64,
+    pub virtual_addr: Option<u64>, // Mapped address (if mapped)
+    pub ref_count: usize,           // Number of processes using this region
+}
+
+/// Shared memory table for a process
+pub struct SharedMemoryTable {
+    regions: [Option<SharedMemoryRegion>; crate::kernel::syscall::MAX_SHM_REGIONS],
+    next_id: i32,
+}
+
+impl SharedMemoryTable {
+    pub const fn new() -> Self {
+        Self {
+            regions: [const { None }; crate::kernel::syscall::MAX_SHM_REGIONS],
+            next_id: 1,
+        }
+    }
+
+    pub fn alloc(&mut self, size: usize, physical_addr: u64) -> Option<i32> {
+        for slot in self.regions.iter_mut() {
+            if slot.is_none() {
+                let id = self.next_id;
+                self.next_id += 1;
+                *slot = Some(SharedMemoryRegion {
+                    id,
+                    size,
+                    physical_addr,
+                    virtual_addr: None,
+                    ref_count: 1,
+                });
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    pub fn get(&self, id: i32) -> Option<&SharedMemoryRegion> {
+        self.regions.iter()
+            .filter_map(|r| r.as_ref())
+            .find(|r| r.id == id)
+    }
+
+    pub fn get_mut(&mut self, id: i32) -> Option<&mut SharedMemoryRegion> {
+        self.regions.iter_mut()
+            .filter_map(|r| r.as_mut())
+            .find(|r| r.id == id)
+    }
+
+    pub fn remove(&mut self, id: i32) -> bool {
+        for slot in self.regions.iter_mut() {
+            if let Some(region) = slot {
+                if region.id == id {
+                    *slot = None;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
 /// Process structure - owns all memory and threads
 pub struct Process {
     pub id: usize,
@@ -32,6 +143,8 @@ pub struct Process {
     pub main_thread_id: Option<usize>, // Reference to main thread by ID
     pub file_descriptors: crate::kernel::filedesc::FileDescriptorTable, // Open files
     pub socket_descriptors: crate::kernel::syscall::SocketDescriptorTable, // Network sockets
+    pub message_queue: MessageQueue,   // IPC message queue
+    pub shm_table: SharedMemoryTable,  // Shared memory regions
 }
 
 impl Process {
@@ -49,6 +162,8 @@ impl Process {
             main_thread_id: None,
             file_descriptors: crate::kernel::filedesc::FileDescriptorTable::new(),
             socket_descriptors: crate::kernel::syscall::SocketDescriptorTable::new(),
+            message_queue: MessageQueue::new(),
+            shm_table: SharedMemoryTable::new(),
         }
     }
 
@@ -69,6 +184,8 @@ impl Process {
             main_thread_id: None,
             file_descriptors: crate::kernel::filedesc::FileDescriptorTable::new(),
             socket_descriptors: crate::kernel::syscall::SocketDescriptorTable::new(),
+            message_queue: MessageQueue::new(),
+            shm_table: SharedMemoryTable::new(),
         }
     }
 
@@ -519,6 +636,22 @@ where
         .as_mut()
         .and_then(|pm| pm.get_process_mut(id))
         .map(f)
+}
+
+/// Search all processes for a shared memory region by ID
+/// Returns the physical address if found, None otherwise
+pub fn find_shared_memory(shm_id: i32) -> Option<u64> {
+    let mut pm_lock = PROCESS_MANAGER.lock();
+    if let Some(pm) = pm_lock.as_mut() {
+        for process in &mut pm.processes {
+            if let Some(region) = process.shm_table.get_mut(shm_id) {
+                // Found it! Mark as mapped and return physical address
+                region.virtual_addr = Some(region.physical_addr);
+                return Some(region.physical_addr);
+            }
+        }
+    }
+    None
 }
 
 /// Set the main thread for a process

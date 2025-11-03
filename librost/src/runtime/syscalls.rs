@@ -39,6 +39,18 @@ pub fn exit(code: i32) -> ! {
     }
 }
 
+/// Get current process ID
+pub fn getpid() -> u32 {
+    unsafe {
+        syscall(
+            9, // SyscallNumber::GetPid
+            0,
+            0,
+            0
+        ) as u32
+    }
+}
+
 // ============================================================================
 // FILE I/O SYSCALLS
 // ============================================================================
@@ -318,6 +330,82 @@ pub fn recv(sockfd: i32, buf: &mut [u8]) -> isize {
             sockfd as u64,
             buf.as_mut_ptr() as u64,
             buf.len() as u64
+        ) as isize
+    }
+}
+
+// ============================================================================
+// IPC SYSCALLS
+// ============================================================================
+
+/// Create a shared memory region
+/// Returns: shared memory ID on success, negative error code on failure
+pub fn shm_create(size: usize) -> i32 {
+    unsafe {
+        syscall(
+            26, // SyscallNumber::ShmCreate
+            size as u64,
+            0,
+            0
+        ) as i32
+    }
+}
+
+/// Map a shared memory region into process address space
+/// Returns: pointer to mapped memory on success, null on failure
+pub fn shm_map(shm_id: i32) -> *mut u8 {
+    let addr = unsafe {
+        syscall(
+            27, // SyscallNumber::ShmMap
+            shm_id as u64,
+            0,
+            0
+        )
+    };
+    
+    if addr < 0 {
+        core::ptr::null_mut()
+    } else {
+        addr as *mut u8
+    }
+}
+
+/// Unmap a shared memory region
+/// Returns: 0 on success, negative error code on failure
+pub fn shm_unmap(shm_id: i32) -> i32 {
+    unsafe {
+        syscall(
+            28, // SyscallNumber::ShmUnmap
+            shm_id as u64,
+            0,
+            0
+        ) as i32
+    }
+}
+
+/// Send a message to another process
+/// Returns: 0 on success, negative error code on failure
+pub fn send_message(dest_pid: u32, data: &[u8]) -> i32 {
+    unsafe {
+        syscall(
+            29, // SyscallNumber::SendMessage
+            dest_pid as u64,
+            data.as_ptr() as u64,
+            data.len() as u64
+        ) as i32
+    }
+}
+
+/// Receive a message from message queue
+/// timeout_ms: 0 for non-blocking, >0 for timeout in milliseconds
+/// Returns: number of bytes received on success, 0 if no message, negative on error
+pub fn recv_message(buf: &mut [u8], timeout_ms: u32) -> isize {
+    unsafe {
+        syscall(
+            30, // SyscallNumber::RecvMessage
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            timeout_ms as u64
         ) as isize
     }
 }

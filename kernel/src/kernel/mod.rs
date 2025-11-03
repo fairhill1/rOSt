@@ -17,6 +17,7 @@ pub mod drivers;
 pub mod thread;
 pub mod scheduler;
 pub mod syscall;
+pub mod syscall_ipc;
 pub mod userspace_test;
 pub mod filedesc;
 pub mod elf_loader;
@@ -846,6 +847,25 @@ pub extern "C" fn kernel_init_high_half() -> ! {
     // interrupts::start_user_process(userspace_test::user_test_program);
     // (never returns)
 
+    // ===== IPC TEST: Spawn sender and receiver at kernel init =====
+    // DISABLED: IPC tests work but shouldn't auto-spawn on every boot
+    // To test IPC manually, uncomment this section and rebuild
+    /*
+    uart_write_string("\n=== SPAWNING IPC TEST PROGRAMS ===\r\n");
+    uart_write_string("Spawning IPC sender...\r\n");
+    let sender_elf = embedded_apps::IPC_SENDER_ELF;
+    let sender_pid = elf_loader::load_elf_and_spawn(sender_elf);
+    uart_write_string(&alloc::format!("✓ IPC sender spawned as PID {}\r\n", sender_pid));
+
+    uart_write_string("Spawning IPC receiver...\r\n");
+    let receiver_elf = embedded_apps::IPC_RECEIVER_ELF;
+    let receiver_pid = elf_loader::load_elf_and_spawn(receiver_elf);
+    uart_write_string(&alloc::format!("✓ IPC receiver spawned as PID {}\r\n", receiver_pid));
+
+    uart_write_string("Both IPC test programs will run via timer preemption...\r\n");
+    uart_write_string("===================================\r\n\r\n");
+    */
+
     let mut needs_full_render = true; // Force initial render
     let mut last_minute = drivers::rtc::get_datetime().minute; // Track last rendered minute
 
@@ -961,5 +981,9 @@ pub extern "C" fn kernel_init_high_half() -> ! {
         for _ in 0..10000 {
             unsafe { core::arch::asm!("nop"); }
         }
+
+        // CRITICAL: Yield to scheduler so spawned processes can run
+        // Without this, the main kernel loop monopolizes CPU between timer interrupts
+        thread::yield_now();
     }
 }
