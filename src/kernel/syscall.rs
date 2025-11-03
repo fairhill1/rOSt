@@ -33,6 +33,11 @@ pub enum SyscallNumber {
 
     // Console/Debug operations
     PrintDebug = 14,
+
+    // Framebuffer operations
+    FbInfo = 15,
+    FbMap = 16,
+    FbFlush = 17,
 }
 
 impl SyscallNumber {
@@ -54,6 +59,9 @@ impl SyscallNumber {
             12 => Some(Self::GetTime),
             13 => Some(Self::Sleep),
             14 => Some(Self::PrintDebug),
+            15 => Some(Self::FbInfo),
+            16 => Some(Self::FbMap),
+            17 => Some(Self::FbFlush),
             _ => None,
         }
     }
@@ -79,6 +87,16 @@ bitflags! {
         const WRITE = 1 << 1;
         const EXEC  = 1 << 2;
     }
+}
+
+/// Framebuffer information returned to userspace
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct FbInfo {
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,        // pixels_per_scanline
+    pub pixel_format: u32,  // 0=RGB, 1=BGR
 }
 
 /// Syscall error codes (returned as negative values in X0)
@@ -145,6 +163,9 @@ pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
         SyscallNumber::GetPid => sys_getpid(),
         SyscallNumber::GetTime => sys_gettime(),
         SyscallNumber::PrintDebug => sys_print_debug(args.arg0 as *const u8, args.arg1 as usize),
+        SyscallNumber::FbInfo => sys_fb_info(args.arg0 as *mut FbInfo),
+        SyscallNumber::FbMap => sys_fb_map(),
+        SyscallNumber::FbFlush => sys_fb_flush(),
         _ => SyscallError::NotImplemented.as_i64(),
     }
 }
@@ -474,4 +495,107 @@ where
     crate::kernel::thread::with_process_mut(process_id, |process| {
         f(&mut process.file_descriptors)
     })
+}
+
+// Framebuffer syscalls
+
+fn sys_fb_info(info_ptr: *mut FbInfo) -> i64 {
+    if info_ptr.is_null() {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    crate::kernel::uart_write_string("[SYSCALL] fb_info() called\r\n");
+
+    // Get framebuffer info from kernel globals
+    let fb_info = unsafe { crate::kernel::GPU_FRAMEBUFFER_INFO };
+
+    match fb_info {
+        Some(fb) => {
+            // Create FbInfo struct to return to user
+            let user_info = FbInfo {
+                width: fb.width,
+                height: fb.height,
+                stride: fb.pixels_per_scanline,
+                pixel_format: match fb.pixel_format {
+                    crate::gui::framebuffer::PixelFormat::Rgb => 0,
+                    crate::gui::framebuffer::PixelFormat::Bgr => 1,
+                    _ => 0,
+                },
+            };
+
+            // Copy to user buffer
+            unsafe {
+                core::ptr::write_volatile(info_ptr, user_info);
+            }
+
+            crate::kernel::uart_write_string("[SYSCALL] fb_info() -> success\r\n");
+            0 // Success
+        }
+        None => {
+            crate::kernel::uart_write_string("[SYSCALL] fb_info() -> no framebuffer\r\n");
+            SyscallError::InvalidArgument.as_i64()
+        }
+    }
+}
+
+fn sys_fb_map() -> i64 {
+    crate::kernel::uart_write_string("[SYSCALL] fb_map() called\r\n");
+
+    // Get framebuffer base address from kernel globals
+    let fb_info = unsafe { crate::kernel::GPU_FRAMEBUFFER_INFO };
+
+    match fb_info {
+        Some(fb) => {
+            // Return the framebuffer base address as a signed i64
+            // The address is already accessible in user page tables (0-4GB mapped)
+            let addr = fb.base_address as i64;
+
+            crate::kernel::uart_write_string("[SYSCALL] fb_map() -> 0x");
+            // Simple hex print
+            let hex_chars = b"0123456789ABCDEF";
+            for i in (0..16).rev() {
+                let digit = ((addr as u64) >> (i * 4)) & 0xF;
+                unsafe {
+                    core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[digit as usize]);
+                }
+            }
+            crate::kernel::uart_write_string("\r\n");
+
+            addr
+        }
+        None => {
+            crate::kernel::uart_write_string("[SYSCALL] fb_map() -> no framebuffer\r\n");
+            SyscallError::InvalidArgument.as_i64()
+        }
+    }
+}
+
+fn sys_fb_flush() -> i64 {
+    crate::kernel::uart_write_string("[SYSCALL] fb_flush() called\r\n");
+
+    // Get GPU driver and flush the display
+    let result = unsafe {
+        match crate::kernel::GPU_DRIVER.as_mut() {
+            Some(gpu) => {
+                match gpu.flush_display() {
+                    Ok(_) => {
+                        crate::kernel::uart_write_string("[SYSCALL] fb_flush() -> success\r\n");
+                        0
+                    }
+                    Err(e) => {
+                        crate::kernel::uart_write_string("[SYSCALL] fb_flush() -> failed: ");
+                        crate::kernel::uart_write_string(e);
+                        crate::kernel::uart_write_string("\r\n");
+                        SyscallError::InvalidArgument.as_i64()
+                    }
+                }
+            }
+            None => {
+                crate::kernel::uart_write_string("[SYSCALL] fb_flush() -> no GPU driver\r\n");
+                SyscallError::InvalidArgument.as_i64()
+            }
+        }
+    };
+
+    result
 }

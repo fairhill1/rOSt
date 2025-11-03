@@ -111,6 +111,71 @@ fn sys_close(fd: i32) -> i32 {
     }
 }
 
+/// Framebuffer info structure (must match kernel definition)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct FbInfo {
+    width: u32,
+    height: u32,
+    stride: u32,
+    pixel_format: u32,
+}
+
+/// sys_fb_info wrapper
+fn sys_fb_info() -> Option<FbInfo> {
+    let mut info = FbInfo {
+        width: 0,
+        height: 0,
+        stride: 0,
+        pixel_format: 0,
+    };
+
+    let result = unsafe {
+        syscall(
+            15, // SyscallNumber::FbInfo
+            &mut info as *mut _ as u64,
+            0,
+            0
+        )
+    };
+
+    if result == 0 {
+        Some(info)
+    } else {
+        None
+    }
+}
+
+/// sys_fb_map wrapper - returns framebuffer address
+fn sys_fb_map() -> Option<*mut u32> {
+    let addr = unsafe {
+        syscall(
+            16, // SyscallNumber::FbMap
+            0,
+            0,
+            0
+        )
+    };
+
+    if addr > 0 {
+        Some(addr as *mut u32)
+    } else {
+        None
+    }
+}
+
+/// sys_fb_flush wrapper - flushes framebuffer to display
+fn sys_fb_flush() -> i32 {
+    unsafe {
+        syscall(
+            17, // SyscallNumber::FbFlush
+            0,
+            0,
+            0
+        ) as i32
+    }
+}
+
 /// Test user program - runs at EL0
 #[no_mangle]
 pub extern "C" fn user_test_program() -> ! {
@@ -125,41 +190,95 @@ pub extern "C" fn user_test_program() -> ! {
     // Test 1: Print debug message
     print_debug("Hello from EL0 user space!");
 
-    // Test 2: Get current time
-    let time = get_time();
-    print_debug("Got time from kernel!");
+    // Test 2: Get framebuffer info
+    print_debug("Getting framebuffer info...");
+    let fb_info = match sys_fb_info() {
+        Some(info) => {
+            print_debug("Framebuffer info received!");
+            info
+        }
+        None => {
+            print_debug("Failed to get framebuffer info");
+            exit(1);
+        }
+    };
 
-    // Test 3: File I/O - read "welcome" file
-    print_debug("Testing file I/O syscalls...");
+    // Test 3: Map framebuffer
+    print_debug("Mapping framebuffer...");
+    let fb_ptr = match sys_fb_map() {
+        Some(ptr) => {
+            print_debug("Framebuffer mapped successfully!");
+            ptr
+        }
+        None => {
+            print_debug("Failed to map framebuffer");
+            exit(1);
+        }
+    };
 
-    // Open file for reading (flags=1 = READ)
-    let fd = sys_open("welcome", 1);
-    if fd >= 0 {
-        print_debug("File opened successfully!");
+    // Test 4: Draw colored rectangles to screen
+    print_debug("Drawing to framebuffer...");
 
-        // Read file contents
-        let mut buffer = [0u8; 512];
-        let bytes_read = sys_read(fd, &mut buffer);
+    unsafe {
+        let stride = fb_info.stride;
 
-        if bytes_read > 0 {
-            print_debug("Read file contents:");
-            // Write to stdout (fd=1)
-            sys_write(1, &buffer[..bytes_read as usize]);
-            print_debug("");  // Newline
+        // Test: Write and read back a single pixel
+        let test_offset = (100 * stride + 100) as isize;
+        core::ptr::write_volatile(fb_ptr.offset(test_offset), 0x00FF0000);
+        let readback = core::ptr::read_volatile(fb_ptr.offset(test_offset));
+        if readback == 0x00FF0000 {
+            print_debug("Pixel write/read verified!");
         } else {
-            print_debug("Failed to read file");
+            print_debug("Pixel readback FAILED - writes not working!");
         }
 
-        // Close file
-        sys_close(fd);
-        print_debug("File closed");
-    } else {
-        print_debug("Failed to open file (does 'welcome' exist?)");
+        // Draw red rectangle (100x100) at (100, 100)
+        for y in 100..200 {
+            for x in 100..200 {
+                let offset = (y * stride + x) as isize;
+                core::ptr::write_volatile(fb_ptr.offset(offset), 0x00FF0000); // Red
+            }
+        }
+
+        // Draw green rectangle (100x100) at (250, 100)
+        for y in 100..200 {
+            for x in 250..350 {
+                let offset = (y * stride + x) as isize;
+                core::ptr::write_volatile(fb_ptr.offset(offset), 0x0000FF00); // Green
+            }
+        }
+
+        // Draw blue rectangle (100x100) at (400, 100)
+        for y in 100..200 {
+            for x in 400..500 {
+                let offset = (y * stride + x) as isize;
+                core::ptr::write_volatile(fb_ptr.offset(offset), 0x000000FF); // Blue
+            }
+        }
     }
 
-    // Test 4: Multiple syscalls
-    for i in 0..3 {
-        print_debug("Loop iteration from user space");
+    print_debug("Drawing complete!");
+
+    // Flush framebuffer to display
+    print_debug("Flushing framebuffer...");
+    if sys_fb_flush() == 0 {
+        print_debug("Flush successful!");
+    } else {
+        print_debug("Flush failed!");
+    }
+
+    // Wait so we can see the rectangles before shell redraws
+    print_debug("Rectangles visible - waiting 10 seconds...");
+    let start_time = get_time();
+    let target_time = start_time + 10000; // 10 seconds in milliseconds
+
+    loop {
+        let current_time = get_time();
+        if current_time >= target_time {
+            break;
+        }
+        // Yield CPU occasionally to be cooperative
+        unsafe { core::arch::asm!("wfe"); }
     }
 
     // Test 5: Exit
