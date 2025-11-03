@@ -16,6 +16,8 @@ pub mod dtb;
 pub mod drivers;
 pub mod thread;
 pub mod scheduler;
+pub mod syscall;
+pub mod userspace_test;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]
@@ -350,6 +352,17 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Physical memory already initialized
     uart_write_string("Physical memory: OK\r\n");
     
+    // Check current exception level
+    let current_el = interrupts::get_current_exception_level();
+    uart_write_string("Current Exception Level: EL");
+    match current_el {
+        0 => uart_write_string("0 (User Mode)\r\n"),
+        1 => uart_write_string("1 (Kernel Mode)\r\n"),
+        2 => uart_write_string("2 (Hypervisor Mode)\r\n"),
+        3 => uart_write_string("3 (Secure Monitor Mode)\r\n"),
+        _ => uart_write_string("Unknown\r\n"),
+    }
+
     // Set up exception vectors for ARM64
     interrupts::init_exception_vectors();
     uart_write_string("Exception vectors: OK\r\n");
@@ -785,6 +798,13 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     uart_write_string("\r\n");
 
     uart_write_string("Kernel ready! Open a terminal window from the menu.\r\n");
+
+    // ===== EL0 USER MODE TEST =====
+    // Test EL1→EL0 transition and syscalls
+    // WARNING: This will replace the GUI with a simple syscall test program
+    uart_write_string("\n\n=== TESTING EL0 USER MODE ===\r\n");
+    interrupts::start_user_process(userspace_test::user_test_program);
+    // (never returns)
 
     let mut needs_full_render = true; // Force initial render
     let mut last_minute = drivers::rtc::get_datetime().minute; // Track last rendered minute

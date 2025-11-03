@@ -4,13 +4,39 @@ use aarch64_cpu::{
     asm::barrier,
     registers::*,
 };
-use core::arch::asm;
+use core::arch::{asm, global_asm};
 
-/// ARM64 exception vector table
-/// Must be aligned to 2KB (0x800)
-#[repr(C, align(2048))]
-pub struct ExceptionVectorTable {
-    vectors: [u32; 512], // 128 instructions per exception level
+/// Get the current exception level (EL0, EL1, EL2, or EL3)
+pub fn get_current_exception_level() -> u8 {
+    let current_el = CurrentEL.get();
+    // CurrentEL register stores level in bits [3:2]
+    ((current_el >> 2) & 0b11) as u8
+}
+
+// Embed the exception vector table directly using global_asm
+global_asm!(include_str!("exception_vector.s"));
+
+// Import the assembly exception vector table and transition function
+extern "C" {
+    static exception_vector_table: u8;
+    fn drop_to_el0(entry_point: u64, stack_pointer: u64) -> !;
+}
+
+/// Saved register context for syscalls (must match assembly layout)
+#[repr(C)]
+pub struct ExceptionContext {
+    // General purpose registers X0-X30
+    pub x0: u64, pub x1: u64, pub x2: u64, pub x3: u64,
+    pub x4: u64, pub x5: u64, pub x6: u64, pub x7: u64,
+    pub x8: u64, pub x9: u64, pub x10: u64, pub x11: u64,
+    pub x12: u64, pub x13: u64, pub x14: u64, pub x15: u64,
+    pub x16: u64, pub x17: u64, pub x18: u64, pub x19: u64,
+    pub x20: u64, pub x21: u64, pub x22: u64, pub x23: u64,
+    pub x24: u64, pub x25: u64, pub x26: u64, pub x27: u64,
+    pub x28: u64, pub x29: u64, pub x30: u64,
+    // Exception link register and saved program status register
+    pub elr_el1: u64,
+    pub spsr_el1: u64,
 }
 
 /// Exception syndrome register value
@@ -24,11 +50,8 @@ pub struct ExceptionSyndrome {
 /// Initialize exception vectors for ARM64
 pub fn init_exception_vectors() {
     unsafe {
-        // Create exception vector table
-        let vectors = create_vector_table();
-
-        // Set VBAR_EL1 (Vector Base Address Register)
-        let vbar = &vectors as *const _ as u64;
+        // Set VBAR_EL1 to point to our assembly exception vector table
+        let vbar = &exception_vector_table as *const _ as u64;
         VBAR_EL1.set(vbar);
 
         // Ensure changes take effect
@@ -36,75 +59,78 @@ pub fn init_exception_vectors() {
     }
 }
 
-fn create_vector_table() -> &'static ExceptionVectorTable {
-    // In a real implementation, this would be a static table with proper handlers
-    // For now, we'll create a simple one that just halts
-    static mut VECTOR_TABLE: ExceptionVectorTable = ExceptionVectorTable {
-        vectors: [0; 512],
+/// Rust handler called from assembly syscall stub
+/// Context pointer points to saved registers on the stack
+#[no_mangle]
+extern "C" fn handle_el0_syscall_rust(ctx: *mut ExceptionContext) {
+    let ctx = unsafe { &mut *ctx };
+
+    // Check ESR to verify this is actually an SVC
+    let esr = ESR_EL1.get();
+    let ec = (esr >> 26) & 0x3F;
+
+    if ec != 0x15 {
+        // Not a syscall, some other synchronous exception
+        crate::kernel::uart_write_string("[EXCEPTION] EL0 sync exception (not SVC)\r\n");
+        return;
+    }
+
+    // Extract syscall number (X8) and arguments (X0-X6)
+    let syscall_num = ctx.x8;
+    let args = crate::kernel::syscall::SyscallArgs::new(
+        ctx.x0, ctx.x1, ctx.x2, ctx.x3, ctx.x4, ctx.x5, ctx.x6
+    );
+
+    // Call syscall dispatcher
+    let result = crate::kernel::syscall::handle_syscall(syscall_num, args);
+
+    // Write result back to X0 (will be restored on return)
+    ctx.x0 = result as u64;
+
+    // Syscall completed successfully - return to EL0
+}
+
+/// Start a user process at EL0
+/// Allocates a user stack and transitions to EL0 to execute the given function
+pub fn start_user_process(entry_point: extern "C" fn() -> !) -> ! {
+    const USER_STACK_SIZE: usize = 64 * 1024; // 64KB user stack
+
+    // Allocate user stack (this is a simple allocation - in production, use proper page-aligned allocation)
+    let user_stack = unsafe {
+        let layout = core::alloc::Layout::from_size_align_unchecked(USER_STACK_SIZE, 16);
+        let ptr = alloc::alloc::alloc(layout);
+        if ptr.is_null() {
+            crate::kernel::uart_write_string("[ERROR] Failed to allocate user stack\r\n");
+            loop { aarch64_cpu::asm::wfe(); }
+        }
+        ptr
     };
-    
+
+    // Stack grows downward, so point to the end
+    let stack_top = unsafe { user_stack.add(USER_STACK_SIZE) as u64 };
+
+    crate::kernel::uart_write_string("[KERNEL] Starting user process at EL0\r\n");
+    crate::kernel::uart_write_string("  Entry point: 0x");
+    print_hex_simple(entry_point as u64);
+    crate::kernel::uart_write_string("\r\n  Stack top: 0x");
+    print_hex_simple(stack_top);
+    crate::kernel::uart_write_string("\r\n");
+
+    // Transition to EL0 (never returns)
     unsafe {
-        // Each vector is 128 bytes (32 instructions)
-        // We'll just put a branch to handler for each
-        
-        // Current EL with SP0
-        install_vector(&mut VECTOR_TABLE.vectors, 0x000, sync_handler_el1_sp0);
-        install_vector(&mut VECTOR_TABLE.vectors, 0x080, irq_handler_el1_sp0);
-        install_vector(&mut VECTOR_TABLE.vectors, 0x100, fiq_handler_el1_sp0);
-        install_vector(&mut VECTOR_TABLE.vectors, 0x180, serror_handler_el1_sp0);
-        
-        // Current EL with SPx
-        install_vector(&mut VECTOR_TABLE.vectors, 0x200, sync_handler_el1_spx);
-        install_vector(&mut VECTOR_TABLE.vectors, 0x280, irq_handler_el1_spx);
-        install_vector(&mut VECTOR_TABLE.vectors, 0x300, fiq_handler_el1_spx);
-        install_vector(&mut VECTOR_TABLE.vectors, 0x380, serror_handler_el1_spx);
-        
-        &VECTOR_TABLE
+        drop_to_el0(entry_point as u64, stack_top);
     }
 }
 
-fn install_vector(table: &mut [u32; 512], offset: usize, handler: extern "C" fn()) {
-    // Create a branch instruction to the handler
-    // This is simplified - real implementation would save context
-    let handler_addr = handler as usize;
-    let vector_addr = table.as_ptr() as usize + offset;
-    let branch_offset = ((handler_addr - vector_addr) >> 2) as u32;
-    
-    // ARM64 branch instruction: 0x14000000 | offset
-    table[offset / 4] = 0x14000000 | (branch_offset & 0x03FFFFFF);
-}
-
-// Exception handlers
-extern "C" fn sync_handler_el1_sp0() {
-    handle_sync_exception();
-}
-
-extern "C" fn irq_handler_el1_sp0() {
-    handle_irq();
-}
-
-extern "C" fn fiq_handler_el1_sp0() {
-    handle_fiq();
-}
-
-extern "C" fn serror_handler_el1_sp0() {
-    handle_serror();
-}
-
-extern "C" fn sync_handler_el1_spx() {
-    handle_sync_exception();
-}
-
-extern "C" fn irq_handler_el1_spx() {
-    handle_irq();
-}
-
-extern "C" fn fiq_handler_el1_spx() {
-    handle_fiq();
-}
-
-extern "C" fn serror_handler_el1_spx() {
-    handle_serror();
+// Helper function to print hex values
+fn print_hex_simple(n: u64) {
+    let hex_chars = b"0123456789ABCDEF";
+    for i in (0..16).rev() {
+        let digit = (n >> (i * 4)) & 0xF;
+        unsafe {
+            core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[digit as usize]);
+        }
+    }
 }
 
 fn handle_sync_exception() {
