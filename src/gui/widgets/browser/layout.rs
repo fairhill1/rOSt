@@ -524,9 +524,17 @@ fn compute_style(
     // Background: CSS override, no inheritance
     let background_color = merged_style.background_color;
 
-    // Margin: tag defaults, then CSS override
+    // Margin: tag defaults (like browser user-agent styles), then CSS override
+    // NOTE: We only apply margin BEFORE elements (no bottom margin yet).
+    // So spacing between h1+p = p's margin only. Use larger p margin to compensate.
     let default_margin = match tag {
-        "p" => 8,
+        "h1" => 21,  // Large headings get more space
+        "h2" => 19,
+        "h3" => 18,
+        "h4" => 16,
+        "h5" => 16,
+        "h6" => 16,
+        "p" => 16,   // Increased to provide spacing after headings
         _ => 0,
     };
     let margin = merged_style.margin.unwrap_or(default_margin);
