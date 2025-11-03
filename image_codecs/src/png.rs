@@ -1,8 +1,8 @@
-/// PNG image decoder for rOSt using minipng
+/// PNG image decoder using minipng
 /// Supports standard PNG images
 
 use alloc::vec::Vec;
-use crate::gui::bmp_decoder::BmpImage; // Reuse the same image structure
+use crate::bmp::BmpImage; // Reuse the same image structure
 
 /// Parse a PNG file from bytes
 pub fn decode_png(data: &[u8]) -> Option<BmpImage> {

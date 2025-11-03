@@ -1,9 +1,7 @@
 // Image Viewer - Display BMP, PNG, and JPEG images in a window
 
 use crate::gui::framebuffer;
-use crate::gui::bmp_decoder::{BmpImage, decode_bmp};
-use crate::gui::png_decoder::decode_png;
-use crate::gui::jpeg_decoder::decode_jpeg;
+use image_codecs::{BmpImage, decode_bmp, decode_png, decode_jpeg};
 extern crate alloc;
 use alloc::vec::Vec;
 use alloc::string::String;

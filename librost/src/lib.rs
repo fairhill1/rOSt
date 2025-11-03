@@ -9,3 +9,7 @@ pub mod runtime;
 
 // Re-export everything from runtime for convenience
 pub use runtime::*;
+
+// Re-export image codecs (only when feature is enabled)
+#[cfg(feature = "image-codecs")]
+pub use image_codecs;

@@ -1,8 +1,8 @@
-/// JPEG image decoder for rOSt using zune-jpeg
+/// JPEG image decoder using zune-jpeg
 /// Supports standard JPEG images
 
 use alloc::vec::Vec;
-use crate::gui::bmp_decoder::BmpImage; // Reuse the same image structure
+use crate::bmp::BmpImage; // Reuse the same image structure
 use zune_jpeg::JpegDecoder;
 use zune_core::bytestream::ZCursor;
 use zune_core::colorspace::ColorSpace;
@@ -22,30 +22,19 @@ pub fn decode_jpeg(data: &[u8]) -> Option<BmpImage> {
 
     // Decode headers first to get dimensions
     if let Err(_) = decoder.decode_headers() {
-        crate::kernel::uart_write_string("decode_jpeg: Failed to decode headers\r\n");
         return None;
     }
 
     // Get image dimensions
     let (width, height) = match decoder.dimensions() {
         Some(dims) => dims,
-        None => {
-            crate::kernel::uart_write_string("decode_jpeg: Failed to get dimensions\r\n");
-            return None;
-        }
+        None => return None,
     };
-
-    crate::kernel::uart_write_string(&alloc::format!(
-        "decode_jpeg: Dimensions: {}x{}\r\n", width, height
-    ));
 
     // Decode the full image
     let raw_pixels = match decoder.decode() {
         Ok(pixels) => pixels,
-        Err(_) => {
-            crate::kernel::uart_write_string("decode_jpeg: Failed to decode image\r\n");
-            return None;
-        }
+        Err(_) => return None,
     };
 
     // Convert RGBA bytes to u32 pixels in 0xAABBGGRR format (same as BMP/PNG)
@@ -65,17 +54,9 @@ pub fn decode_jpeg(data: &[u8]) -> Option<BmpImage> {
             let pixel = ((a as u32) << 24) | ((b as u32) << 16) | ((g as u32) << 8) | (r as u32);
             pixels.push(pixel);
         } else {
-            crate::kernel::uart_write_string(&alloc::format!(
-                "decode_jpeg: Pixel data truncated at index {}\r\n", i
-            ));
             return None;
         }
     }
-
-    crate::kernel::uart_write_string(&alloc::format!(
-        "decode_jpeg: Successfully decoded {}x{} image ({} pixels)\r\n",
-        width, height, pixels.len()
-    ));
 
     Some(BmpImage {
         width: width as u32,

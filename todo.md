@@ -1,7 +1,7 @@
 # TODO (in no specific order)
 
 - fatfs
-- elf loader
+- process manager
 - browser improvements
 	- css parsing
 		- margin collapsing
@@ -34,3 +34,4 @@
 - Exception Levels 
 - MMU
 - syscalls
+- elf loader

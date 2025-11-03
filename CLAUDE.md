@@ -1,6 +1,6 @@
 # rOSt - Rust ARM64 Operating System
 
-Production-grade ARM64 OS written in Rust. **Last Updated:** 2025-11-03
+Production-grade ARM64 Desktop OS written in Rust. **Last Updated:** 2025-11-03
 
 ## Features
 

@@ -7,5 +7,9 @@ edition = "2021"
 name = "librost"
 path = "src/lib.rs"
 
+[features]
+default = []
+image-codecs = ["dep:image_codecs"]
+
 [dependencies]
-# No dependencies - pure syscall interface
+image_codecs = { path = "../image_codecs", optional = true }

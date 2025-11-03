@@ -1,4 +1,4 @@
-use crate::gui::bmp_decoder::BmpImage;
+use image_codecs::BmpImage;
 use smoltcp::iface::SocketHandle;
 use alloc::string::String;
 use alloc::vec::Vec;

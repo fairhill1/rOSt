@@ -1,4 +1,4 @@
-/// BMP image decoder for rOSt web browser
+/// BMP image decoder
 /// Supports 24-bit uncompressed BMP images
 
 use alloc::vec::Vec;
@@ -7,42 +7,23 @@ use alloc::vec::Vec;
 pub struct BmpImage {
     pub width: u32,
     pub height: u32,
-    /// Pixel data in RGBA format (top to bottom, left to right)
+    /// Pixel data in 0xAABBGGRR format (top to bottom, left to right)
     pub pixels: Vec<u32>,
 }
 
 /// Parse a BMP file from bytes
 pub fn decode_bmp(data: &[u8]) -> Option<BmpImage> {
     if data.len() < 54 {
-        crate::kernel::uart_write_string("decode_bmp: File too small\r\n");
         return None;
     }
 
     // Check BMP signature "BM"
     if data[0] != 0x42 || data[1] != 0x4D {
-        crate::kernel::uart_write_string(&alloc::format!(
-            "decode_bmp: Invalid signature: {:02x} {:02x}\r\n", data[0], data[1]
-        ));
         return None;
     }
 
-    // Read file size
-    let file_size = read_u32_le(&data[2..6]);
-    crate::kernel::uart_write_string(&alloc::format!(
-        "decode_bmp: File size: {} bytes\r\n", file_size
-    ));
-
     // Read pixel data offset
     let data_offset = read_u32_le(&data[10..14]) as usize;
-    crate::kernel::uart_write_string(&alloc::format!(
-        "decode_bmp: Data offset: {}\r\n", data_offset
-    ));
-
-    // Read DIB header size
-    let dib_header_size = read_u32_le(&data[14..18]);
-    crate::kernel::uart_write_string(&alloc::format!(
-        "decode_bmp: DIB header size: {}\r\n", dib_header_size
-    ));
 
     // Read image dimensions
     let width = read_u32_le(&data[18..22]);
@@ -52,38 +33,21 @@ pub fn decode_bmp(data: &[u8]) -> Option<BmpImage> {
     let height = height_raw.abs() as u32;
     let top_down = height_raw < 0;
 
-    crate::kernel::uart_write_string(&alloc::format!(
-        "decode_bmp: Dimensions: {}x{} (top_down={})\r\n", width, height, top_down
-    ));
-
     // Read bits per pixel
     let bits_per_pixel = read_u16_le(&data[28..30]);
-    crate::kernel::uart_write_string(&alloc::format!(
-        "decode_bmp: Bits per pixel: {}\r\n", bits_per_pixel
-    ));
 
     // Read compression method
     let compression = read_u32_le(&data[30..34]);
-    crate::kernel::uart_write_string(&alloc::format!(
-        "decode_bmp: Compression: {}\r\n", compression
-    ));
 
     // Only support uncompressed 24-bit BMPs for now
     if bits_per_pixel != 24 || compression != 0 {
-        crate::kernel::uart_write_string(&alloc::format!(
-            "decode_bmp: Unsupported format (only 24-bit uncompressed supported)\r\n"
-        ));
         return None;
     }
 
     // Calculate row size (must be multiple of 4 bytes)
     let bytes_per_row = ((width * 3 + 3) / 4) * 4;
 
-    crate::kernel::uart_write_string(&alloc::format!(
-        "decode_bmp: Bytes per row: {}\r\n", bytes_per_row
-    ));
-
-    // Allocate pixel buffer (RGBA format)
+    // Allocate pixel buffer
     let mut pixels = Vec::with_capacity((width * height) as usize);
 
     // Read pixel data (BMP is bottom-up by default, BGR format)
@@ -101,10 +65,6 @@ pub fn decode_bmp(data: &[u8]) -> Option<BmpImage> {
         let row_offset = data_offset + (read_row as usize * bytes_per_row as usize);
 
         if row_offset + (width * 3) as usize > data.len() {
-            crate::kernel::uart_write_string(&alloc::format!(
-                "decode_bmp: Row {} exceeds file size (offset {} + {} > {})\r\n",
-                row, row_offset, width * 3, data.len()
-            ));
             return None;
         }
 
@@ -116,25 +76,10 @@ pub fn decode_bmp(data: &[u8]) -> Option<BmpImage> {
             let g = data[pixel_offset + 1];
             let r = data[pixel_offset + 2];
 
-            // Convert to framebuffer format (BGRA in little-endian)
-            // BMP has BGR, framebuffer expects 0xAARRGGBB which in LE memory is BGRA
-            // So we keep BGR order and add alpha: 0xAABBGGRR
+            // Convert to framebuffer format (0xAABBGGRR)
             let pixel = 0xFF000000 | ((b as u32) << 16) | ((g as u32) << 8) | (r as u32);
             pixels.push(pixel);
         }
-    }
-
-    crate::kernel::uart_write_string(&alloc::format!(
-        "decode_bmp: Successfully decoded {}x{} image ({} pixels)\r\n",
-        width, height, pixels.len()
-    ));
-
-    // Debug: check what ended up in first and last pixels
-    if pixels.len() >= 2 {
-        crate::kernel::uart_write_string(&alloc::format!(
-            "decode_bmp: pixels[0]={:08x}, pixels[{}]={:08x}\r\n",
-            pixels[0], pixels.len()-1, pixels[pixels.len()-1]
-        ));
     }
 
     Some(BmpImage {

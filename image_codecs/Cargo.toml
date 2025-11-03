@@ -1,0 +1,13 @@
+[package]
+name = "image_codecs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "image_codecs"
+path = "src/lib.rs"
+
+[dependencies]
+minipng = { version = "1.0.0", default-features = false }
+zune-jpeg = { version = "0.5.5", default-features = false }
+zune-core = { version = "0.5.0", default-features = false }

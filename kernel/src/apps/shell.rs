@@ -781,7 +781,8 @@ impl Shell {
         if parts.len() < 2 {
             self.write_output("Usage: exec <program>\r\n");
             self.write_output("Available programs:\r\n");
-            self.write_output("  shell - Userspace shell (EL0)\r\n");
+            self.write_output("  shell        - Userspace shell (EL0)\r\n");
+            self.write_output("  image_viewer - Userspace image viewer (EL0)\r\n");
             return;
         }
 
@@ -805,9 +806,28 @@ impl Shell {
                 crate::kernel::thread::yield_now();
                 self.write_output("Returned from scheduler\r\n");
             }
+            "image_viewer" => {
+                self.write_output("=== Loading Userspace Image Viewer ELF ===\r\n");
+                self.write_output("Loading from embedded binary...\r\n");
+
+                // Load the embedded image viewer ELF
+                let viewer_elf = crate::kernel::embedded_apps::IMAGE_VIEWER_ELF;
+                self.write_output(&alloc::format!("ELF size: {} bytes\r\n", viewer_elf.len()));
+
+                // Use ELF loader to parse and spawn
+                let process_id = crate::kernel::elf_loader::load_elf_and_spawn(viewer_elf);
+
+                self.write_output(&alloc::format!("✓ Image viewer loaded as process {}\r\n", process_id));
+                self.write_output("Drawing test pattern fullscreen...\r\n");
+                self.write_output("Yielding to scheduler...\r\n");
+
+                // Yield to let it run
+                crate::kernel::thread::yield_now();
+                self.write_output("Returned from scheduler\r\n");
+            }
             _ => {
                 self.write_output(&alloc::format!("Unknown program: {}\r\n", parts[1]));
-                self.write_output("Available: shell\r\n");
+                self.write_output("Available: shell, image_viewer\r\n");
             }
         }
     }
