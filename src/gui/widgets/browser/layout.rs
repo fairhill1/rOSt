@@ -3,6 +3,43 @@
 /// This module contains all layout-related functions extracted from the browser widget.
 /// It's responsible for converting the DOM tree into a list of positioned layout boxes
 /// that can be rendered to the screen.
+///
+/// ## Architecture: Style Computation + Layout
+///
+/// This module follows the browser engine pattern of separating styling from layout:
+///
+/// 1. **Style Computation** (`compute_style()`): Handles all CSS logic
+///    - Selector matching (element, class, ID, descendant)
+///    - Cascade and specificity (inline > ID > class > element)
+///    - Inheritance (color, font-size)
+///    - Default styles (h1, p, body, etc.)
+///    - Returns: `ComputedStyle` with all final, non-optional values
+///
+/// 2. **Layout** (`layout_element()`, `layout_node()`): Pure positioning
+///    - Takes `ComputedStyle` as input
+///    - No CSS logic, just math and positioning
+///    - Creates `LayoutBox` list for rendering
+///
+/// ### TODO: Transition to StyleTree (Performance Optimization)
+///
+/// Currently, styles are computed on-the-fly during layout traversal. For better
+/// performance, we can build a full StyleTree upfront:
+///
+/// ```rust
+/// struct StyledNode {
+///     node: Node,
+///     style: ComputedStyle,  // Pre-computed!
+///     children: Vec<StyledNode>,
+/// }
+///
+/// fn build_style_tree(dom: &Node, stylesheets: &[Stylesheet]) -> StyledNode {
+///     // Traverse DOM once, compute all styles, cache result
+/// }
+/// ```
+///
+/// The layout functions already depend only on `ComputedStyle`, so this transition
+/// requires no changes to layout logic - just pass `styled_node.style` instead of
+/// calling `compute_style()` on-the-fly.
 
 use crate::gui::html_parser::{Parser, Node, NodeType, ElementData};
 use crate::gui::css_parser::{InlineStyle, Selector};
@@ -20,6 +57,38 @@ pub struct Ancestor {
     pub tag: String,
     pub classes: Vec<String>,
     pub id: Option<String>,
+}
+
+/// Computed style - final CSS values after cascade, inheritance, and defaults
+/// This is the interface between the style system and layout system.
+///
+/// TODO (StyleTree): When transitioning to a full StyleTree, this struct
+/// will be stored in StyledNode alongside the DOM node, eliminating
+/// the need for on-the-fly computation during layout.
+#[derive(Debug, Clone)]
+pub struct ComputedStyle {
+    pub color: Color,
+    pub background_color: Option<Color>,
+    pub font_size: f32,
+    pub margin: usize,
+    pub padding: usize,
+    pub text_align: Option<crate::gui::css_parser::TextAlign>,
+    pub display: Option<crate::gui::css_parser::Display>,
+}
+
+impl ComputedStyle {
+    /// Create default computed style (for root element)
+    pub fn default() -> Self {
+        ComputedStyle {
+            color: Color::BLACK,
+            background_color: None,
+            font_size: 18.0,  // Body text default
+            margin: 0,
+            padding: 0,
+            text_align: None,
+            display: None,
+        }
+    }
 }
 
 /// Check if selector matches element with given ancestors
@@ -372,6 +441,114 @@ pub fn layout_node(
     }
 }
 
+/// Compute final CSS styles for an element after cascade, inheritance, and defaults
+///
+/// This function is the "style system" - it handles all CSS logic (selectors, specificity,
+/// cascade, inheritance) and returns a complete ComputedStyle.
+///
+/// TODO (StyleTree): When transitioning to a full StyleTree, this function will be called
+/// during a separate style computation pass that builds a StyledNode tree. The layout
+/// functions will then receive ComputedStyle from the StyledNode instead of computing
+/// it on-the-fly.
+fn compute_style(
+    tag: &str,
+    elem: &ElementData,
+    parent_style: &ComputedStyle,
+    ancestors: &[Ancestor],
+    stylesheets: &[crate::gui::css_parser::Stylesheet],
+) -> ComputedStyle {
+    // Extract class attribute and split into classes
+    let class_attr = elem.attributes.get("class").map(|s| s.as_str()).unwrap_or("");
+    let classes: Vec<&str> = class_attr.split_whitespace().collect();
+
+    // Extract element ID
+    let element_id = elem.attributes.get("id").map(|s| s.as_str()).unwrap_or("");
+
+    // Match stylesheet rules for this element
+    let mut matched_styles: Vec<(&Selector, &InlineStyle)> = Vec::new();
+    for stylesheet in stylesheets {
+        for rule in &stylesheet.rules {
+            if selector_matches(&rule.selector, tag, &classes, Some(element_id).filter(|s| !s.is_empty()), ancestors) {
+                matched_styles.push((&rule.selector, &rule.style));
+            }
+        }
+    }
+
+    // Parse inline CSS styles if present
+    let inline_style_raw = elem.attributes.get("style")
+        .map(|s| InlineStyle::parse(s))
+        .unwrap_or_default();
+
+    // Merge styles: base (default) + stylesheet matches + inline styles
+    let base_style = InlineStyle::default();
+    let merged_from_sheets = crate::gui::css_parser::merge_styles(base_style, &matched_styles);
+
+    // Inline styles have highest priority, so merge them last
+    let merged_style = if inline_style_raw.color.is_some() || inline_style_raw.background_color.is_some()
+        || inline_style_raw.font_size.is_some() || inline_style_raw.margin.is_some()
+        || inline_style_raw.padding.is_some() || inline_style_raw.display.is_some() {
+        // Merge inline over stylesheet
+        let mut result = merged_from_sheets.clone();
+        if let Some(c) = inline_style_raw.color { result.color = Some(c); }
+        if let Some(bg) = inline_style_raw.background_color { result.background_color = Some(bg); }
+        if let Some(fs) = inline_style_raw.font_size { result.font_size = Some(fs); }
+        if let Some(m) = inline_style_raw.margin { result.margin = Some(m); }
+        if let Some(p) = inline_style_raw.padding { result.padding = Some(p); }
+        if let Some(ta) = inline_style_raw.text_align { result.text_align = Some(ta); }
+        if let Some(d) = inline_style_raw.display { result.display = Some(d); }
+        result
+    } else {
+        merged_from_sheets
+    };
+
+    // Apply tag-based defaults and inheritance
+    // Font size: tag defaults, then CSS override, then parent inheritance
+    let default_font_size_px = match tag {
+        "h1" => 36.0,
+        "h2" => 28.0,
+        "h3" => 24.0,
+        "h4" => 20.0,
+        "h5" => 20.0,
+        "h6" => 20.0,
+        _ => parent_style.font_size,  // Inherit from parent
+    };
+    let font_size = if let Some(css_font_size) = merged_style.font_size {
+        css_font_size as f32
+    } else {
+        default_font_size_px
+    };
+
+    // Color: CSS override, then inherit from parent
+    let color = merged_style.color.unwrap_or(parent_style.color);
+
+    // Background: CSS override, no inheritance
+    let background_color = merged_style.background_color;
+
+    // Margin: tag defaults, then CSS override
+    let default_margin = match tag {
+        "p" => 8,
+        _ => 0,
+    };
+    let margin = merged_style.margin.unwrap_or(default_margin);
+
+    // Padding: tag defaults, then CSS override
+    let default_padding = match tag {
+        "body" => 8,
+        _ => 0,
+    };
+    let padding = merged_style.padding.unwrap_or(default_padding);
+
+    ComputedStyle {
+        color,
+        background_color,
+        font_size,
+        margin,
+        padding,
+        text_align: merged_style.text_align,
+        display: merged_style.display,
+    }
+}
+
 /// Layout an element
 pub fn layout_element(
     browser: &mut Browser,
@@ -394,57 +571,32 @@ pub fn layout_element(
         return (x, y);
     }
 
-    // Extract element ID from attributes if present
+    // === STYLE COMPUTATION PHASE ===
+    // Build parent ComputedStyle from parent parameters
+    let parent_computed = ComputedStyle {
+        color: *parent_color,
+        background_color: None,
+        font_size: parent_font_size,
+        margin: 0,
+        padding: 0,
+        text_align: None,
+        display: None,
+    };
+
+    // Compute final styles for this element (cascade, inheritance, defaults)
+    let computed_style = compute_style(tag, elem, &parent_computed, ancestors, &browser.stylesheets);
+
+    // If display:none, skip rendering this element entirely
+    if let Some(crate::gui::css_parser::Display::None) = computed_style.display {
+        return (x, y);
+    }
+
+    // Extract element ID and classes (needed for child ancestry tracking)
     let element_id = elem.attributes.get("id")
         .map(|s| s.as_str())
         .unwrap_or(parent_element_id);
-
-    // Extract class attribute and split into classes
     let class_attr = elem.attributes.get("class").map(|s| s.as_str()).unwrap_or("");
     let classes: Vec<&str> = class_attr.split_whitespace().collect();
-
-    // Match stylesheet rules for this element
-    let mut matched_styles: Vec<(&Selector, &InlineStyle)> = Vec::new();
-    for stylesheet in &browser.stylesheets {
-        for rule in &stylesheet.rules {
-            if selector_matches(&rule.selector, tag, &classes, Some(element_id).filter(|s| !s.is_empty()), ancestors) {
-                matched_styles.push((&rule.selector, &rule.style));
-            }
-        }
-    }
-
-    // Parse inline CSS styles if present
-    let inline_style_raw = elem.attributes.get("style")
-        .map(|s| InlineStyle::parse(s))
-        .unwrap_or_default();
-
-    // Merge styles: base (default) + stylesheet matches + inline styles
-    let base_style = InlineStyle::default();
-    let merged_from_sheets = crate::gui::css_parser::merge_styles(base_style, &matched_styles);
-
-    // Inline styles have highest priority, so merge them last
-    let inline_overrides: Vec<(&Selector, &InlineStyle)> = Vec::new(); // Empty, we'll apply inline directly
-    let inline_style = if inline_style_raw.color.is_some() || inline_style_raw.background_color.is_some()
-        || inline_style_raw.font_size.is_some() || inline_style_raw.margin.is_some()
-        || inline_style_raw.padding.is_some() || inline_style_raw.display.is_some() {
-        // Merge inline over stylesheet
-        let mut result = merged_from_sheets.clone();
-        if let Some(c) = inline_style_raw.color { result.color = Some(c); }
-        if let Some(bg) = inline_style_raw.background_color { result.background_color = Some(bg); }
-        if let Some(fs) = inline_style_raw.font_size { result.font_size = Some(fs); }
-        if let Some(m) = inline_style_raw.margin { result.margin = Some(m); }
-        if let Some(p) = inline_style_raw.padding { result.padding = Some(p); }
-        if let Some(ta) = inline_style_raw.text_align { result.text_align = Some(ta); }
-        if let Some(d) = inline_style_raw.display { result.display = Some(d); }
-        result
-    } else {
-        merged_from_sheets
-    };
-
-    // If display:none, skip rendering this element entirely
-    if let Some(crate::gui::css_parser::Display::None) = inline_style.display {
-        return (x, y);
-    }
 
     let mut current_x = x;
     let mut current_y = y;
@@ -468,48 +620,17 @@ pub fn layout_element(
         current_y = default_y.max(y);
     }
 
-    // Determine color, style, and font size level - CSS can override
-    let color = inline_style.color.as_ref().unwrap_or(parent_color);
+    // === LAYOUT PHASE ===
+    // Extract computed values for layout (no CSS logic here)
+    let color = &computed_style.color;
+    let font_size_px = computed_style.font_size;
+    let background_color = computed_style.background_color;
+    let css_margin = computed_style.margin;
+    let css_padding = computed_style.padding;
+
+    // Text style (bold/italic) is presentational, not part of ComputedStyle
     let bold = parent_bold || matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "b" | "strong");
     let italic = parent_italic || matches!(tag, "i" | "em" | "cite");
-
-    // <code> and <pre> could use monospace font in future, for now just render normally
-
-    // Determine font size - tag-based defaults, potentially overridden by CSS
-    let default_font_size_px = match tag {
-        "h1" => 36.0,
-        "h2" => 28.0,
-        "h3" => 24.0,
-        "h4" => 20.0,
-        "h5" => 20.0,
-        "h6" => 20.0,
-        _ => parent_font_size,
-    };
-
-    // Apply CSS font-size if specified (already in pixels)
-    let font_size_px = if let Some(css_font_size) = inline_style.font_size {
-        css_font_size as f32
-    } else {
-        default_font_size_px
-    };
-
-    // Store background color and spacing from CSS
-    let background_color = inline_style.background_color;
-
-    // Default margins for certain elements (like browsers do)
-    let default_margin = match tag {
-        "p" => 8,  // Paragraphs get default top/bottom margin
-        _ => 0,
-    };
-
-    // Default padding for certain elements (body gets default padding for visual spacing)
-    let default_padding = match tag {
-        "body" => 8,  // Body gets default padding (overridden by CSS reset in modern pages)
-        _ => 0,
-    };
-
-    let css_margin = inline_style.margin.unwrap_or(default_margin);
-    let css_padding = inline_style.padding.unwrap_or(default_padding);
 
     // Get actual height for spacing calculations
     let element_height = if crate::gui::font::is_available() {
