@@ -18,6 +18,7 @@ pub mod thread;
 pub mod scheduler;
 pub mod syscall;
 pub mod userspace_test;
+pub mod filedesc;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]
@@ -393,6 +394,10 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 pub extern "C" fn kernel_init_high_half() -> ! {
     uart_write_string("Virtual memory: OK\r\n");
     uart_write_string("[KERNEL] Now running in higher-half (0xFFFF...)\r\n");
+
+    // Re-initialize exception vectors with higher-half addresses
+    interrupts::init_exception_vectors();
+    uart_write_string("Exception vectors re-initialized for higher-half: OK\r\n");
 
     // Retrieve boot_info and framebuffer info from globals
     let boot_info = unsafe { BOOT_INFO.expect("BOOT_INFO not set") };

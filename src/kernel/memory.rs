@@ -260,6 +260,10 @@ static mut KERNEL_L2_TABLE_2: PageTable = PageTable::new(); // L2 for 2-3GB
 static mut KERNEL_L2_TABLE_3: PageTable = PageTable::new(); // L2 for 3-4GB
 static mut USER_L0_TABLE: PageTable = PageTable::new();
 static mut USER_L1_TABLE: PageTable = PageTable::new();
+static mut USER_L2_TABLE_0: PageTable = PageTable::new(); // User L2 for 0-1GB
+static mut USER_L2_TABLE_1: PageTable = PageTable::new(); // User L2 for 1-2GB
+static mut USER_L2_TABLE_2: PageTable = PageTable::new(); // User L2 for 2-3GB
+static mut USER_L2_TABLE_3: PageTable = PageTable::new(); // User L2 for 3-4GB
 
 /// Memory region for mapping
 /// KERNEL_BASE must have L0 index 510 (bits [47:39] = 0x1FE) for TTBR1
@@ -622,16 +626,101 @@ pub fn setup_mmu_page_tables() {
 
         crate::kernel::uart_write_string("[MMU] Setting up user space mappings...\r\n");
 
-        // For now, don't create user mappings - keep UEFI mappings intact
-        // We can add user space mappings later without breaking existing functionality
-        // USER_L0_TABLE.entries[0] = user_l0_entry; // COMMENTED OUT - don't override UEFI mappings
+        // TEMPORARY: Map entire 4GB into user space with USER permissions
+        // This allows the test user program (which is compiled into the kernel) to execute
+        // TODO: In production, load user binaries at low addresses and only map those pages
 
-        // Map some user space (first 4MB for now)
-        for i in 0..2usize { // 2 * 2MB = 4MB
+        // Create user-accessible L2 mappings (0-4GB with 2MB granularity)
+        // L2[0]: 0-1GB
+        for i in 0..512usize {
             let addr = (i as u64) * 0x200000;
-            let entry = PageTableEntry::new_block(addr, true, true, true); // User RWX
-            USER_L1_TABLE.entries[i] = entry;
+            USER_L2_TABLE_0.entries[i] = PageTableEntry::new_block(addr, true, true, true); // User RWX
         }
+
+        // L2[1]: 1-2GB (where kernel code is - needs execute permission!)
+        for i in 0..512usize {
+            let addr = 0x40000000 + (i as u64) * 0x200000;
+            USER_L2_TABLE_1.entries[i] = PageTableEntry::new_block(addr, true, true, true); // User RWX
+        }
+
+        // L2[2]: 2-3GB
+        for i in 0..512usize {
+            let addr = 0x80000000 + (i as u64) * 0x200000;
+            USER_L2_TABLE_2.entries[i] = PageTableEntry::new_block(addr, true, true, true); // User RWX
+        }
+
+        // L2[3]: 3-4GB
+        for i in 0..512usize {
+            let addr = 0xC0000000 + (i as u64) * 0x200000;
+            USER_L2_TABLE_3.entries[i] = PageTableEntry::new_block(addr, true, true, true); // User RWX
+        }
+
+        // Point USER_L1_TABLE entries to the user L2 tables
+        let user_l2_0_addr = (&USER_L2_TABLE_0 as *const PageTable) as u64;
+        let user_l2_1_addr = (&USER_L2_TABLE_1 as *const PageTable) as u64;
+        let user_l2_2_addr = (&USER_L2_TABLE_2 as *const PageTable) as u64;
+        let user_l2_3_addr = (&USER_L2_TABLE_3 as *const PageTable) as u64;
+
+        USER_L1_TABLE.entries[0] = PageTableEntry::new_table(user_l2_0_addr); // 0-1GB
+        USER_L1_TABLE.entries[1] = PageTableEntry::new_table(user_l2_1_addr); // 1-2GB (kernel code!)
+        USER_L1_TABLE.entries[2] = PageTableEntry::new_table(user_l2_2_addr); // 2-3GB
+        USER_L1_TABLE.entries[3] = PageTableEntry::new_table(user_l2_3_addr); // 3-4GB
+
+        // Clean data cache for user page tables
+        for l2_table in [&USER_L2_TABLE_0, &USER_L2_TABLE_1, &USER_L2_TABLE_2, &USER_L2_TABLE_3] {
+            let l2_addr = l2_table as *const _ as usize;
+            for offset in (0..4096).step_by(64) {
+                core::arch::asm!(
+                    "dc civac, {0}",
+                    in(reg) l2_addr + offset,
+                    options(nostack)
+                );
+            }
+        }
+
+        // Barrier
+        core::arch::asm!(
+            "dsb sy",
+            "isb",
+            options(nostack)
+        );
+
+        crate::kernel::uart_write_string("[MMU] User space mapped to full 4GB with USER permissions\r\n");
+
+        // Connect USER_L0_TABLE[0] to USER_L1_TABLE (CRITICAL!)
+        let user_l1_table_addr = (&USER_L1_TABLE as *const PageTable) as u64;
+        USER_L0_TABLE.entries[0] = PageTableEntry::new_table(user_l1_table_addr);
+
+        // Clean USER_L0_TABLE and USER_L1_TABLE caches
+        let l0_addr = &USER_L0_TABLE as *const _ as usize;
+        for offset in (0..4096).step_by(64) {
+            core::arch::asm!(
+                "dc civac, {0}",
+                in(reg) l0_addr + offset,
+                options(nostack)
+            );
+        }
+        let l1_addr = &USER_L1_TABLE as *const _ as usize;
+        for offset in (0..4096).step_by(64) {
+            core::arch::asm!(
+                "dc civac, {0}",
+                in(reg) l1_addr + offset,
+                options(nostack)
+            );
+        }
+        core::arch::asm!("dsb sy", "isb", options(nostack));
+
+        // CRITICAL: Invalidate TLBs for user address space (TTBR0)
+        // This ensures the CPU doesn't use stale TLB entries
+        core::arch::asm!(
+            "tlbi vmalle1",  // Invalidate all TLB entries for EL1
+            "dsb sy",
+            "isb",
+            options(nostack)
+        );
+
+        crate::kernel::uart_write_string("[MMU] USER_L0_TABLE[0] -> USER_L1_TABLE connected\r\n");
+        crate::kernel::uart_write_string("[MMU] TLB invalidated for user page tables\r\n");
 
         // Store page table addresses for the assembly code
         USER_TABLE_ADDR = (&USER_L0_TABLE as *const PageTable) as u64;
@@ -643,8 +732,11 @@ pub fn setup_mmu_page_tables() {
 }
 
 // Global storage for page table addresses (so assembly can access them)
+#[no_mangle]
 pub static mut USER_TABLE_ADDR: u64 = 0;
+#[no_mangle]
 pub static mut KERNEL_TABLE_ADDR: u64 = 0;
+#[no_mangle]
 pub static mut ORIGINAL_TTBR0: u64 = 0;  // Save original UEFI page table
 
 /// Get the prepared page table addresses for assembly code

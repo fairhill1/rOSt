@@ -70,11 +70,14 @@ impl Scheduler {
         if let Some((kernel_stack_top, user_stack_opt)) = crate::kernel::thread::get_process_stack_info(process_id) {
             let user_stack_top = user_stack_opt.unwrap_or(0);
 
+            crate::kernel::uart_write_string(&alloc::format!("DEBUG: User stack top = 0x{:016x}\r\n", user_stack_top));
+
             // Create the thread with both kernel and user stacks (no duplicate initialization!)
             let thread = Box::new(Thread::new_user(thread_id, process_id, entry_point, kernel_stack_top, user_stack_top));
 
-            // Debug: get LR before moving the thread
+            // Debug: get LR and SP before moving the thread
             let debug_lr = thread.context.x30;
+            let debug_sp = thread.context.x29;
 
             // Link process and thread using safe function
             set_process_main_thread(process_id, thread_id);
@@ -84,6 +87,7 @@ impl Scheduler {
 
             crate::kernel::uart_write_string(&alloc::format!("Spawned user process {} as thread {}\r\n", process_id, thread_id));
             crate::kernel::uart_write_string(&alloc::format!("DEBUG: Thread {} LR (x30) = 0x{:x}\r\n", thread_id, debug_lr));
+            crate::kernel::uart_write_string(&alloc::format!("DEBUG: Thread {} SP (x29) = 0x{:016x}\r\n", thread_id, debug_sp));
 
             // Note: User process created but not automatically started
             // This avoids the recursive scheduling issue that was causing hangs

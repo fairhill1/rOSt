@@ -218,11 +218,7 @@ impl SimpleFilesystem {
             }
         }
 
-        let file_count = unsafe { ptr::read_volatile(ptr::addr_of!(superblock.file_count)) };
-        crate::kernel::uart_write_string(&alloc::format!(
-            "Filesystem mounted! {} files, next free sector: {}\r\n",
-            file_count, next_free_sector
-        ));
+        crate::kernel::uart_write_string("Filesystem mounted!\r\n");
 
         Ok(SimpleFilesystem {
             superblock,

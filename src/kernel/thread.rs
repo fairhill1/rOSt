@@ -30,6 +30,7 @@ pub struct Process {
     pub user_stack: Option<Box<[u8]>>, // User stack for EL0 processes
     pub kernel_stack: Box<[u8]>,      // Kernel stack for syscalls
     pub main_thread_id: Option<usize>, // Reference to main thread by ID
+    pub file_descriptors: crate::kernel::filedesc::FileDescriptorTable, // Open files
 }
 
 impl Process {
@@ -45,6 +46,7 @@ impl Process {
             user_stack: None,
             kernel_stack,
             main_thread_id: None,
+            file_descriptors: crate::kernel::filedesc::FileDescriptorTable::new(),
         }
     }
 
@@ -63,6 +65,7 @@ impl Process {
             user_stack: Some(user_stack),
             kernel_stack,
             main_thread_id: None,
+            file_descriptors: crate::kernel::filedesc::FileDescriptorTable::new(),
         }
     }
 
@@ -73,10 +76,15 @@ impl Process {
     }
 
     /// Get user stack top address (for EL0 processes)
+    /// CRITICAL: Converts kernel virtual address to user-accessible address
+    /// by masking off the high-half bits (0xFFFF... → 0x0000...)
     pub fn get_user_stack_top(&self) -> Option<u64> {
         self.user_stack.as_ref().map(|stack| {
-            let stack_top = stack.as_ptr() as u64 + stack.len() as u64;
-            stack_top & !0xF // 16-byte alignment
+            let kernel_virt_addr = stack.as_ptr() as u64 + stack.len() as u64;
+            // Convert kernel virtual address (0xFFFF_FF00_xxxx_xxxx) to user physical address
+            // by masking to only keep low 48 bits (same as entry point conversion)
+            let user_addr = kernel_virt_addr & 0x0000_FFFF_FFFF_FFFF;
+            user_addr & !0xF // 16-byte alignment
         })
     }
 }

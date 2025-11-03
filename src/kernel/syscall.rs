@@ -152,34 +152,243 @@ pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
 // Syscall implementations (stubs for now)
 
 fn sys_read(fd: i32, buf: *mut u8, count: usize) -> i64 {
-    // TODO: Implement file reading
-    crate::kernel::uart_write_string("[SYSCALL] read() called\r\n");
-    SyscallError::NotImplemented.as_i64()
+    if buf.is_null() || count == 0 {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    crate::kernel::uart_write_string("[SYSCALL] read(fd=");
+    if fd >= 0 && fd < 10 {
+        unsafe {
+            core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + fd as u8);
+        }
+    }
+    crate::kernel::uart_write_string(") called\r\n");
+
+    // Get filename and current offset from FD table
+    let (filename, offset) = match with_current_process_fds(|fds| {
+        fds.get(fd).map(|fd_entry| (fd_entry.file_name.clone(), fd_entry.offset))
+    }) {
+        Some(Some(info)) => info,
+        _ => return SyscallError::BadFileDescriptor.as_i64(),
+    };
+
+    // Access filesystem
+    use crate::system::fs::filesystem::SimpleFilesystem;
+
+    let block_devices = unsafe { crate::kernel::BLOCK_DEVICES.as_mut() };
+    let device = match block_devices {
+        Some(devs) if !devs.is_empty() => &mut devs[0],
+        _ => return SyscallError::FileNotFound.as_i64(),
+    };
+
+    let fs = match SimpleFilesystem::mount(device) {
+        Ok(fs) => fs,
+        Err(_) => return SyscallError::FileNotFound.as_i64(),
+    };
+
+    // Allocate buffer to read entire file (SimpleFS doesn't support partial reads)
+    // TODO: Optimize this to only read what's needed
+    let mut file_buffer = alloc::vec![0u8; 1024 * 1024]; // 1MB max file size
+
+    let bytes_read = match fs.read_file(device, &filename, &mut file_buffer) {
+        Ok(size) => size,
+        Err(_) => return SyscallError::FileNotFound.as_i64(),
+    };
+
+    // Calculate how much to copy from offset
+    if offset >= bytes_read {
+        return 0; // EOF
+    }
+
+    let available = bytes_read - offset;
+    let to_copy = core::cmp::min(count, available);
+
+    // Copy to user buffer
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            file_buffer.as_ptr().add(offset),
+            buf,
+            to_copy
+        );
+    }
+
+    // Update offset in FD table
+    with_current_process_fds(|fds| {
+        if let Some(fd_entry) = fds.get_mut(fd) {
+            fd_entry.offset += to_copy;
+        }
+    });
+
+    crate::kernel::uart_write_string("[SYSCALL] read() -> success\r\n");
+
+    to_copy as i64
 }
 
 fn sys_write(fd: i32, buf: *const u8, count: usize) -> i64 {
-    // TODO: Implement file writing
-    // For now, if fd=1 (stdout), write to UART for debugging
-    if fd == 1 && !buf.is_null() && count > 0 {
+    if buf.is_null() || count == 0 {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    // Special case: stdout (fd=1) writes to UART
+    if fd == 1 {
         let slice = unsafe { core::slice::from_raw_parts(buf, count) };
         if let Ok(s) = core::str::from_utf8(slice) {
             crate::kernel::uart_write_string(s);
             return count as i64;
         }
+        return SyscallError::InvalidArgument.as_i64();
     }
-    SyscallError::BadFileDescriptor.as_i64()
+
+    // File write: SimpleFS requires writing entire file at once
+    // For now, we'll read existing content, modify it, and write back
+    // This is inefficient but matches SimpleFS's API
+
+    crate::kernel::uart_write_string("[SYSCALL] write(fd=");
+    if fd >= 0 && fd < 10 {
+        unsafe {
+            core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + fd as u8);
+        }
+    }
+    crate::kernel::uart_write_string(") called\r\n");
+
+    // Get filename and offset
+    let (filename, offset, flags) = match with_current_process_fds(|fds| {
+        fds.get(fd).map(|fd_entry| (fd_entry.file_name.clone(), fd_entry.offset, fd_entry.flags))
+    }) {
+        Some(Some(info)) => info,
+        _ => return SyscallError::BadFileDescriptor.as_i64(),
+    };
+
+    // Check write permission
+    use crate::kernel::syscall::OpenFlags;
+    if (flags & OpenFlags::WRITE.bits()) == 0 {
+        return SyscallError::PermissionDenied.as_i64();
+    }
+
+    // Access filesystem
+    use crate::system::fs::filesystem::SimpleFilesystem;
+
+    let block_devices = unsafe { crate::kernel::BLOCK_DEVICES.as_mut() };
+    let device = match block_devices {
+        Some(devs) if !devs.is_empty() => &mut devs[0],
+        _ => return SyscallError::FileNotFound.as_i64(),
+    };
+
+    let mut fs = match SimpleFilesystem::mount(device) {
+        Ok(fs) => fs,
+        Err(_) => return SyscallError::FileNotFound.as_i64(),
+    };
+
+    // Read existing file content
+    let mut file_buffer = alloc::vec![0u8; 1024 * 1024];
+    let existing_size = fs.read_file(device, &filename, &mut file_buffer).unwrap_or(0);
+
+    // Calculate new size after write
+    let new_size = core::cmp::max(existing_size, offset + count);
+    if new_size > file_buffer.len() {
+        return SyscallError::OutOfMemory.as_i64(); // File too large
+    }
+
+    // Copy new data at offset
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            buf,
+            file_buffer.as_mut_ptr().add(offset),
+            count
+        );
+    }
+
+    // Write entire file back
+    match fs.write_file(device, &filename, &file_buffer[..new_size]) {
+        Ok(_) => {
+            // Update offset
+            with_current_process_fds(|fds| {
+                if let Some(fd_entry) = fds.get_mut(fd) {
+                    fd_entry.offset += count;
+                }
+            });
+
+            crate::kernel::uart_write_string("[SYSCALL] write() -> success\r\n");
+
+            count as i64
+        }
+        Err(_) => SyscallError::FileNotFound.as_i64(),
+    }
 }
 
 fn sys_open(path: *const u8, flags: u32) -> i64 {
-    // TODO: Implement file opening
-    crate::kernel::uart_write_string("[SYSCALL] open() called\r\n");
-    SyscallError::NotImplemented.as_i64()
+    // Read filename from user space
+    let filename = match read_user_string(path, 256) {
+        Some(name) => name,
+        None => return SyscallError::InvalidArgument.as_i64(),
+    };
+
+    crate::kernel::uart_write_string("[SYSCALL] open(\"");
+    crate::kernel::uart_write_string(&filename);
+    crate::kernel::uart_write_string("\") called\r\n");
+
+    // Check if file exists in SimpleFS
+    // We need to mount the filesystem to check
+    use crate::system::fs::filesystem::SimpleFilesystem;
+
+    let block_devices = unsafe { crate::kernel::BLOCK_DEVICES.as_mut() };
+    let device = match block_devices {
+        Some(devs) if !devs.is_empty() => &mut devs[0],
+        _ => return SyscallError::FileNotFound.as_i64(),
+    };
+
+    // Try to mount filesystem
+    let fs = match SimpleFilesystem::mount(device) {
+        Ok(fs) => fs,
+        Err(_) => return SyscallError::FileNotFound.as_i64(),
+    };
+
+    // Check if file exists
+    let file_exists = fs.list_files().iter().any(|f| f.get_name() == filename);
+
+    if !file_exists {
+        return SyscallError::FileNotFound.as_i64();
+    }
+
+    // Allocate file descriptor
+    let fd = with_current_process_fds(|fds| {
+        fds.alloc(filename.clone(), flags)
+    });
+
+    match fd {
+        Some(Some(fd_num)) => {
+            crate::kernel::uart_write_string("[SYSCALL] open() -> fd=");
+            // Print FD number
+            if fd_num < 10 {
+                unsafe {
+                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + fd_num as u8);
+                }
+            }
+            crate::kernel::uart_write_string("\r\n");
+            fd_num as i64
+        }
+        _ => SyscallError::OutOfMemory.as_i64(), // FD table full
+    }
 }
 
 fn sys_close(fd: i32) -> i64 {
-    // TODO: Implement file closing
-    crate::kernel::uart_write_string("[SYSCALL] close() called\r\n");
-    SyscallError::NotImplemented.as_i64()
+    crate::kernel::uart_write_string("[SYSCALL] close(fd=");
+    if fd >= 0 && fd < 10 {
+        unsafe {
+            core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + fd as u8);
+        }
+    }
+    crate::kernel::uart_write_string(") called\r\n");
+
+    let result = with_current_process_fds(|fds| {
+        fds.close(fd)
+    });
+
+    match result {
+        Some(true) => 0, // Success
+        Some(false) => SyscallError::BadFileDescriptor.as_i64(),
+        None => SyscallError::BadFileDescriptor.as_i64(),
+    }
 }
 
 fn sys_exit(code: i32) -> i64 {
@@ -221,4 +430,48 @@ fn sys_print_debug(msg: *const u8, len: usize) -> i64 {
         }
     }
     SyscallError::InvalidArgument.as_i64()
+}
+
+// ============================================================================
+// Helper functions for syscall implementation
+// ============================================================================
+
+/// Get the current process from the scheduler
+fn get_current_process() -> Option<usize> {
+    let scheduler = crate::kernel::scheduler::SCHEDULER.lock();
+    scheduler.current_thread.and_then(|thread_id| {
+        scheduler.threads.iter()
+            .find(|t| t.id == thread_id)
+            .map(|t| t.process_id)
+    })
+}
+
+/// Safely read a C-style null-terminated string from user space
+/// Returns None if string is invalid or too long
+fn read_user_string(ptr: *const u8, max_len: usize) -> Option<alloc::string::String> {
+    if ptr.is_null() {
+        return None;
+    }
+
+    let mut bytes = alloc::vec::Vec::new();
+    for i in 0..max_len {
+        let byte = unsafe { ptr.add(i).read_volatile() };
+        if byte == 0 {
+            break;
+        }
+        bytes.push(byte);
+    }
+
+    alloc::string::String::from_utf8(bytes).ok()
+}
+
+/// Get mutable access to the current process's file descriptor table
+fn with_current_process_fds<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut crate::kernel::filedesc::FileDescriptorTable) -> R,
+{
+    let process_id = get_current_process()?;
+    crate::kernel::thread::with_process_mut(process_id, |process| {
+        f(&mut process.file_descriptors)
+    })
 }

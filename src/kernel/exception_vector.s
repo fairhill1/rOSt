@@ -129,8 +129,23 @@ handle_el0_syscall_entry:
 .balign 16
 el0_syscall_entry_return:
     // At this point, sp points to a pre-crafted ExceptionContext
-    // Debug: let us know we're entering the EL0 transition
-    // Note: We can't easily print from assembly, so just continue
+    // Save sp (we'll need it later)
+    mov x20, sp
+
+    // CRITICAL: Switch to user page tables before dropping to EL0
+    // Load USER_TABLE_ADDR directly from memory
+    adrp x10, USER_TABLE_ADDR
+    add x10, x10, :lo12:USER_TABLE_ADDR
+    ldr x0, [x10]               // x0 = USER_TABLE_ADDR
+
+    // Switch TTBR0 to user page tables
+    msr ttbr0_el1, x0           // Switch TTBR0 to user page tables
+    tlbi vmalle1                // Invalidate TLB
+    dsb sy
+    isb
+
+    // Restore sp
+    mov sp, x20
 
     // Just restore all registers and eret to EL0 user program
 
@@ -236,9 +251,11 @@ drop_to_el0:
     // NOW switch TTBR0 - our code should be accessible through TTBR1
     msr ttbr0_el1, x0    // Switch TTBR0 to user page tables
 
-    // Final memory barrier
-    dsb sy
-    isb sy
+    // CRITICAL: Invalidate TLB after changing TTBR0
+    // This ensures CPU uses new page tables immediately
+    tlbi vmalle1         // Invalidate all TLB entries for current ASID at EL1
+    dsb sy               // Ensure TLB invalidation completes
+    isb                  // Synchronize context
 
     // === MMU SWITCH COMPLETE - ON OUR DUAL TABLES ===
 
