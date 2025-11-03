@@ -1,7 +1,6 @@
 # TODO (in no specific order)
 
 - fatfs
-- exception/privilige levels (El0, EL1 etc.)
 - browser improvements
 	- css parsing
 		- margin collapsing
@@ -21,6 +20,7 @@
 - bold, italics support
 - image editor
 - horizontal scroll
+- fix font aliasing
 - scrollbars
 
 # BUGS
@@ -30,3 +30,6 @@
 # DONE
 
 - jpeg support
+- Exception Levels 
+- MMU
+- syscalls

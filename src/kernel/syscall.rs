@@ -41,6 +41,15 @@ pub enum SyscallNumber {
 
     // Input operations
     PollEvent = 18,
+
+    // Network operations
+    Socket = 19,
+    Connect = 20,
+    Send = 21,
+    Recv = 22,
+    Bind = 23,
+    Listen = 24,
+    Accept = 25,
 }
 
 impl SyscallNumber {
@@ -66,6 +75,13 @@ impl SyscallNumber {
             16 => Some(Self::FbMap),
             17 => Some(Self::FbFlush),
             18 => Some(Self::PollEvent),
+            19 => Some(Self::Socket),
+            20 => Some(Self::Connect),
+            21 => Some(Self::Send),
+            22 => Some(Self::Recv),
+            23 => Some(Self::Bind),
+            24 => Some(Self::Listen),
+            25 => Some(Self::Accept),
             _ => None,
         }
     }
@@ -115,6 +131,23 @@ pub struct InputEventUser {
     pub x_delta: i8,
     pub y_delta: i8,
     pub wheel_delta: i8,
+}
+
+/// Socket types for sys_socket
+pub const SOCK_STREAM: u32 = 1; // TCP
+pub const SOCK_DGRAM: u32 = 2;  // UDP
+
+/// Address family
+pub const AF_INET: u32 = 2; // IPv4
+
+/// Socket address for IPv4
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SockAddrIn {
+    pub family: u16,      // AF_INET
+    pub port: u16,        // Port in network byte order (big endian)
+    pub addr: u32,        // IPv4 address in network byte order
+    pub zero: [u8; 8],    // Padding
 }
 
 /// Syscall error codes (returned as negative values in X0)
@@ -185,6 +218,13 @@ pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
         SyscallNumber::FbMap => sys_fb_map(),
         SyscallNumber::FbFlush => sys_fb_flush(),
         SyscallNumber::PollEvent => sys_poll_event(args.arg0 as *mut InputEventUser),
+        SyscallNumber::Socket => sys_socket(args.arg0 as u32, args.arg1 as u32),
+        SyscallNumber::Connect => sys_connect(args.arg0 as i32, args.arg1 as *const SockAddrIn),
+        SyscallNumber::Send => sys_send(args.arg0 as i32, args.arg1 as *const u8, args.arg2 as usize),
+        SyscallNumber::Recv => sys_recv(args.arg0 as i32, args.arg1 as *mut u8, args.arg2 as usize),
+        SyscallNumber::Bind => sys_bind(args.arg0 as i32, args.arg1 as *const SockAddrIn),
+        SyscallNumber::Listen => sys_listen(args.arg0 as i32, args.arg1 as u32),
+        SyscallNumber::Accept => sys_accept(args.arg0 as i32, args.arg1 as *mut SockAddrIn),
         _ => SyscallError::NotImplemented.as_i64(),
     }
 }
@@ -726,4 +766,416 @@ fn sys_poll_event(event_ptr: *mut InputEventUser) -> i64 {
             0 // No event
         }
     }
+}
+
+// ============================================================================
+// Network syscalls
+// ============================================================================
+
+/// Socket descriptor management for per-process network sockets
+/// Similar to FileDescriptorTable but for network sockets
+pub struct SocketDescriptorTable {
+    sockets: [Option<SocketDescriptor>; MAX_SOCKETS_PER_PROCESS],
+}
+
+const MAX_SOCKETS_PER_PROCESS: usize = 32;
+
+#[derive(Clone, Copy)]
+struct SocketDescriptor {
+    socket_type: u32,  // SOCK_STREAM or SOCK_DGRAM
+    handle: smoltcp::iface::SocketHandle,  // Socket handle from smoltcp
+    connected: bool,
+}
+
+impl SocketDescriptorTable {
+    pub const fn new() -> Self {
+        Self {
+            sockets: [const { None }; MAX_SOCKETS_PER_PROCESS],
+        }
+    }
+
+    /// Allocate a new socket descriptor
+    pub fn alloc(&mut self, socket_type: u32, handle: smoltcp::iface::SocketHandle) -> Option<i32> {
+        for (i, slot) in self.sockets.iter_mut().enumerate() {
+            if slot.is_none() {
+                *slot = Some(SocketDescriptor {
+                    socket_type,
+                    handle,
+                    connected: false,
+                });
+                return Some(i as i32);
+            }
+        }
+        None
+    }
+
+    /// Get socket descriptor
+    pub fn get(&self, sockfd: i32) -> Option<&SocketDescriptor> {
+        if sockfd < 0 || sockfd >= MAX_SOCKETS_PER_PROCESS as i32 {
+            return None;
+        }
+        self.sockets[sockfd as usize].as_ref()
+    }
+
+    /// Get mutable socket descriptor
+    pub fn get_mut(&mut self, sockfd: i32) -> Option<&mut SocketDescriptor> {
+        if sockfd < 0 || sockfd >= MAX_SOCKETS_PER_PROCESS as i32 {
+            return None;
+        }
+        self.sockets[sockfd as usize].as_mut()
+    }
+
+    /// Close a socket descriptor
+    pub fn close(&mut self, sockfd: i32) -> bool {
+        if sockfd < 0 || sockfd >= MAX_SOCKETS_PER_PROCESS as i32 {
+            return false;
+        }
+        if self.sockets[sockfd as usize].is_some() {
+            self.sockets[sockfd as usize] = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Access current process socket descriptor table
+fn with_current_process_sockets<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut SocketDescriptorTable) -> R,
+{
+    let process_id = get_current_process()?;
+    crate::kernel::thread::with_process_mut(process_id, |process| {
+        f(&mut process.socket_descriptors)
+    })
+}
+
+fn sys_socket(domain: u32, socket_type: u32) -> i64 {
+    crate::kernel::uart_write_string("[SYSCALL] socket(domain=");
+    crate::kernel::uart_write_string(if domain == AF_INET { "AF_INET" } else { "?" });
+    crate::kernel::uart_write_string(", type=");
+    crate::kernel::uart_write_string(match socket_type {
+        SOCK_STREAM => "SOCK_STREAM",
+        SOCK_DGRAM => "SOCK_DGRAM",
+        _ => "?",
+    });
+    crate::kernel::uart_write_string(")\r\n");
+
+    // Only support AF_INET (IPv4)
+    if domain != AF_INET {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    // Create socket in network stack
+    let network_stack = unsafe { crate::kernel::NETWORK_STACK.as_mut() };
+    let stack = match network_stack {
+        Some(s) => s,
+        None => return SyscallError::InvalidArgument.as_i64(),
+    };
+
+    let handle = match socket_type {
+        SOCK_STREAM => stack.create_tcp_socket(),
+        SOCK_DGRAM => stack.create_udp_socket(),
+        _ => return SyscallError::InvalidArgument.as_i64(),
+    };
+
+    // Allocate socket descriptor for this process
+    let sockfd = with_current_process_sockets(|sockets| {
+        sockets.alloc(socket_type, handle)
+    });
+
+    match sockfd {
+        Some(Some(fd)) => {
+            crate::kernel::uart_write_string("[SYSCALL] socket() -> sockfd=");
+            if fd < 10 {
+                unsafe {
+                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + fd as u8);
+                }
+            }
+            crate::kernel::uart_write_string("\r\n");
+            fd as i64
+        }
+        _ => SyscallError::OutOfMemory.as_i64(),
+    }
+}
+
+fn sys_connect(sockfd: i32, addr: *const SockAddrIn) -> i64 {
+    if addr.is_null() {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    // Read address from userspace
+    let sockaddr = unsafe { core::ptr::read_volatile(addr) };
+
+    crate::kernel::uart_write_string("[SYSCALL] connect(sockfd=");
+    if sockfd < 10 {
+        unsafe {
+            core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + sockfd as u8);
+        }
+    }
+    crate::kernel::uart_write_string(")\r\n");
+
+    // Get socket descriptor
+    let (socket_type, handle) = match with_current_process_sockets(|sockets| {
+        sockets.get(sockfd).map(|desc| (desc.socket_type, desc.handle))
+    }) {
+        Some(Some(info)) => info,
+        _ => return SyscallError::BadFileDescriptor.as_i64(),
+    };
+
+    // Only TCP sockets can connect
+    if socket_type != SOCK_STREAM {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    // Convert network byte order to host byte order
+    let port = u16::from_be(sockaddr.port);
+    let ip_addr = u32::from_be(sockaddr.addr);
+    let ip_bytes = ip_addr.to_be_bytes();
+
+    // Connect TCP socket
+    let network_stack = unsafe { crate::kernel::NETWORK_STACK.as_mut() };
+    let stack = match network_stack {
+        Some(s) => s,
+        None => return SyscallError::InvalidArgument.as_i64(),
+    };
+
+    let remote_endpoint = smoltcp::wire::IpEndpoint::new(
+        smoltcp::wire::IpAddress::v4(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]),
+        port,
+    );
+
+    // Use ephemeral port for local endpoint
+    let local_port = 49152 + (sockfd as u16 * 100);
+
+    match stack.tcp_connect(handle, remote_endpoint, local_port) {
+        Ok(_) => {
+            crate::kernel::uart_write_string("[SYSCALL] connect() -> initiated, waiting for establishment...\r\n");
+
+            // Poll network stack to complete TCP 3-way handshake
+            // Try for up to 3 seconds (3000ms)
+            let start_time = crate::kernel::get_time_ms();
+            let mut established = false;
+
+            let mut poll_count = 0;
+            while crate::kernel::get_time_ms() - start_time < 3000 {
+                // Add RX buffers before polling
+                stack.add_receive_buffers(8).ok();
+                stack.poll();
+                poll_count += 1;
+
+                // Check socket state
+                let (may_send, may_recv, is_open) = stack.with_tcp_socket(handle, |socket| {
+                    (socket.may_send(), socket.may_recv(), socket.is_open())
+                });
+
+                // Debug every 100 polls
+                if poll_count % 100 == 0 {
+                    crate::kernel::uart_write_string("[SYSCALL] connect() -> polling: may_send=");
+                    crate::kernel::uart_write_string(if may_send { "T" } else { "F" });
+                    crate::kernel::uart_write_string(" may_recv=");
+                    crate::kernel::uart_write_string(if may_recv { "T" } else { "F" });
+                    crate::kernel::uart_write_string(" is_open=");
+                    crate::kernel::uart_write_string(if is_open { "T" } else { "F" });
+                    crate::kernel::uart_write_string("\r\n");
+                }
+
+                // Check if socket is connected (same check as browser)
+                if may_send && may_recv {
+                    crate::kernel::uart_write_string("[SYSCALL] connect() -> socket connected!\r\n");
+                    established = true;
+                    break;
+                }
+
+                // Shorter delay between polls for faster response
+                for _ in 0..100 {
+                    unsafe { core::arch::asm!("nop"); }
+                }
+            }
+
+            if established {
+                // Mark socket as connected
+                with_current_process_sockets(|sockets| {
+                    if let Some(desc) = sockets.get_mut(sockfd) {
+                        desc.connected = true;
+                    }
+                });
+
+                crate::kernel::uart_write_string("[SYSCALL] connect() -> established!\r\n");
+                0
+            } else {
+                crate::kernel::uart_write_string("[SYSCALL] connect() -> timeout\r\n");
+                SyscallError::InvalidArgument.as_i64()
+            }
+        }
+        Err(_) => {
+            crate::kernel::uart_write_string("[SYSCALL] connect() -> failed\r\n");
+            SyscallError::InvalidArgument.as_i64()
+        }
+    }
+}
+
+fn sys_send(sockfd: i32, buf: *const u8, len: usize) -> i64 {
+    if buf.is_null() || len == 0 {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    crate::kernel::uart_write_string("[SYSCALL] send(sockfd=");
+    if sockfd < 10 {
+        unsafe {
+            core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + sockfd as u8);
+        }
+    }
+    crate::kernel::uart_write_string(", len=");
+    crate::kernel::uart_write_string("\r\n");
+
+    // Get socket descriptor
+    let (socket_type, handle) = match with_current_process_sockets(|sockets| {
+        sockets.get(sockfd).map(|desc| (desc.socket_type, desc.handle))
+    }) {
+        Some(Some(info)) => info,
+        _ => return SyscallError::BadFileDescriptor.as_i64(),
+    };
+
+    // Only TCP sockets support send
+    if socket_type != SOCK_STREAM {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    // Copy data from userspace
+    let data = unsafe { core::slice::from_raw_parts(buf, len) };
+
+    // Send data through network stack
+    let network_stack = unsafe { crate::kernel::NETWORK_STACK.as_mut() };
+    let stack = match network_stack {
+        Some(s) => s,
+        None => return SyscallError::InvalidArgument.as_i64(),
+    };
+
+    // Poll to update socket state
+    stack.poll();
+
+    // Send data
+    let bytes_sent = stack.with_tcp_socket(handle, |socket| {
+        match socket.send_slice(data) {
+            Ok(n) => {
+                crate::kernel::uart_write_string("[SYSCALL] send() -> sent ");
+                if n < 10 {
+                    unsafe {
+                        core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + n as u8);
+                    }
+                }
+                crate::kernel::uart_write_string(" bytes to buffer\r\n");
+                n
+            }
+            Err(e) => {
+                crate::kernel::uart_write_string("[SYSCALL] send() -> error: ");
+                match e {
+                    smoltcp::socket::tcp::SendError::InvalidState => {
+                        crate::kernel::uart_write_string("InvalidState\r\n");
+                    }
+                }
+                0
+            }
+        }
+    });
+
+    // Poll network stack multiple times to actually transmit packets
+    for _ in 0..10 {
+        stack.poll();
+    }
+
+    bytes_sent as i64
+}
+
+fn sys_recv(sockfd: i32, buf: *mut u8, len: usize) -> i64 {
+    if buf.is_null() || len == 0 {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    crate::kernel::uart_write_string("[SYSCALL] recv(sockfd=");
+    if sockfd < 10 {
+        unsafe {
+            core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + sockfd as u8);
+        }
+    }
+    crate::kernel::uart_write_string(")\r\n");
+
+    // Get socket descriptor
+    let (socket_type, handle) = match with_current_process_sockets(|sockets| {
+        sockets.get(sockfd).map(|desc| (desc.socket_type, desc.handle))
+    }) {
+        Some(Some(info)) => info,
+        _ => return SyscallError::BadFileDescriptor.as_i64(),
+    };
+
+    // Only TCP sockets support recv
+    if socket_type != SOCK_STREAM {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    // Poll network stack first to receive packets
+    let network_stack = unsafe { crate::kernel::NETWORK_STACK.as_mut() };
+    let stack = match network_stack {
+        Some(s) => s,
+        None => return SyscallError::InvalidArgument.as_i64(),
+    };
+
+    // Poll multiple times to ensure packets are processed
+    for _ in 0..5 {
+        stack.poll();
+    }
+
+    // Receive data from network stack
+    let bytes_received = stack.with_tcp_socket(handle, |socket| {
+        if socket.can_recv() {
+            match socket.recv_slice(unsafe { core::slice::from_raw_parts_mut(buf, len) }) {
+                Ok(n) => {
+                    if n > 0 {
+                        crate::kernel::uart_write_string("[SYSCALL] recv() -> received ");
+                        if n < 10 {
+                            unsafe {
+                                core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + n as u8);
+                            }
+                        }
+                        crate::kernel::uart_write_string(" bytes\r\n");
+                    }
+                    n
+                }
+                Err(_) => 0,
+            }
+        } else {
+            0
+        }
+    });
+
+    bytes_received as i64
+}
+
+fn sys_bind(sockfd: i32, addr: *const SockAddrIn) -> i64 {
+    if addr.is_null() {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    crate::kernel::uart_write_string("[SYSCALL] bind() - not implemented\r\n");
+
+    // TODO: Implement bind for server sockets
+    // For now, return not implemented
+    SyscallError::NotImplemented.as_i64()
+}
+
+fn sys_listen(sockfd: i32, backlog: u32) -> i64 {
+    crate::kernel::uart_write_string("[SYSCALL] listen() - not implemented\r\n");
+
+    // TODO: Implement listen for server sockets
+    // For now, return not implemented
+    SyscallError::NotImplemented.as_i64()
+}
+
+fn sys_accept(sockfd: i32, addr: *mut SockAddrIn) -> i64 {
+    crate::kernel::uart_write_string("[SYSCALL] accept() - not implemented\r\n");
+
+    // TODO: Implement accept for server sockets
+    // For now, return not implemented
+    SyscallError::NotImplemented.as_i64()
 }

@@ -31,6 +31,7 @@ pub struct Process {
     pub kernel_stack: Box<[u8]>,      // Kernel stack for syscalls
     pub main_thread_id: Option<usize>, // Reference to main thread by ID
     pub file_descriptors: crate::kernel::filedesc::FileDescriptorTable, // Open files
+    pub socket_descriptors: crate::kernel::syscall::SocketDescriptorTable, // Network sockets
 }
 
 impl Process {
@@ -47,6 +48,7 @@ impl Process {
             kernel_stack,
             main_thread_id: None,
             file_descriptors: crate::kernel::filedesc::FileDescriptorTable::new(),
+            socket_descriptors: crate::kernel::syscall::SocketDescriptorTable::new(),
         }
     }
 
@@ -66,6 +68,7 @@ impl Process {
             kernel_stack,
             main_thread_id: None,
             file_descriptors: crate::kernel::filedesc::FileDescriptorTable::new(),
+            socket_descriptors: crate::kernel::syscall::SocketDescriptorTable::new(),
         }
     }
 

@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>leadbooster - The CRM That Finally Works For You</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .hero-gradient {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .cta-button {
+            transition: all 0.3s ease;
+        }
+        .cta-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04);
+        }
+        /* Custom scrollbar for better aesthetics (optional) */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #667eea;
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #5a67d8;
+        }
+        
+        /* Main site nav styles */
+        :root {
+            --primary-color: #3a5cec;
+            --primary-dark: #2241c7;
+            --dark-color: #0d1b2a;
+            --gray-color: #6c757d;
+            --border-radius: 8px;
+            --transition: all 0.3s ease-in-out;
+        }
+        
+        .container {
+            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        
+        header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000;
+            background-color: white;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            transition: var(--transition);
+            height: 80px;
+            display: flex;
+            align-items: center;
+        }
+        
+        nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+        }
+        
+        .logo h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: var(--dark-color);
+            margin: 0;
+        }
+        
+        .logo h1 a {
+            color: inherit;
+            text-decoration: none;
+        }
+        
+        .logo h1 span {
+            color: var(--primary-color);
+        }
+        
+        .nav-menu {
+            display: flex;
+            align-items: center;
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+        
+        .nav-menu li {
+            margin-left: 30px;
+        }
+        
+        .nav-menu li a {
+            font-weight: 600;
+            position: relative;
+            color: var(--dark-color);
+            text-decoration: none;
+            transition: var(--transition);
+        }
+        
+        .nav-menu li a.btn-primary {
+            color: white;
+            background-color: var(--primary-color);
+            padding: 12px 24px;
+            border-radius: var(--border-radius);
+        }
+        
+        .nav-menu li a.btn-primary:hover {
+            background-color: var(--primary-dark);
+        }
+        
+        .nav-menu li a:not(.btn-primary):after {
+            content: '';
+            position: absolute;
+            width: 0;
+            height: 2px;
+            bottom: -5px;
+            left: 0;
+            background-color: var(--primary-color);
+            transition: var(--transition);
+        }
+        
+        .nav-menu li a:not(.btn-primary):hover:after {
+            width: 100%;
+        }
+        
+        .nav-toggle {
+            display: none;
+            cursor: pointer;
+        }
+        
+        .nav-toggle span {
+            display: block;
+            width: 25px;
+            height: 3px;
+            background-color: var(--dark-color);
+            margin: 5px 0;
+            transition: var(--transition);
+        }
+        
+        /* Mobile styles */
+        @media (max-width: 768px) {
+            .nav-menu {
+                position: fixed;
+                top: 70px;
+                left: -100%;
+                width: 100%;
+                height: calc(100vh - 70px);
+                background-color: white;
+                flex-direction: column;
+                justify-content: flex-start;
+                padding-top: 50px;
+                transition: var(--transition);
+                box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1);
+            }
+            
+            .nav-menu.active {
+                left: 0;
+            }
+            
+            .nav-menu li {
+                margin: 15px 0;
+            }
+            
+            .nav-toggle {
+                display: block;
+            }
+            
+            .nav-toggle.active span:nth-child(1) {
+                transform: rotate(45deg) translate(5px, 5px);
+            }
+            
+            .nav-toggle.active span:nth-child(2) {
+                opacity: 0;
+            }
+            
+            .nav-toggle.active span:nth-child(3) {
+                transform: rotate(-45deg) translate(7px, -7px);
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 antialiased">
+
+    <header>
+        <div class="container">
+            <nav>
+                <div class="logo">
+                    <h1><a href="https://leadbooster.co">lead<span>booster</span>.co</a></h1>
+                </div>
+                <ul class="nav-menu">
+                    <li><a href="#features">Features</a></li>
+                    <li><a href="#solutions">Solutions</a></li>
+                    <li><a href="#pricing">Pricing</a></li>
+                    <li><a href="#contact">Contact</a></li>
+                    <li><a href="https://cal.com/leadbooster/strategy" class="btn-primary">Get Started</a></li>
+                </ul>
+                <div class="nav-toggle">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </nav>
+        </div>
+    </header>
+
+    <section class="hero-gradient text-white" style="padding-top: 130px;">
+        <div class="container mx-auto px-6 py-20 md:py-32 text-center">
+            <h1 class="text-4xl md:text-6xl font-extrabold mb-6 leading-tight">
+                Tired of CRM Frustration?
+            </h1>
+            <h2 class="text-xl md:text-3xl font-bold mb-8">
+                Meet <span class="text-yellow-300">leadbooster</span>: The CRM That Finally <span class="italic">Works For You.</span>
+            </h2>
+            <p class="text-lg md:text-xl mb-12 max-w-3xl mx-auto">
+                Stop wrestling with clunky software, endless data entry, and sky-high costs. leadbooster offers an intuitive, AI-powered CRM designed for growth, not headaches.
+            </p>
+            <a href="https://cal.com/leadbooster/strategy" class="bg-yellow-400 hover:bg-yellow-500 text-indigo-700 font-bold py-4 px-10 rounded-lg text-lg cta-button shadow-xl">
+                Schedule Your Demo
+            </a>
+            <p class="mt-4 text-sm text-indigo-200">Free consultation. No commitment required.</p>
+        </div>
+    </section>
+
+    <section class="py-16 md:py-24 bg-white">
+        <div class="container mx-auto px-6">
+            <h2 class="text-3xl md:text-4xl font-bold text-center mb-4 text-gray-800">Is Your Current CRM Holding You Back?</h2>
+            <p class="text-center text-gray-600 mb-16 max-w-2xl mx-auto">You're not alone. Many businesses struggle with CRMs that create more problems than they solve. Does this sound familiar?</p>
+            <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-8">
+                <div class="bg-gray-100 p-8 rounded-xl shadow-lg text-center">
+                    <svg class="w-16 h-16 text-red-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    <h3 class="text-xl font-semibold mb-2 text-gray-700">Wasted Hours on Data Entry?</h3>
+                    <p class="text-gray-600">The "manual grind" of inputting leads, contacts, and activities steals valuable time from your core tasks.</p>
+                </div>
+                <div class="bg-gray-100 p-8 rounded-xl shadow-lg text-center">
+                    <svg class="w-16 h-16 text-red-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7.014A7.987 7.987 0 0112 2c2.72 0 5.096 1.635 6.343 4.014C20.5 8 21 11 21 13c-2 1-2.343 2.343-2.343 2.343m-3.314-3.314a2.5 2.5 0 00-3.536 0m0 0A2.5 2.5 0 016.343 12m6.314 0a2.5 2.5 0 000 3.536m3.536-3.536a2.5 2.5 0 010 3.536m0-3.536c.78-.78 1.844-1.235 2.986-1.235s2.206.455 2.986 1.235m-5.972 0c.78.78 1.235 1.844 1.235 2.986s-.455 2.206-1.235 2.986m0-5.972c-.78-.78-1.844-1.235-2.986-1.235s-2.206.455-2.986 1.235m5.972 0c-.78-.78-1.235-1.844-1.235-2.986s.455-2.206 1.235-2.986m0 5.972a2.5 2.5 0 003.536 0"></path></svg>
+                    <h3 class="text-xl font-semibold mb-2 text-gray-700">Lost in a Maze of Complexity?</h3>
+                    <p class="text-gray-600">Steep learning curves and clunky, unintuitive interfaces make everyday tasks a navigational nightmare.</p>
+                </div>
+                <div class="bg-gray-100 p-8 rounded-xl shadow-lg text-center">
+                    <svg class="w-16 h-16 text-red-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    <h3 class="text-xl font-semibold mb-2 text-gray-700">Paying Too Much for Too Little?</h3>
+                    <p class="text-gray-600">High subscription costs, hidden fees, and questionable ROI drain your budget without delivering real value.</p>
+                </div>
+                <div class="bg-gray-100 p-8 rounded-xl shadow-lg text-center">
+                    <svg class="w-16 h-16 text-red-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                    <h3 class="text-xl font-semibold mb-2 text-gray-700">Data Everywhere, Nowhere Useful?</h3>
+                    <p class="text-gray-600">Data silos and poor integration mean you can't get a clear, 360-degree view of your customers.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="solutions" class="py-16 md:py-24 bg-indigo-50">
+        <div class="container mx-auto px-6 text-center">
+            <h2 class="text-3xl md:text-4xl font-bold mb-6 text-indigo-700">Introducing leadbooster: Simple, Smart, Seamless.</h2>
+            <p class="text-lg text-gray-700 mb-12 max-w-3xl mx-auto">It's time for a CRM that empowers your team, not overwhelms them. leadbooster is built from the ground up to solve your biggest CRM frustrations.</p>
+            <div class="grid md:grid-cols-2 gap-10">
+                <div class="bg-white p-8 rounded-xl shadow-xl feature-card text-left">
+                    <div class="flex items-center mb-4">
+                        <svg class="w-10 h-10 text-green-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"></path></svg>
+                        <h3 class="text-2xl font-semibold text-gray-800">AI-Powered Email Marketing</h3>
+                    </div>
+                    <p class="text-gray-600">Create personalized email campaigns that convert. leadbooster's AI helps you craft compelling messages, segment audiences, and optimize send times for maximum engagement and results.</p>
+                </div>
+                <div class="bg-white p-8 rounded-xl shadow-xl feature-card text-left">
+                    <div class="flex items-center mb-4">
+                       <svg class="w-10 h-10 text-green-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                        <h3 class="text-2xl font-semibold text-gray-800">Powerful Automation Engine</h3>
+                    </div>
+                    <p class="text-gray-600">Set up sophisticated workflows that run on autopilot. From lead scoring to follow-up sequences, our automation engine handles repetitive tasks so your team can focus on high-value activities.</p>
+                </div>
+                <div class="bg-white p-8 rounded-xl shadow-xl feature-card text-left">
+                    <div class="flex items-center mb-4">
+                        <svg class="w-10 h-10 text-green-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        <h3 class="text-2xl font-semibold text-gray-800">Transparent Pricing, Tangible ROI</h3>
+                    </div>
+                    <p class="text-gray-600">Get all the features you need without hidden fees or contract traps. leadbooster delivers real value, fast, with pricing that makes sense for your business.</p>
+                </div>
+                <div class="bg-white p-8 rounded-xl shadow-xl feature-card text-left">
+                    <div class="flex items-center mb-4">
+                        <svg class="w-10 h-10 text-green-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                        <h3 class="text-2xl font-semibold text-gray-800">Native Integrations & Data Capture</h3>
+                    </div>
+                    <p class="text-gray-600">We set up custom native integrations for your business to ensure all customer data flows seamlessly into your CRM. Every interaction is automatically captured and organized, giving you complete visibility.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="features" class="py-16 md:py-24 bg-white">
+        <div class="container mx-auto px-6">
+            <h2 class="text-3xl md:text-4xl font-bold text-center mb-16 text-gray-800">How leadbooster Solves Your CRM Nightmares</h2>
+            <div class="space-y-12">
+                <div class="md:flex items-center gap-8 p-6 rounded-lg hover:bg-gray-50 transition duration-300">
+                    <img src="ai_data_cap_alt2.png" alt="AI Data Capture" class="w-full md:w-1/3 rounded-lg shadow-md mb-6 md:mb-0 object-cover h-64 md:h-auto">
+                    <div class="md:w-2/3">
+                        <span class="text-sm font-semibold text-indigo-600 bg-indigo-100 py-1 px-3 rounded-full mb-2 inline-block">Pain Point: Generic Email Campaigns & Low Engagement</span>
+                        <h3 class="text-2xl font-bold mb-3 text-gray-800">AI-Powered Email Marketing</h3>
+                        <p class="text-gray-600 mb-4">leadbooster's AI creates personalized email campaigns that resonate with your audience. Smart segmentation and send-time optimization ensure your messages reach the right people at the perfect moment for maximum engagement.</p>
+                        <p class="font-semibold text-green-600"><span class="font-bold">Benefit:</span> Boost email engagement rates and convert more leads into customers with targeted, personalized messaging.</p>
+                    </div>
+                </div>
+                <div class="md:flex items-center flex-row-reverse gap-8 p-6 rounded-lg bg-gray-50 hover:bg-gray-100 transition duration-300">
+                    <img src="dash.png" alt="Automation Engine" class="w-full md:w-1/3 rounded-lg shadow-md mb-6 md:mb-0 object-cover h-64 md:h-auto">
+                    <div class="md:w-2/3">
+                        <span class="text-sm font-semibold text-indigo-600 bg-indigo-100 py-1 px-3 rounded-full mb-2 inline-block">Pain Point: Manual Tasks & Repetitive Work</span>
+                        <h3 class="text-2xl font-bold mb-3 text-gray-800">Powerful Automation Engine</h3>
+                        <p class="text-gray-600 mb-4">Automate everything in your CRM - from email sequences and deal pipeline management to task assignments and follow-ups. Set sophisticated workflows that handle repetitive tasks so your team can focus on closing deals.</p>
+                        <p class="font-semibold text-green-600"><span class="font-bold">Benefit:</span> Eliminate manual busywork and ensure nothing falls through the cracks with intelligent automation that works 24/7.</p>
+                    </div>
+                </div>
+                <div class="md:flex items-center gap-8 p-6 rounded-lg hover:bg-gray-50 transition duration-300">
+                    <img src="dash.png" alt="Intuitive Interface" class="w-full md:w-1/3 rounded-lg shadow-md mb-6 md:mb-0 object-cover h-64 md:h-auto">
+                    <div class="md:w-2/3">
+                        <span class="text-sm font-semibold text-indigo-600 bg-indigo-100 py-1 px-3 rounded-full mb-2 inline-block">Pain Point: Complex & Clunky Software</span>
+                        <h3 class="text-2xl font-bold mb-3 text-gray-800">Intuitive Drag & Drop Interface & Customizable Dashboards</h3>
+                        <p class="text-gray-600 mb-4">Our clean, user-friendly design means you can get started in minutes. Customize your dashboards with drag-and-drop ease to see the information that matters most to you, without needing a developer.</p>
+                        <p class="font-semibold text-green-600"><span class="font-bold">Benefit:</span> Enjoy a CRM that feels like it was built just for you. Boost productivity with a system your team will actually love using.</p>
+                    </div>
+                </div>
+                <div class="md:flex items-center flex-row-reverse gap-8 p-6 rounded-lg bg-gray-50 hover:bg-gray-100 transition duration-300">
+                    <img src="integrations_alt.png" alt="Seamless Integrations" class="w-full md:w-1/3 rounded-lg shadow-md mb-6 md:mb-0 object-cover h-64 md:h-auto">
+                    <div class="md:w-2/3">
+                        <span class="text-sm font-semibold text-indigo-600 bg-indigo-100 py-1 px-3 rounded-full mb-2 inline-block">Pain Point: Disconnected Tools & Data Silos</span>
+                        <h3 class="text-2xl font-bold mb-3 text-gray-800">One-Click Integrations & Unified Customer View</h3>
+                        <p class="text-gray-600 mb-4">leadbooster connects effortlessly with the tools you already use – Gmail, Outlook, Slack, Mailchimp, Zapier, and hundreds more. Get a true 360-degree view of every customer interaction in one centralized place.</p>
+                        <p class="font-semibold text-green-600"><span class="font-bold">Benefit:</span> Eliminate data silos, streamline workflows, and make informed decisions with all your customer data at your fingertips.</p>
+                    </div>
+                </div>
+                 <div class="md:flex items-center flex-row-reverse gap-8 p-6 rounded-lg hover:bg-gray-50 transition duration-300">
+                    <img src="support_alt.png" class="w-full md:w-1/3 rounded-lg shadow-md mb-6 md:mb-0 object-cover h-64 md:h-auto">
+                    <div class="md:w-2/3">
+                        <span class="text-sm font-semibold text-indigo-600 bg-indigo-100 py-1 px-3 rounded-full mb-2 inline-block">Pain Point: Hidden Costs & Poor Support</span>
+                        <h3 class="text-2xl font-bold mb-3 text-gray-800">Clear Pricing & Dedicated Human Support</h3>
+                        <p class="text-gray-600 mb-4">No surprises, no opaque tiers, no contract traps. leadbooster offers straightforward, all-inclusive pricing. And when you need help, our friendly, knowledgeable human support team is here for you – no frustrating chatbot loops.</p>
+                        <p class="font-semibold text-green-600"><span class="font-bold">Benefit:</span> Budget with confidence and get the help you need, when you need it. We're invested in your success.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Testimonial section commented out
+    <section class="py-16 md:py-24 bg-indigo-700 text-white">
+        <div class="container mx-auto px-6">
+            <h2 class="text-3xl md:text-4xl font-bold text-center mb-16">Businesses Love LeadBooster!</h2>
+            <div class="grid md:grid-cols-1 lg:grid-cols-3 gap-8">
+                <div class="bg-indigo-600 p-8 rounded-xl shadow-2xl">
+                    <img src="sarah.png" alt="Sarah P." class="w-20 h-20 rounded-full mx-auto mb-6 border-4 border-yellow-300">
+                    <p class="text-lg italic mb-4">"LeadBooster cut our data entry time in half and our sales team is finally using the CRM consistently! The AI features are a game-changer."</p>
+                    <p class="font-semibold text-yellow-300">- Sarah P., Sales Manager, TechSolutions Inc.</p>
+                </div>
+                <div class="bg-indigo-600 p-8 rounded-xl shadow-2xl">
+                    <img src="mark.png" alt="Mark D." class="w-20 h-20 rounded-full mx-auto mb-6 border-4 border-yellow-300">
+                    <p class="text-lg italic mb-4">"I was dreading another complex CRM implementation. LeadBooster was up and running in a day, and it's incredibly intuitive. Best decision we made!"</p>
+                    <p class="font-semibold text-yellow-300">- Mark D., Owner, CreativeMinds Agency</p>
+                </div>
+                <div class="bg-indigo-600 p-8 rounded-xl shadow-2xl">
+                    <img src="lisa.png" alt="Lisa K." class="w-20 h-20 rounded-full mx-auto mb-6 border-4 border-yellow-300">
+                    <p class="text-lg italic mb-4">"Finally, a CRM that doesn't break the bank and actually delivers on its promises. The integrations are seamless and support is fantastic."</p>
+                    <p class="font-semibold text-yellow-300">- Lisa K., Marketing Director, GreenScape Co.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+    -->
+    
+    <section id="pricing" class="py-16 md:py-24 bg-gray-50">
+        <div class="container mx-auto px-6 text-center">
+            <h2 class="text-3xl md:text-4xl font-bold mb-6 text-gray-800">Simple, Transparent Pricing</h2>
+            <p class="text-lg text-gray-600 mb-12 max-w-2xl mx-auto">No hidden fees, no complicated tiers. Just straightforward pricing that grows with you. Get all the power of leadbooster without breaking the bank.</p>
+            <div class="max-w-md mx-auto bg-indigo-50 p-8 rounded-xl shadow-xl border border-indigo-200">
+                <h3 class="text-2xl font-bold text-indigo-700 mb-4">leadbooster Pro</h3>
+                <p class="text-5xl font-extrabold text-gray-800 mb-2">$49</p>
+                <p class="text-gray-600 mb-6">per user / month, billed annually</p>
+                <ul class="text-left space-y-3 text-gray-700 mb-8">
+                    <li class="flex items-center"><svg class="w-5 h-5 text-green-500 mr-2" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>AI Email Marketing & Automation</li>
+                    <li class="flex items-center"><svg class="w-5 h-5 text-green-500 mr-2" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Unlimited Contacts & Deals</li>
+                    <li class="flex items-center"><svg class="w-5 h-5 text-green-500 mr-2" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Powerful Automation Engine</li>
+                    <li class="flex items-center"><svg class="w-5 h-5 text-green-500 mr-2" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Native Integrations & Data Capture</li>
+                    <li class="flex items-center"><svg class="w-5 h-5 text-green-500 mr-2" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path></svg>Dedicated Human Support</li>
+                </ul>
+                <a href="https://cal.com/leadbooster/strategy" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-8 rounded-lg text-lg cta-button">
+                    Schedule Demo
+                </a>
+            </div>
+            <p class="mt-8 text-gray-600">Need more? <a href="mailto:adne@leadbooster.co" class="text-indigo-600 hover:underline font-semibold">Contact us for Enterprise solutions.</a></p>
+        </div>
+    </section>
+
+    <section id="cta-final" class="py-16 md:py-32 hero-gradient text-white">
+        <div class="container mx-auto px-6 text-center">
+            <h2 class="text-3xl md:text-5xl font-bold mb-6">Ready to Stop Fighting Your CRM?</h2>
+            <p class="text-lg md:text-xl mb-12 max-w-2xl mx-auto">Transform your customer relationships, boost productivity, and drive growth with leadbooster. It's time for a CRM that truly supports your success.</p>
+            <a href="https://cal.com/leadbooster/strategy" class="bg-yellow-400 hover:bg-yellow-500 text-indigo-700 font-bold py-4 px-10 rounded-lg text-lg cta-button shadow-xl">
+                Schedule a Demo
+            </a>
+            <p class="mt-8 text-indigo-200">Free consultation. Discover how leadbooster can transform your business.</p>
+        </div>
+    </section>
+
+
+    <footer class="bg-gray-800 text-gray-300 py-12">
+        <div class="container mx-auto px-6 text-center">
+            <a href="https://leadbooster.co" class="text-2xl font-bold text-white mb-4 inline-block">lead<span style="color: #3a5cec;">booster</span>.co</a>
+            <div class="space-x-6 mb-6">
+                <a href="#" class="hover:text-indigo-400">Privacy Policy</a>
+                <a href="#" class="hover:text-indigo-400">Terms of Service</a>
+                <a href="mailto:adne@leadbooster.co" class="hover:text-indigo-400">Contact Us</a>
+            </div>
+            <p>&copy; 2025 leadbooster. All rights reserved. Built to make your CRM experience better.</p>
+        </div>
+    </footer>
+
+    <script>
+        // Mobile Navigation Toggle (matching main site)
+        document.addEventListener('DOMContentLoaded', function() {
+            const navToggle = document.querySelector('.nav-toggle');
+            const navMenu = document.querySelector('.nav-menu');
+            
+            if (navToggle && navMenu) {
+                navToggle.addEventListener('click', function() {
+                    navToggle.classList.toggle('active');
+                    navMenu.classList.toggle('active');
+                });
+            }
+            
+            // Smooth scrolling for anchor links
+            document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+                anchor.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    
+                    // Close mobile menu if open
+                    if (navToggle && navMenu) {
+                        navToggle.classList.remove('active');
+                        navMenu.classList.remove('active');
+                    }
+                    
+                    const targetElement = document.querySelector(this.getAttribute('href'));
+                    if (targetElement) {
+                        targetElement.scrollIntoView({
+                            behavior: 'smooth'
+                        });
+                    }
+                });
+            });
+        });
+    </script>
+
+</body>
+</html>
