@@ -472,32 +472,12 @@ impl Browser {
                                             crate::kernel::uart_write_string("Image dimensions changed, reflowing layout\r\n");
                                             if let Some(ref dom) = self.dom.clone() {
                                                 self.layout.clear();
-                                                layout::layout_node(self, &dom, 10, 10, 1260, &Color::BLACK, &None, false, false, 18.0, "", &[]);
-
-                                                // Add bottom padding after reflow
-                                                if let Some(last_box) = self.layout.last() {
-                                                    let bottom_padding_y = last_box.y + last_box.height;
-                                                    self.layout.push(LayoutBox {
-                                                        x: 10,
-                                                        y: bottom_padding_y,
-                                                        width: 1,
-                                                        height: 25,
-                                                        text: String::new(),
-                                                        color: Color::new(255, 255, 255),
-                                                        background_color: None,
-                                                        font_size: 18.0,
-                                                        is_link: false,
-                                                        link_url: String::new(),
-                                                        bold: false,
-                                                        italic: false,
-                                                        element_id: String::new(),
-                                                        is_image: false,
-                                                        image_data: None,
-                                                        is_hr: false,
-                                                        is_table_cell: false,
-                                                        is_header_cell: false,
-                                                    });
-                                                }
+                                                let layout_width = if self.last_window_width > 0 {
+                                                    self.last_window_width
+                                                } else {
+                                                    1280
+                                                };
+                                                layout::find_and_layout_body(self, &dom, 0, 0, layout_width);
                                             }
                                             needs_redraw = true;
                                         } else {
