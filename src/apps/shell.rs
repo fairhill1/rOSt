@@ -2,6 +2,8 @@
 
 use crate::system::fs::filesystem::SimpleFilesystem;
 use crate::kernel::uart_write_string;
+use crate::kernel::interrupts;
+use crate::kernel::userspace_test;
 use crate::gui::widgets::console;
 extern crate alloc;
 
@@ -109,6 +111,7 @@ impl Shell {
             "nslookup" | "dig" => self.cmd_nslookup(&parts),
             "http" | "wget" => self.cmd_http(&parts),
             "download" | "dl" => self.cmd_download(&parts),
+            "user" | "run" => self.cmd_user(&parts),
             _ => {
                 self.write_output("Unknown command: ");
                 self.write_output(parts[0]);
@@ -135,6 +138,7 @@ impl Shell {
         self.write_output("  http <url>            - HTTP GET request (e.g. http example.com)\r\n");
         self.write_output("  download <url>        - Download file (e.g. download 10.0.2.2:8888/font.ttf)\r\n");
         self.write_output("  arp                   - Show ARP cache\r\n");
+        self.write_output("  user                  - Run EL0 user program (tests MMU)\r\n");
         self.write_output("  help                  - Show this help\r\n");
     }
 
@@ -739,6 +743,22 @@ impl Shell {
                 self.write_output(&alloc::format!("{}\r\n", e));
             }
         }
+    }
+
+    fn cmd_user(&mut self, parts: &[&str]) {
+        self.write_output("=== EL0 User Program (MMU Test) ===\r\n");
+        self.write_output("This will test memory protection and EL0/EL1 syscalls\r\n");
+        self.write_output("WARNING: This shell will hang after the program completes\r\n");
+        self.write_output("         Open a new terminal window to continue using the OS\r\n");
+        self.write_output("Starting MMU-protected user program...\r\n\r\n");
+
+        // Launch the EL0 user program
+        // Note: This never returns - you'll need to open a new shell after
+        unsafe {
+            interrupts::start_user_process(userspace_test::user_test_program);
+        }
+
+        // Never reached
     }
 
 }

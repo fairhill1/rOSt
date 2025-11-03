@@ -84,6 +84,27 @@ extern "C" fn handle_el0_syscall_rust(ctx: *mut ExceptionContext) {
     // Call syscall dispatcher
     let result = crate::kernel::syscall::handle_syscall(syscall_num, args);
 
+    // Check if this is an exit syscall (special sentinel value)
+    const EXIT_SENTINEL: u64 = 0xDEADBEEF_DEADBEEF;
+    if result as u64 == EXIT_SENTINEL {
+        // User program called exit() - don't return to EL0
+        // Instead, switch back to kernel MMU and terminate
+        crate::kernel::uart_write_string("[KERNEL] Switching back to kernel MMU context\r\n");
+
+        // Restore original kernel MMU context
+        crate::kernel::memory::restore_kernel_mmu_context();
+
+        crate::kernel::uart_write_string("[KERNEL] User program completed successfully\r\n");
+        crate::kernel::uart_write_string("[KERNEL] Ready to return to shell\r\n");
+
+        // For now, we still can't return to the shell properly
+        // But at least we're back in the kernel MMU context
+        // TODO: Implement proper return to shell context
+        loop {
+            aarch64_cpu::asm::wfe();
+        }
+    }
+
     // Write result back to X0 (will be restored on return)
     ctx.x0 = result as u64;
 

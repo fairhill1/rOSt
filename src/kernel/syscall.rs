@@ -191,8 +191,11 @@ fn sys_exit(code: i32) -> i64 {
         }
     }
     crate::kernel::uart_write_string("\r\n");
-    // TODO: Terminate the calling process
-    SyscallError::NotImplemented.as_i64()
+    crate::kernel::uart_write_string("[SYSCALL] User program terminated - returning to kernel\r\n");
+
+    // Special return value indicates process termination
+    // This is a sentinel value that the syscall handler will check
+    0xDEADBEEF_DEADBEEF_u64 as i64
 }
 
 fn sys_getpid() -> i64 {

@@ -244,6 +244,9 @@ pub fn init_virtual_memory() {
         let current_ttbr1 = TTBR1_EL1.get();
         let current_tcr = TCR_EL1.get();
 
+        // Save original TTBR0 so we can restore it after user programs exit
+        ORIGINAL_TTBR0 = current_ttbr0;
+
         crate::kernel::uart_write_string("[MMU] Current TTBR0: 0x");
         print_hex(current_ttbr0);
         crate::kernel::uart_write_string("\r\n");
@@ -448,11 +451,37 @@ pub fn setup_mmu_page_tables() {
 // Global storage for page table addresses (so assembly can access them)
 pub static mut USER_TABLE_ADDR: u64 = 0;
 pub static mut KERNEL_TABLE_ADDR: u64 = 0;
+pub static mut ORIGINAL_TTBR0: u64 = 0;  // Save original UEFI page table
 
 /// Get the prepared page table addresses for assembly code
 #[no_mangle]
 pub extern "C" fn get_page_table_addresses() -> (u64, u64) {
     unsafe { (USER_TABLE_ADDR, KERNEL_TABLE_ADDR) }
+}
+
+/// Restore original kernel MMU context after user program exits
+pub fn restore_kernel_mmu_context() {
+    use aarch64_cpu::registers::*;
+    use aarch64_cpu::asm::barrier;
+
+    crate::kernel::uart_write_string("[MMU] Restoring original kernel MMU context\r\n");
+
+    unsafe {
+        // Restore original TTBR0 (UEFI's page table)
+        let original_ttbr0 = ORIGINAL_TTBR0;
+        crate::kernel::uart_write_string("[MMU] Restoring TTBR0 to: 0x");
+        print_hex(original_ttbr0);
+        crate::kernel::uart_write_string("\r\n");
+
+        // Switch back to original page tables
+        TTBR0_EL1.set(original_ttbr0);
+
+        // Memory barrier to ensure the change takes effect
+        barrier::dsb(barrier::SY);
+        barrier::isb(barrier::SY);
+
+        crate::kernel::uart_write_string("[MMU] Kernel MMU context restored\r\n");
+    }
 }
 
 fn print_hex(n: u64) {

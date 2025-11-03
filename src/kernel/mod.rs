@@ -802,8 +802,9 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // ===== EL0 USER MODE TEST =====
     // Test EL1→EL0 transition and syscalls
     // WARNING: This will replace the GUI with a simple syscall test program
-    uart_write_string("\n\n=== TESTING EL0 USER MODE ===\r\n");
-    interrupts::start_user_process(userspace_test::user_test_program);
+    // COMMENTED OUT: Let system continue to GUI shell instead
+    // uart_write_string("\n\n=== TESTING EL0 USER MODE ===\r\n");
+    // interrupts::start_user_process(userspace_test::user_test_program);
     // (never returns)
 
     let mut needs_full_render = true; // Force initial render
