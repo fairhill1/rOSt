@@ -385,7 +385,8 @@ pub fn layout_node(
             // Calculate dimensions based on font type
             let (char_width, char_height) = if crate::gui::font::is_available() {
                 let space_width = crate::gui::font::measure_string(" ", font_size) as usize;
-                let height = crate::gui::font::get_char_height() as usize;
+                // Calculate height for THIS font size, not the global font height
+                let height = crate::gui::font::get_line_height_for_size(font_size) as usize;
                 (space_width, height)
             } else {
                 // For bitmap font, calculate multiplier from pixel size
@@ -1108,9 +1109,24 @@ pub fn layout_element(
 
         let child_base_x = if css_padding > 0 && is_block { content_x } else { x };
         let child_x = if child_is_block || is_br { child_base_x } else { current_x };
+
+        let layout_before = browser.layout.len();
         let (new_x, new_y) = layout_node(browser, child, child_x, current_y, content_max_width, color, &background_color, bold, italic, font_size_px, element_id, &new_ancestors);
+
+        // For block children: ensure current_y advances past any content the child added
+        // This prevents sibling blocks from overlapping when child doesn't update new_y correctly
+        if child_is_block && browser.layout.len() > layout_before {
+            // Find the bottom of content added by this child
+            let child_content_bottom = browser.layout[layout_before..].iter()
+                .filter(|b| !b.text.is_empty() || b.is_image || b.is_hr) // Skip background boxes
+                .map(|b| b.y + b.height)
+                .max()
+                .unwrap_or(new_y);
+            current_y = child_content_bottom.max(new_y);
+        } else {
+            current_y = new_y;
+        }
         current_x = new_x;
-        current_y = new_y;
     }
 
     // Add bottom padding (only for block elements)
@@ -1145,11 +1161,15 @@ pub fn layout_element(
             block_end_y.saturating_sub(block_start_y)
         };
 
-        // Clear background_color from child text boxes (full-width bg will handle it)
-        // But keep backgrounds on nested block elements (empty text = background box)
+        // Clear background_color from child text boxes ONLY if it matches the block's background
+        // This prevents duplicate rendering while preserving inline backgrounds (like <span class="highlight">)
+        // Keep backgrounds on nested block elements (empty text = background box)
         for i in block_start_idx..browser.layout.len() {
             if !browser.layout[i].text.is_empty() {
-                browser.layout[i].background_color = None;
+                // Only clear if background matches the block's background (inherited, not explicitly set)
+                if browser.layout[i].background_color == Some(bg_color) {
+                    browser.layout[i].background_color = None;
+                }
             }
         }
 

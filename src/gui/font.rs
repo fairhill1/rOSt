@@ -344,3 +344,33 @@ pub fn char_metrics(ch: char, size: f32) -> Option<(f32, f32, f32)> {
         }
     }
 }
+
+/// Get the line height for a specific font size
+/// Returns height in pixels (ascent + descent + line gap)
+pub fn get_line_height_for_size(size: f32) -> u32 {
+    unsafe {
+        if is_available() {
+            if let Some(ref font) = FONT {
+                if let Some(metrics) = font.horizontal_line_metrics(size) {
+                    let height = metrics.ascent - metrics.descent + metrics.line_gap;
+                    // Round up (no_std compatible - add 1 if has fractional part)
+                    let int_height = height as u32;
+                    if height > int_height as f32 {
+                        int_height + 1
+                    } else {
+                        int_height
+                    }
+                } else {
+                    // Fallback: use global font height
+                    get_char_height()
+                }
+            } else {
+                get_char_height()
+            }
+        } else {
+            // Bitmap font fallback
+            let multiplier = ((size / 8.0) + 0.5) as u32;
+            16 * multiplier
+        }
+    }
+}
