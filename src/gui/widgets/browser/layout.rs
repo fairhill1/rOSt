@@ -1109,30 +1109,13 @@ pub fn layout_element(
 
         let child_base_x = if css_padding > 0 && is_block { content_x } else { x };
         let child_x = if child_is_block || is_br { child_base_x } else { current_x };
-
-        let layout_before = browser.layout.len();
         let (new_x, new_y) = layout_node(browser, child, child_x, current_y, content_max_width, color, &background_color, bold, italic, font_size_px, element_id, &new_ancestors);
-
-        // For block children: ensure current_y advances past any content the child added
-        // This prevents sibling blocks from overlapping when child doesn't update new_y correctly
-        if child_is_block && browser.layout.len() > layout_before {
-            // Find the bottom of content added by this child
-            let child_content_bottom = browser.layout[layout_before..].iter()
-                .filter(|b| !b.text.is_empty() || b.is_image || b.is_hr) // Skip background boxes
-                .map(|b| b.y + b.height)
-                .max()
-                .unwrap_or(new_y);
-            current_y = child_content_bottom.max(new_y);
-        } else {
-            current_y = new_y;
-        }
         current_x = new_x;
+        current_y = new_y;
     }
 
-    // Add bottom padding (only for block elements)
-    if css_padding > 0 && is_block {
-        current_y += css_padding;
-    }
+    // Bottom padding is included in the background box height calculation below
+    // No need to add it to current_y here (would create extra white space)
 
     // Add full-width background for block elements with background color
     if is_block && background_color.is_some() {
@@ -1194,6 +1177,9 @@ pub fn layout_element(
             is_table_cell: false,
             is_header_cell: false,
         });
+
+        // Update current_y to the bottom of the background (includes padding)
+        current_y = block_start_y + block_height;
     }
 
     // Block elements end with newline
