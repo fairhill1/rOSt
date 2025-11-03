@@ -1,0 +1,16 @@
+{
+  "llvm-target": "aarch64-unknown-none-elf",
+  "data-layout": "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
+  "arch": "aarch64",
+  "target-endian": "little",
+  "target-pointer-width": "64",
+  "target-c-int-width": "32",
+  "os": "none",
+  "linker-flavor": "ld.lld",
+  "linker": "rust-lld",
+  "executables": true,
+  "relocation-model": "static",
+  "disable-redzone": true,
+  "features": "+strict-align",
+  "panic-strategy": "abort"
+}

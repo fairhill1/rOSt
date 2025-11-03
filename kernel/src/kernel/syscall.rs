@@ -950,63 +950,18 @@ fn sys_connect(sockfd: i32, addr: *const SockAddrIn) -> i64 {
 
     match stack.tcp_connect(handle, remote_endpoint, local_port) {
         Ok(_) => {
-            crate::kernel::uart_write_string("[SYSCALL] connect() -> initiated, waiting for establishment...\r\n");
+            crate::kernel::uart_write_string("[SYSCALL] connect() -> initiated (non-blocking)\r\n");
 
-            // Poll network stack to complete TCP 3-way handshake
-            // Try for up to 3 seconds (3000ms)
-            let start_time = crate::kernel::get_time_ms();
-            let mut established = false;
-
-            let mut poll_count = 0;
-            while crate::kernel::get_time_ms() - start_time < 3000 {
-                // Add RX buffers before polling
-                stack.add_receive_buffers(8).ok();
-                stack.poll();
-                poll_count += 1;
-
-                // Check socket state
-                let (may_send, may_recv, is_open) = stack.with_tcp_socket(handle, |socket| {
-                    (socket.may_send(), socket.may_recv(), socket.is_open())
-                });
-
-                // Debug every 100 polls
-                if poll_count % 100 == 0 {
-                    crate::kernel::uart_write_string("[SYSCALL] connect() -> polling: may_send=");
-                    crate::kernel::uart_write_string(if may_send { "T" } else { "F" });
-                    crate::kernel::uart_write_string(" may_recv=");
-                    crate::kernel::uart_write_string(if may_recv { "T" } else { "F" });
-                    crate::kernel::uart_write_string(" is_open=");
-                    crate::kernel::uart_write_string(if is_open { "T" } else { "F" });
-                    crate::kernel::uart_write_string("\r\n");
+            // Mark socket as "connected" (connection initiated, not established yet)
+            with_current_process_sockets(|sockets| {
+                if let Some(desc) = sockets.get_mut(sockfd) {
+                    desc.connected = true;
                 }
+            });
 
-                // Check if socket is connected (same check as browser)
-                if may_send && may_recv {
-                    crate::kernel::uart_write_string("[SYSCALL] connect() -> socket connected!\r\n");
-                    established = true;
-                    break;
-                }
-
-                // Shorter delay between polls for faster response
-                for _ in 0..100 {
-                    unsafe { core::arch::asm!("nop"); }
-                }
-            }
-
-            if established {
-                // Mark socket as connected
-                with_current_process_sockets(|sockets| {
-                    if let Some(desc) = sockets.get_mut(sockfd) {
-                        desc.connected = true;
-                    }
-                });
-
-                crate::kernel::uart_write_string("[SYSCALL] connect() -> established!\r\n");
-                0
-            } else {
-                crate::kernel::uart_write_string("[SYSCALL] connect() -> timeout\r\n");
-                SyscallError::InvalidArgument.as_i64()
-            }
+            // Return immediately - connection will complete asynchronously
+            // App must poll/retry send until it works
+            0
         }
         Err(_) => {
             crate::kernel::uart_write_string("[SYSCALL] connect() -> failed\r\n");
@@ -1052,33 +1007,46 @@ fn sys_send(sockfd: i32, buf: *const u8, len: usize) -> i64 {
         None => return SyscallError::InvalidArgument.as_i64(),
     };
 
-    // Poll to update socket state
-    stack.poll();
+    // Retry send with polling until socket is ready (up to 5 seconds)
+    let start_time = crate::kernel::get_time_ms();
+    let mut bytes_sent = 0;
 
-    // Send data
-    let bytes_sent = stack.with_tcp_socket(handle, |socket| {
-        match socket.send_slice(data) {
-            Ok(n) => {
-                crate::kernel::uart_write_string("[SYSCALL] send() -> sent ");
-                if n < 10 {
-                    unsafe {
-                        core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + n as u8);
+    while bytes_sent == 0 && crate::kernel::get_time_ms() - start_time < 5000 {
+        // Add RX buffers and poll
+        stack.add_receive_buffers(8).ok();
+        stack.poll();
+
+        // Try to send
+        bytes_sent = stack.with_tcp_socket(handle, |socket| {
+            match socket.send_slice(data) {
+                Ok(n) => {
+                    if n > 0 {
+                        crate::kernel::uart_write_string("[SYSCALL] send() -> sent ");
+                        if n < 10 {
+                            unsafe {
+                                core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + n as u8);
+                            }
+                        }
+                        crate::kernel::uart_write_string(" bytes\r\n");
                     }
+                    n
                 }
-                crate::kernel::uart_write_string(" bytes to buffer\r\n");
-                n
+                Err(_) => 0,
             }
-            Err(e) => {
-                crate::kernel::uart_write_string("[SYSCALL] send() -> error: ");
-                match e {
-                    smoltcp::socket::tcp::SendError::InvalidState => {
-                        crate::kernel::uart_write_string("InvalidState\r\n");
-                    }
-                }
-                0
+        });
+
+        // Small delay if send failed
+        if bytes_sent == 0 {
+            for _ in 0..1000 {
+                unsafe { core::arch::asm!("nop"); }
             }
         }
-    });
+    }
+
+    if bytes_sent == 0 {
+        crate::kernel::uart_write_string("[SYSCALL] send() -> timeout waiting for socket ready\r\n");
+        return SyscallError::InvalidArgument.as_i64();
+    }
 
     // Poll network stack multiple times to actually transmit packets
     for _ in 0..10 {

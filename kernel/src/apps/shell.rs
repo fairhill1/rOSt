@@ -112,6 +112,7 @@ impl Shell {
             "http" | "wget" => self.cmd_http(&parts),
             "download" | "dl" => self.cmd_download(&parts),
             "user" | "run" => self.cmd_user(&parts),
+            "exec" => self.cmd_exec(&parts),
             _ => {
                 self.write_output("Unknown command: ");
                 self.write_output(parts[0]);
@@ -773,6 +774,41 @@ impl Shell {
         } else {
             self.write_output("\r\nNote: The process will run cooperatively with this shell.\r\n");
             self.write_output("Type 'user-force' to run in blocking mode.\r\n");
+        }
+    }
+
+    fn cmd_exec(&mut self, parts: &[&str]) {
+        if parts.len() < 2 {
+            self.write_output("Usage: exec <program>\r\n");
+            self.write_output("Available programs:\r\n");
+            self.write_output("  shell - Userspace shell (EL0)\r\n");
+            return;
+        }
+
+        match parts[1] {
+            "shell" => {
+                self.write_output("=== Loading Userspace Shell ELF ===\r\n");
+                self.write_output("Loading from embedded binary...\r\n");
+
+                // Load the embedded shell ELF
+                let shell_elf = crate::kernel::embedded_apps::SHELL_ELF;
+                self.write_output(&alloc::format!("ELF size: {} bytes\r\n", shell_elf.len()));
+
+                // Use ELF loader to parse and spawn
+                let process_id = crate::kernel::elf_loader::load_elf_and_spawn(shell_elf);
+
+                self.write_output(&alloc::format!("✓ Userspace shell loaded as process {}\r\n", process_id));
+                self.write_output("Process will run cooperatively with kernel shell.\r\n");
+                self.write_output("Yielding to scheduler...\r\n");
+
+                // Yield to let it run
+                crate::kernel::thread::yield_now();
+                self.write_output("Returned from scheduler\r\n");
+            }
+            _ => {
+                self.write_output(&alloc::format!("Unknown program: {}\r\n", parts[1]));
+                self.write_output("Available: shell\r\n");
+            }
         }
     }
 

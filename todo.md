@@ -1,6 +1,7 @@
 # TODO (in no specific order)
 
 - fatfs
+- elf loader
 - browser improvements
 	- css parsing
 		- margin collapsing

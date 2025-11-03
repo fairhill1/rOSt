@@ -19,6 +19,8 @@ pub mod scheduler;
 pub mod syscall;
 pub mod userspace_test;
 pub mod filedesc;
+pub mod elf_loader;
+pub mod embedded_apps;
 
 /// Information passed from UEFI bootloader to kernel
 #[repr(C)]

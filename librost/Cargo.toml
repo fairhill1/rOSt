@@ -1,0 +1,11 @@
+[package]
+name = "librost"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "librost"
+path = "src/lib.rs"
+
+[dependencies]
+# No dependencies - pure syscall interface
