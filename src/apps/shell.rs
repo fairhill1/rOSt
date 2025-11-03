@@ -747,18 +747,28 @@ impl Shell {
 
     fn cmd_user(&mut self, parts: &[&str]) {
         self.write_output("=== EL0 User Program (MMU Test) ===\r\n");
-        self.write_output("This will test memory protection and EL0/EL1 syscalls\r\n");
-        self.write_output("WARNING: This shell will hang after the program completes\r\n");
-        self.write_output("         Open a new terminal window to continue using the OS\r\n");
-        self.write_output("Starting MMU-protected user program...\r\n\r\n");
+        self.write_output("Launching user process with MMU protection...\r\n\r\n");
 
-        // Launch the EL0 user program
-        // Note: This never returns - you'll need to open a new shell after
-        unsafe {
-            interrupts::start_user_process(userspace_test::user_test_program);
+        // Create user process through the scheduler
+        let process_id = unsafe {
+            let mut scheduler = crate::kernel::scheduler::SCHEDULER.lock();
+            scheduler.spawn_user_process(userspace_test::user_test_program)
+        };
+
+        self.write_output(&alloc::format!("✓ User process {} created\r\n", process_id));
+        self.write_output("The user process will run in the background.\r\n");
+        self.write_output("The OS will switch between this shell and the user program.\r\n");
+
+        // Alternative: provide the old behavior as an explicit command
+        if parts.len() > 1 && parts[1] == "force" {
+            self.write_output("\r\nForce-running user program in current context (shell will hang)...\r\n");
+            unsafe {
+                interrupts::start_user_process(userspace_test::user_test_program);
+            }
+        } else {
+            self.write_output("\r\nNote: The process will run cooperatively with this shell.\r\n");
+            self.write_output("Type 'user-force' to run in blocking mode.\r\n");
         }
-
-        // Never reached
     }
 
 }

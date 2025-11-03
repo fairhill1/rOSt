@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use spin::Mutex;
-use crate::kernel::thread::{Thread, ThreadState, context_switch, jump_to_thread};
+use crate::kernel::thread::{Thread, ThreadState, context_switch, jump_to_thread, Process, get_process_mut, set_process_main_thread};
 
 pub struct Scheduler {
     pub threads: Vec<Box<Thread>>,
@@ -31,17 +31,63 @@ impl Scheduler {
         self.kernel_context = Some(ctx);
     }
 
-    /// Spawn a new thread
+    /// Spawn a new kernel thread (creates a kernel process automatically)
     pub fn spawn(&mut self, entry_point: fn()) -> usize {
-        let id = self.next_thread_id;
+        use crate::kernel::thread::{create_kernel_process, get_process_mut};
+
+        let process_id = create_kernel_process();
+        let thread_id = self.next_thread_id;
         self.next_thread_id += 1;
 
-        let thread = Box::new(Thread::new(id, entry_point));
-        self.threads.push(thread);
-        self.ready_queue.push_back(id);
+        // Get the process to extract stack information
+        if let Some(process) = get_process_mut(process_id) {
+            let stack_top = process.get_kernel_stack_top();
 
-        crate::kernel::uart_write_string(&alloc::format!("Spawned thread {}\r\n", id));
-        id
+            // Create the thread with proper references to process memory
+            let thread = Box::new(Thread::new_kernel(thread_id, process_id, entry_point, stack_top));
+
+            // Link process and thread
+            process.main_thread_id = Some(thread_id);
+            process.state = crate::kernel::thread::ProcessState::Ready;
+
+            self.threads.push(thread);
+            self.ready_queue.push_back(thread_id);
+
+            crate::kernel::uart_write_string(&alloc::format!("Spawned kernel thread {} for process {}\r\n", thread_id, process_id));
+            thread_id
+        } else {
+            crate::kernel::uart_write_string("[SCHEDULER] Failed to get process for kernel thread\r\n");
+            0
+        }
+    }
+
+    /// Spawn a new user process and add its main thread to the scheduler
+    pub fn spawn_user_process(&mut self, entry_point: extern "C" fn() -> !) -> usize {
+        use crate::kernel::thread::{create_user_process, get_process_mut};
+
+        let process_id = create_user_process();
+        let thread_id = self.next_thread_id;
+        self.next_thread_id += 1;
+
+        // Get the process to extract stack information
+        if let Some(process) = get_process_mut(process_id) {
+            let kernel_stack_top = process.get_kernel_stack_top();
+
+            // Create the thread with proper references to process memory
+            let thread = Box::new(Thread::new_user(thread_id, process_id, entry_point, kernel_stack_top));
+
+            // Link process and thread using safe function
+            set_process_main_thread(process_id, thread_id);
+
+            self.threads.push(thread);
+            self.ready_queue.push_back(thread_id);
+
+            crate::kernel::uart_write_string(&alloc::format!("Spawned user process {} as thread {}\r\n", process_id, thread_id));
+            process_id
+        } else {
+            crate::kernel::uart_write_string("[SCHEDULER] Failed to get process for user thread\r\n");
+            0
+        }
     }
 
     /// Round-robin: pick next thread from ready queue

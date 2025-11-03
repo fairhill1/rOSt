@@ -1,9 +1,85 @@
-/// Thread management for rOSt
-/// Implements preemptive multitasking with kernel threads
+/// Process and Thread management for rOSt
+/// Implements preemptive multitasking with kernel processes and EL0 user processes
 
 use alloc::boxed::Box;
 use alloc::vec;
 use core::arch::asm;
+
+/// Process states
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ProcessState {
+    Created,
+    Ready,
+    Running,
+    Blocked,
+    Terminated,
+}
+
+/// Process type
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ProcessType {
+    Kernel,  // Runs in EL1, kernel space
+    User,    // Runs in EL0, user space with MMU protection
+}
+
+/// Process structure - owns all memory and threads
+pub struct Process {
+    pub id: usize,
+    pub state: ProcessState,
+    pub process_type: ProcessType,
+    pub user_stack: Option<Box<[u8]>>, // User stack for EL0 processes
+    pub kernel_stack: Box<[u8]>,      // Kernel stack for syscalls
+    pub main_thread_id: Option<usize>, // Reference to main thread by ID
+}
+
+impl Process {
+    /// Create a new kernel process
+    pub fn new_kernel(id: usize) -> Self {
+        // Allocate kernel stack
+        let kernel_stack = vec![0u8; STACK_SIZE].into_boxed_slice();
+
+        Process {
+            id,
+            state: ProcessState::Created,
+            process_type: ProcessType::Kernel,
+            user_stack: None,
+            kernel_stack,
+            main_thread_id: None,
+        }
+    }
+
+    /// Create a new user process
+    pub fn new_user(id: usize) -> Self {
+        // Allocate user stack (larger for user programs)
+        let user_stack = vec![0u8; STACK_SIZE * 2].into_boxed_slice(); // 128KB for user
+
+        // Allocate kernel stack for syscalls
+        let kernel_stack = vec![0u8; STACK_SIZE].into_boxed_slice();
+
+        Process {
+            id,
+            state: ProcessState::Created,
+            process_type: ProcessType::User,
+            user_stack: Some(user_stack),
+            kernel_stack,
+            main_thread_id: None,
+        }
+    }
+
+    /// Get kernel stack top address
+    pub fn get_kernel_stack_top(&self) -> u64 {
+        let stack_top = self.kernel_stack.as_ptr() as u64 + self.kernel_stack.len() as u64;
+        stack_top & !0xF // 16-byte alignment
+    }
+
+    /// Get user stack top address (for EL0 processes)
+    pub fn get_user_stack_top(&self) -> Option<u64> {
+        self.user_stack.as_ref().map(|stack| {
+            let stack_top = stack.as_ptr() as u64 + stack.len() as u64;
+            stack_top & !0xF // 16-byte alignment
+        })
+    }
+}
 
 const STACK_SIZE: usize = 64 * 1024; // 64KB per thread
 
@@ -59,33 +135,87 @@ pub enum ThreadState {
     Terminated,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum ThreadType {
+    Kernel,
+    User,
+}
+
+/// Thread execution context - no owned memory, only execution state
 pub struct Thread {
     pub id: usize,
-    pub context: ThreadContext,
-    pub state: ThreadState,
-    pub stack: Box<[u8]>,
-    pub kernel_thread: bool, // true = kernel thread, false = user thread (future)
+    pub process_id: usize,              // Which process owns this thread
+    pub thread_type: ThreadType,        // Kernel or User thread
+    pub context: ThreadContext,         // Execution context for context switching
+    pub state: ThreadState,             // Current thread state
+    pub kernel_entry_point: Option<fn()>,   // For kernel threads
+    pub user_entry_point: Option<extern "C" fn() -> !>, // For user threads
 }
 
 impl Thread {
-    /// Create a new thread with the given entry point
-    pub fn new(id: usize, entry_point: fn()) -> Self {
-        // Allocate stack
-        let stack = vec![0u8; STACK_SIZE].into_boxed_slice();
-        let stack_top = stack.as_ptr() as u64 + STACK_SIZE as u64;
-
-        // Align stack to 16 bytes (ARM64 ABI requirement)
-        let stack_top = stack_top & !0xF;
-
-        // Initialize context
-        let context = ThreadContext::new(entry_point, stack_top);
-
+    /// Create a new kernel thread
+    pub fn new_kernel(id: usize, process_id: usize, entry_point: fn(), stack_top: u64) -> Self {
         Thread {
             id,
-            context,
+            process_id,
+            thread_type: ThreadType::Kernel,
+            context: ThreadContext::new_kernel(entry_point, stack_top),
             state: ThreadState::Ready,
-            stack,
-            kernel_thread: true,
+            kernel_entry_point: Some(entry_point),
+            user_entry_point: None,
+        }
+    }
+
+    /// Create a new user thread
+    pub fn new_user(id: usize, process_id: usize, entry_point: extern "C" fn() -> !, kernel_stack_top: u64) -> Self {
+        Thread {
+            id,
+            process_id,
+            thread_type: ThreadType::User,
+            context: ThreadContext::new_user(entry_point, kernel_stack_top),
+            state: ThreadState::Ready,
+            kernel_entry_point: None,
+            user_entry_point: Some(entry_point),
+        }
+    }
+}
+
+impl ThreadContext {
+    /// Create a new context for a kernel thread entry point
+    pub fn new_kernel(entry_point: fn(), stack_top: u64) -> Self {
+        ThreadContext {
+            x19: 0,
+            x20: 0,
+            x21: 0,
+            x22: 0,
+            x23: 0,
+            x24: 0,
+            x25: 0,
+            x26: 0,
+            x27: 0,
+            x28: 0,
+            x29: 0,
+            x30: entry_point as u64, // Thread starts here
+            sp: stack_top,
+        }
+    }
+
+    /// Create a new context for a user thread entry point
+    pub fn new_user(entry_point: extern "C" fn() -> !, kernel_stack_top: u64) -> Self {
+        ThreadContext {
+            x19: 0,
+            x20: 0,
+            x21: 0,
+            x22: 0,
+            x23: 0,
+            x24: 0,
+            x25: 0,
+            x26: 0,
+            x27: 0,
+            x28: 0,
+            x29: 0,
+            x30: entry_point as u64, // Entry point for user program
+            sp: kernel_stack_top, // Use kernel stack initially
         }
     }
 }
@@ -176,13 +306,17 @@ pub fn yield_now() {
 
 /// Exit current thread
 pub fn exit() -> ! {
-    // Mark thread as terminated and get next switch
+    // Mark thread and its process as terminated, then get next switch
     let switch_info = {
         let mut sched = SCHEDULER.lock();
         if let Some(id) = sched.current_thread {
             if let Some(thread) = sched.threads.iter_mut().find(|t| t.id == id) {
                 thread.state = ThreadState::Terminated;
                 crate::kernel::uart_write_string(&alloc::format!("Thread {} exited\r\n", id));
+
+                // Also terminate the associated process
+                let process_id = thread.process_id;
+                terminate_process(process_id);
             }
         }
         sched.schedule()
@@ -202,5 +336,129 @@ pub fn exit() -> ! {
     // Should never reach here
     loop {
         unsafe { asm!("wfi") }
+    }
+}
+
+/// Process Manager - handles creation and management of processes
+/// ProcessManager owns processes, scheduler owns threads
+pub struct ProcessManager {
+    processes: alloc::vec::Vec<Process>,
+    next_process_id: usize,
+}
+
+impl ProcessManager {
+    pub fn new() -> Self {
+        ProcessManager {
+            processes: alloc::vec::Vec::new(),
+            next_process_id: 0,
+        }
+    }
+
+    /// Create a new kernel process
+    pub fn create_kernel_process(&mut self) -> usize {
+        let process_id = self.next_process_id;
+        self.next_process_id += 1;
+
+        let process = Process::new_kernel(process_id);
+        self.processes.push(process);
+
+        crate::kernel::uart_write_string(&alloc::format!("[PROCESS] Created kernel process {}\r\n", process_id));
+        process_id
+    }
+
+    /// Create a new user process
+    pub fn create_user_process(&mut self) -> usize {
+        let process_id = self.next_process_id;
+        self.next_process_id += 1;
+
+        let process = Process::new_user(process_id);
+        self.processes.push(process);
+
+        crate::kernel::uart_write_string(&alloc::format!("[PROCESS] Created user process {}\r\n", process_id));
+        process_id
+    }
+
+    /// Get a mutable reference to a process
+    pub fn get_process_mut(&mut self, id: usize) -> Option<&mut Process> {
+        self.processes.iter_mut().find(|p| p.id == id)
+    }
+
+    /// Mark a process as terminated
+    pub fn terminate_process(&mut self, id: usize) {
+        if let Some(process) = self.get_process_mut(id) {
+            process.state = ProcessState::Terminated;
+            crate::kernel::uart_write_string(&alloc::format!("[PROCESS] Process {} terminated\r\n", id));
+        }
+    }
+
+    /// Set the main thread ID for a process
+    pub fn set_process_main_thread(&mut self, process_id: usize, thread_id: usize) {
+        if let Some(process) = self.get_process_mut(process_id) {
+            process.main_thread_id = Some(thread_id);
+            process.state = ProcessState::Ready;
+            crate::kernel::uart_write_string(&alloc::format!("[PROCESS] Process {} main thread set to {}\r\n", process_id, thread_id));
+        }
+    }
+}
+
+// Global process manager
+static mut PROCESS_MANAGER: Option<ProcessManager> = None;
+
+/// Initialize the process manager
+pub fn init_process_manager() {
+    unsafe {
+        PROCESS_MANAGER = Some(ProcessManager::new());
+    }
+    crate::kernel::uart_write_string("[PROCESS] Process manager initialized\r\n");
+}
+
+/// Create a user process and return its ID
+pub fn create_user_process() -> usize {
+    unsafe {
+        if let Some(ref mut pm) = PROCESS_MANAGER {
+            pm.create_user_process()
+        } else {
+            0 // Error case
+        }
+    }
+}
+
+/// Create a kernel process and return its ID
+pub fn create_kernel_process() -> usize {
+    unsafe {
+        if let Some(ref mut pm) = PROCESS_MANAGER {
+            pm.create_kernel_process()
+        } else {
+            0 // Error case
+        }
+    }
+}
+
+/// Get a mutable reference to a process
+pub fn get_process_mut(id: usize) -> Option<&'static mut Process> {
+    unsafe {
+        if let Some(ref mut pm) = PROCESS_MANAGER {
+            pm.get_process_mut(id)
+        } else {
+            None
+        }
+    }
+}
+
+/// Set the main thread for a process
+pub fn set_process_main_thread(process_id: usize, thread_id: usize) {
+    unsafe {
+        if let Some(ref mut pm) = PROCESS_MANAGER {
+            pm.set_process_main_thread(process_id, thread_id);
+        }
+    }
+}
+
+/// Terminate a process
+pub fn terminate_process(id: usize) {
+    unsafe {
+        if let Some(ref mut pm) = PROCESS_MANAGER {
+            pm.terminate_process(id);
+        }
     }
 }

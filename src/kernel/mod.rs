@@ -378,6 +378,10 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Set up timer
     interrupts::init_timer();
     uart_write_string("Timer: OK\r\n");
+
+    // Initialize process management system
+    thread::init_process_manager();
+    uart_write_string("Process management: OK\r\n");
     
     // Skip EHCI USB for now - focus on VirtIO input
     uart_write_string("Skipping EHCI USB (hangs on QEMU)...\r\n");
