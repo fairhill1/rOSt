@@ -23,6 +23,8 @@ extern "C" {
 }
 
 /// Saved register context for syscalls (must match assembly layout)
+/// CRITICAL: Assembly stores x30 at offset 240, then has 8-byte gap, then elr/spsr at 256
+/// This padding ensures the struct matches the assembly's 272-byte layout
 #[repr(C)]
 pub struct ExceptionContext {
     // General purpose registers X0-X30
@@ -34,6 +36,8 @@ pub struct ExceptionContext {
     pub x20: u64, pub x21: u64, pub x22: u64, pub x23: u64,
     pub x24: u64, pub x25: u64, pub x26: u64, pub x27: u64,
     pub x28: u64, pub x29: u64, pub x30: u64,
+    // PADDING: Assembly has 8-byte gap after x30 before elr_el1
+    pub _padding: u64,
     // Exception link register and saved program status register
     pub elr_el1: u64,
     pub spsr_el1: u64,
@@ -70,9 +74,37 @@ extern "C" fn handle_el0_syscall_rust(ctx: *mut ExceptionContext) {
     let ec = (esr >> 26) & 0x3F;
 
     if ec != 0x15 {
-        // Not a syscall, some other synchronous exception
+        // Not a syscall, some other synchronous exception - print full fault details
         crate::kernel::uart_write_string("[EXCEPTION] EL0 sync exception (not SVC)\r\n");
-        return;
+
+        // Read fault status registers
+        let esr = ESR_EL1.get();
+        let elr = ELR_EL1.get();
+        let far = FAR_EL1.get();
+
+        // Print ESR_EL1 (Exception Syndrome Register)
+        crate::kernel::uart_write_string("[FAULT] ESR_EL1: 0x");
+        print_hex_simple(esr);
+        crate::kernel::uart_write_string("\r\n");
+
+        // Print EC (Exception Class) and ISS (Instruction Specific Syndrome)
+        let ec = (esr >> 26) & 0x3F;
+        let iss = esr & 0xFFFFFF;
+        crate::kernel::uart_write_string(&alloc::format!("[FAULT] EC=0x{:02x}, ISS=0x{:06x}\r\n", ec, iss));
+
+        // Print ELR_EL1 (Exception Link Register - faulting address)
+        crate::kernel::uart_write_string("[FAULT] ELR_EL1 (fault address): 0x");
+        print_hex_simple(elr);
+        crate::kernel::uart_write_string("\r\n");
+
+        // Print FAR_EL1 (Fault Address Register - if applicable)
+        crate::kernel::uart_write_string("[FAULT] FAR_EL1: 0x");
+        print_hex_simple(far);
+        crate::kernel::uart_write_string("\r\n");
+
+        // Hang the system so we can read the debug output
+        crate::kernel::uart_write_string("[FAULT] Halting system for debugging\r\n");
+        loop { aarch64_cpu::asm::wfe(); }
     }
 
     // Extract syscall number (X8) and arguments (X0-X6)
@@ -87,28 +119,30 @@ extern "C" fn handle_el0_syscall_rust(ctx: *mut ExceptionContext) {
     // Check if this is an exit syscall (special sentinel value)
     const EXIT_SENTINEL: u64 = 0xDEADBEEF_DEADBEEF;
     if result as u64 == EXIT_SENTINEL {
-        // User program called exit() - don't return to EL0
-        // Instead, switch back to kernel MMU and terminate
-        crate::kernel::uart_write_string("[KERNEL] Switching back to kernel MMU context\r\n");
+        // User program called exit() - terminate thread and switch to next thread
+        crate::kernel::uart_write_string("[KERNEL] User program exiting, terminating thread\r\n");
 
-        // Restore original kernel MMU context
+        // Restore original kernel MMU context before switching threads
         crate::kernel::memory::restore_kernel_mmu_context();
 
-        crate::kernel::uart_write_string("[KERNEL] User program completed successfully\r\n");
-        crate::kernel::uart_write_string("[KERNEL] Returning to shell context\r\n");
+        crate::kernel::uart_write_string("[KERNEL] Terminating thread and switching to next\r\n");
 
-        // Set up context to return to shell
-        // Since we're in an exception handler, we need to modify ELR_EL1 to point to shell return code
-        unsafe {
-            use aarch64_cpu::registers::*;
+        // Terminate current thread and get next thread's context
+        // CRITICAL: This must be done outside the scheduler lock to avoid deadlock
+        let next_context = {
+            let mut scheduler = crate::kernel::scheduler::SCHEDULER.lock();
+            scheduler.terminate_current_and_yield()
+        };
 
-            // Point ELR_EL1 to a shell return function
-            // This requires implementing a shell return stub
-            crate::kernel::uart_write_string("[KERNEL] Setting up shell return...\r\n");
-
-            // For now, we still can't easily return to shell context from here
-            // This would require significant refactoring of the syscall architecture
-            // The proper solution is to make start_user_process returnable
+        // If we have a next thread, jump to it (never returns)
+        if let Some(ctx) = next_context {
+            crate::kernel::uart_write_string("[KERNEL] Jumping to next thread...\r\n");
+            unsafe {
+                crate::kernel::thread::jump_to_thread(ctx);
+            }
+        } else {
+            // No more threads to run
+            crate::kernel::uart_write_string("[KERNEL] No more threads, halting\r\n");
             loop {
                 aarch64_cpu::asm::wfe();
             }

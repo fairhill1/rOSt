@@ -759,6 +759,11 @@ impl Shell {
         self.write_output("The user process will run in the background.\r\n");
         self.write_output("The OS will switch between this shell and the user program.\r\n");
 
+        // Trigger scheduler to give the new user process a chance to run
+        crate::kernel::uart_write_string("DEBUG: Triggering cooperative scheduler to run user process...\r\n");
+        crate::kernel::thread::yield_now();
+        self.write_output("Returned from scheduler - user process may have run\r\n");
+
         // Alternative: provide the old behavior as an explicit command
         if parts.len() > 1 && parts[1] == "force" {
             self.write_output("\r\nForce-running user program in current context (shell will hang)...\r\n");

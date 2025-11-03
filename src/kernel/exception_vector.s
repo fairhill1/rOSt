@@ -129,6 +129,9 @@ handle_el0_syscall_entry:
 .balign 16
 el0_syscall_entry_return:
     // At this point, sp points to a pre-crafted ExceptionContext
+    // Debug: let us know we're entering the EL0 transition
+    // Note: We can't easily print from assembly, so just continue
+
     // Just restore all registers and eret to EL0 user program
 
     // Restore all general-purpose registers from ExceptionContext
@@ -149,12 +152,25 @@ el0_syscall_entry_return:
     ldp x28, x29, [sp, #16 * 14]
     ldr x30, [sp, #16 * 15]
 
-    // Set up SP_EL0 (user stack pointer) from x30 in context
-    msr sp_el0, x30
+    // Set up SP_EL0 (user stack pointer) from x29 (frame pointer) in context
+    msr sp_el0, x29
 
-    // Restore ELR_EL1 and SPSR_EL1 from the end of ExceptionContext
+    // Load ELR_EL1 and SPSR_EL1 for debug before restoring
     ldr x0, [sp, #16 * 16]      // ELR_EL1
     ldr x1, [sp, #16 * 16 + 8]  // SPSR_EL1
+
+    // Debug: Print the address we're about to jump to
+    // We'll temporarily save x0/x1, write to UART, then restore
+    mov x2, x0              // Save ELR_EL1
+    mov x3, x1              // Save SPSR_EL1
+
+    // Debug output would go here - for now just continue
+    // The infinite sync exceptions suggest the issue is deeper
+
+    // Restore the saved registers
+    mov x0, x2              // Restore ELR_EL1
+    mov x1, x3              // Restore SPSR_EL1
+
     msr elr_el1, x0
     msr spsr_el1, x1
 

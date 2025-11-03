@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use spin::Mutex;
-use crate::kernel::thread::{Thread, ThreadState, context_switch, jump_to_thread, Process, get_process_mut, set_process_main_thread};
+use crate::kernel::thread::{Thread, ThreadState, context_switch, jump_to_thread, Process, set_process_main_thread};
 
 pub struct Scheduler {
     pub threads: Vec<Box<Thread>>,
@@ -33,22 +33,19 @@ impl Scheduler {
 
     /// Spawn a new kernel thread (creates a kernel process automatically)
     pub fn spawn(&mut self, entry_point: fn()) -> usize {
-        use crate::kernel::thread::{create_kernel_process, get_process_mut};
+        use crate::kernel::thread::{create_kernel_process, set_process_main_thread};
 
         let process_id = create_kernel_process();
         let thread_id = self.next_thread_id;
         self.next_thread_id += 1;
 
-        // Get the process to extract stack information
-        if let Some(process) = get_process_mut(process_id) {
-            let stack_top = process.get_kernel_stack_top();
-
+        // Get the process stack information using the safe API
+        if let Some((stack_top, _)) = crate::kernel::thread::get_process_stack_info(process_id) {
             // Create the thread with proper references to process memory
             let thread = Box::new(Thread::new_kernel(thread_id, process_id, entry_point, stack_top));
 
-            // Link process and thread
-            process.main_thread_id = Some(thread_id);
-            process.state = crate::kernel::thread::ProcessState::Ready;
+            // Link process and thread using safe API
+            set_process_main_thread(process_id, thread_id);
 
             self.threads.push(thread);
             self.ready_queue.push_back(thread_id);
@@ -63,22 +60,21 @@ impl Scheduler {
 
     /// Spawn a new user process and add its main thread to the scheduler
     pub fn spawn_user_process(&mut self, entry_point: extern "C" fn() -> !) -> usize {
-        use crate::kernel::thread::{create_user_process, get_process_mut};
+        use crate::kernel::thread::{create_user_process, set_process_main_thread};
 
         let process_id = create_user_process();
         let thread_id = self.next_thread_id;
         self.next_thread_id += 1;
 
-        // Get the process to extract stack information
-        if let Some(process) = get_process_mut(process_id) {
-            let kernel_stack_top = process.get_kernel_stack_top();
-            let user_stack_top = process.get_user_stack_top().unwrap_or(0);
+        // Get the process stack information using the safe API
+        if let Some((kernel_stack_top, user_stack_opt)) = crate::kernel::thread::get_process_stack_info(process_id) {
+            let user_stack_top = user_stack_opt.unwrap_or(0);
 
-            // Create the thread with proper references to process memory
-            let mut thread = Box::new(Thread::new_user(thread_id, process_id, entry_point, kernel_stack_top));
+            // Create the thread with both kernel and user stacks (no duplicate initialization!)
+            let thread = Box::new(Thread::new_user(thread_id, process_id, entry_point, kernel_stack_top, user_stack_top));
 
-            // Set up the user stack top in the thread's ExceptionContext
-            thread.context = crate::kernel::thread::ThreadContext::new_user(entry_point, kernel_stack_top, user_stack_top);
+            // Debug: get LR before moving the thread
+            let debug_lr = thread.context.x30;
 
             // Link process and thread using safe function
             set_process_main_thread(process_id, thread_id);
@@ -87,6 +83,12 @@ impl Scheduler {
             self.ready_queue.push_back(thread_id);
 
             crate::kernel::uart_write_string(&alloc::format!("Spawned user process {} as thread {}\r\n", process_id, thread_id));
+            crate::kernel::uart_write_string(&alloc::format!("DEBUG: Thread {} LR (x30) = 0x{:x}\r\n", thread_id, debug_lr));
+
+            // Note: User process created but not automatically started
+            // This avoids the recursive scheduling issue that was causing hangs
+            crate::kernel::uart_write_string("DEBUG: User process ready, will run on next scheduler cycle\r\n");
+
             process_id
         } else {
             crate::kernel::uart_write_string("[SCHEDULER] Failed to get process for user thread\r\n");
@@ -118,6 +120,49 @@ impl Scheduler {
 
         // Schedule next thread and return pointers for context switch
         self.schedule()
+    }
+
+    /// Terminate current thread and yield to next thread
+    /// Used when a thread exits - doesn't save current thread context
+    /// Returns the next thread's context to switch to (without saving current)
+    pub fn terminate_current_and_yield(&mut self) -> Option<*const crate::kernel::thread::ThreadContext> {
+        if let Some(current_id) = self.current_thread {
+            // Mark current thread as terminated (don't add back to ready queue)
+            if let Some(thread) = self.threads.iter_mut().find(|t| t.id == current_id) {
+                thread.state = ThreadState::Terminated;
+                crate::kernel::uart_write_string(&alloc::format!(
+                    "[SCHEDULER] Thread {} terminated\r\n", current_id
+                ));
+            }
+            self.current_thread = None;
+        }
+
+        // Pick next thread to run
+        let next_id = match self.pick_next() {
+            Some(id) => id,
+            None => {
+                // No threads ready - check if we have a kernel context to return to
+                if let Some(kernel_ctx) = self.kernel_context {
+                    crate::kernel::uart_write_string("[SCHEDULER] No more threads, returning to kernel context (shell)\r\n");
+                    return Some(kernel_ctx as *const _);
+                }
+
+                crate::kernel::uart_write_string("[SCHEDULER] No more threads and no kernel context\r\n");
+                return None;
+            }
+        };
+
+        // Get next thread and mark it as running
+        let next_thread = self.threads.iter_mut().find(|t| t.id == next_id)?;
+        next_thread.state = ThreadState::Running;
+        self.current_thread = Some(next_id);
+
+        crate::kernel::uart_write_string(&alloc::format!(
+            "[SCHEDULER] Switching to thread {} (without saving current)\r\n", next_id
+        ));
+
+        // Return pointer to next thread's context (no old context to save)
+        Some(&next_thread.context as *const _)
     }
 
     /// Preempt current thread (called by timer interrupt)
@@ -202,6 +247,9 @@ impl Scheduler {
         let next_ptr = &next_thread.context as *const _;
 
         self.current_thread = Some(next_id);
+
+        // Debug: Print thread switch info
+        crate::kernel::uart_write_string(&alloc::format!("DEBUG: Switching to thread {} (LR=0x{:x})\r\n", next_id, next_thread.context.x30));
 
         // Return pointers for context switch (to be done outside lock)
         let is_first_switch = current_ptr.is_none();

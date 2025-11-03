@@ -47,6 +47,10 @@ static mut CURSOR_Y: u32 = 0;
 static mut SCREEN_WIDTH: u32 = 0;
 static mut SCREEN_HEIGHT: u32 = 0;
 
+// Boot info and framebuffer for kernel_init_high_half
+static mut BOOT_INFO: Option<&'static BootInfo> = None;
+static mut GPU_FRAMEBUFFER_INFO: Option<crate::gui::framebuffer::FramebufferInfo> = None;
+
 // Basic UART output for debugging
 pub fn uart_write_string(s: &str) {
     const UART_BASE: u64 = 0x09000000; // QEMU ARM virt machine UART address
@@ -122,6 +126,11 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // First thing - prove we made it to the kernel!
     uart_write_string("KERNEL STARTED! ExitBootServices SUCCESS!\r\n");
     uart_write_string("Initializing Rust OS kernel...\r\n");
+
+    // Store boot_info globally for kernel_init_high_half
+    unsafe {
+        BOOT_INFO = Some(boot_info);
+    }
     
     // Initialize physical memory manager FIRST - VirtIO-GPU needs it for allocation
     uart_write_string("Initializing physical memory...\r\n");
@@ -196,17 +205,19 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                                 uart_write_string("\r\n");
 
                                 if fb_addr != 0 {
-                                    gpu_framebuffer_info = Some(crate::gui::framebuffer::FramebufferInfo {
+                                    let fb_info = crate::gui::framebuffer::FramebufferInfo {
                                         base_address: fb_addr,
                                         size: (height * stride) as usize,
                                         width,
                                         height,
                                         pixels_per_scanline: stride / 4,
                                         pixel_format: crate::gui::framebuffer::PixelFormat::Rgb,
-                                    });
+                                    };
+                                    gpu_framebuffer_info = Some(fb_info);
 
-                                    // Store GPU driver and screen info for mouse handling
+                                    // Store GPU driver, framebuffer, and screen info globally
                                     unsafe {
+                                        GPU_FRAMEBUFFER_INFO = Some(fb_info);
                                         SCREEN_WIDTH = width;
                                         SCREEN_HEIGHT = height;
                                         CURSOR_X = width / 2;
@@ -366,11 +377,28 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // Set up exception vectors for ARM64
     interrupts::init_exception_vectors();
     uart_write_string("Exception vectors: OK\r\n");
-    
+
     // Initialize virtual memory (page tables)
+    // NOTE: This function never returns! It jumps to the high-half kernel
+    // The rest of initialization continues in kernel_init_high_half()
     memory::init_virtual_memory();
+
+    // UNREACHABLE - kernel execution continues in kernel_init_high_half()
+    unreachable!("init_virtual_memory() should never return!");
+}
+
+/// Kernel initialization continuation after higher-half transition
+/// This function is called from the high-half (0xFFFF...) after the MMU transition
+#[no_mangle]
+pub extern "C" fn kernel_init_high_half() -> ! {
     uart_write_string("Virtual memory: OK\r\n");
-    
+    uart_write_string("[KERNEL] Now running in higher-half (0xFFFF...)\r\n");
+
+    // Retrieve boot_info and framebuffer info from globals
+    let boot_info = unsafe { BOOT_INFO.expect("BOOT_INFO not set") };
+    let gpu_framebuffer_info = unsafe { GPU_FRAMEBUFFER_INFO };
+    let fb_info = gpu_framebuffer_info.as_ref().unwrap_or(&boot_info.framebuffer);
+
     // Initialize interrupt controller (GIC)
     interrupts::init_gic();
     uart_write_string("GIC interrupt controller: OK\r\n");

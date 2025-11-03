@@ -1,5 +1,22 @@
 // Memory management for the kernel
 
+use core::arch::global_asm;
+
+global_asm!(include_str!("trampoline.s"));
+
+extern "C" {
+    pub fn kernel_trampoline_to_high_half_with_tcr(page_table_addr: u64, new_tcr: u64);
+}
+
+#[no_mangle]
+pub extern "C" fn kernel_high_half_cleanup() {
+    crate::kernel::uart_write_string("[MMU] In high-half, cleaning up identity map...\r\n");
+    // TODO: Implement the actual cleanup
+
+    // Continue with kernel initialization in the high half.
+    crate::kernel::kernel_init_high_half();
+}
+
 /// UEFI Memory Descriptor
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -208,14 +225,48 @@ impl PageTableEntry {
     }
 }
 
+// TCR_EL1 (Translation Control Register) bit field constants
+// Used for configuring TTBR0/TTBR1 address translation
+mod tcr_el1 {
+    // T1SZ field (bits 21:16) - controls TTBR1 address space size
+    pub const T1SZ_MASK: u64 = 0x3F << 16;
+    pub const T1SZ_16: u64 = 16 << 16;  // 48-bit VA (2^(64-16) = 256TB)
+
+    // EPD (Enable Page walks Disable) bits
+    pub const EPD0_BIT: u64 = 1 << 7;   // EPD0: Disable TTBR0 page walks if set
+    pub const EPD1_BIT: u64 = 1 << 23;  // EPD1: Disable TTBR1 page walks if set
+    pub const EPD0_ENABLE: u64 = 0 << 7;   // Keep TTBR0 page walks enabled
+    pub const EPD1_ENABLE: u64 = 0 << 23;  // Keep TTBR1 page walks enabled
+
+    // TG1 (Translation Granule for TTBR1) - bits 31:30
+    pub const TG1_4KB: u64 = 0x2 << 30;  // 4KB granule size
+
+    // SH1 (Shareability for TTBR1) - bits 29:28
+    pub const SH1_INNER_SHAREABLE: u64 = 0x3 << 28;
+
+    // ORGN1 (Outer cacheability for TTBR1) - bits 27:26
+    pub const ORGN1_WRITE_BACK: u64 = 0x1 << 26;  // Write-Back Write-Allocate
+
+    // IRGN1 (Inner cacheability for TTBR1) - bits 25:24
+    pub const IRGN1_WRITE_BACK: u64 = 0x1 << 24;  // Write-Back Write-Allocate
+}
+
 // Global page tables (must be 4KB aligned)
 static mut KERNEL_L0_TABLE: PageTable = PageTable::new();
 static mut KERNEL_L1_TABLE: PageTable = PageTable::new();
+static mut KERNEL_L2_TABLE_0: PageTable = PageTable::new(); // L2 for 0-1GB
+static mut KERNEL_L2_TABLE_1: PageTable = PageTable::new(); // L2 for 1-2GB
+static mut KERNEL_L2_TABLE_2: PageTable = PageTable::new(); // L2 for 2-3GB
+static mut KERNEL_L2_TABLE_3: PageTable = PageTable::new(); // L2 for 3-4GB
 static mut USER_L0_TABLE: PageTable = PageTable::new();
 static mut USER_L1_TABLE: PageTable = PageTable::new();
 
 /// Memory region for mapping
-const KERNEL_BASE: u64 = 0xFFFF_0000_0000_0000; // High half for kernel
+/// KERNEL_BASE must have L0 index 510 (bits [47:39] = 0x1FE) for TTBR1
+/// L0 index 510 = 0x1FE = 0b1_1111_1110
+/// When placed at bits [47:39]: bit 39 = 0, bits [40:47] = 0xFF
+/// This gives bits [47:32] = 0xFF00, so address = 0xFFFF_FF00_0000_0000 (canonical form)
+const KERNEL_BASE: u64 = 0xFFFF_FF00_0000_0000; // High half for kernel (L0 index 510)
 const USER_BASE: u64 = 0x0000_0000_0000_0000;   // Low half for user
 
 /// Initialize virtual memory with TTBR0/TTBR1 separation
@@ -263,7 +314,55 @@ pub fn init_virtual_memory() {
         setup_mmu_page_tables();
 
         crate::kernel::uart_write_string("[MMU] Memory protection is PREPARED\r\n");
-        crate::kernel::uart_write_string("[MMU] Switch will happen immediately when entering EL0\r\n");
+        crate::kernel::uart_write_string("[MMU] Preparing TCR_EL1 configuration...\r\n");
+
+        // Prepare TCR_EL1 value to enable TTBR1 for high addresses
+        // CRITICAL: We must KEEP T0SZ unchanged! UEFI's TTBR0 page tables were built for the current T0SZ
+        let current_tcr = TCR_EL1.get();
+
+        // Clear only T1SZ[21:16] field, keep T0SZ unchanged
+        let tcr_cleared = current_tcr & !tcr_el1::T1SZ_MASK;
+
+        // Clear EPD0 and EPD1 bits to ensure both TTBR0 and TTBR1 page walks are enabled
+        let tcr_cleared2 = tcr_cleared & !(tcr_el1::EPD0_BIT | tcr_el1::EPD1_BIT);
+
+        let new_tcr = tcr_cleared2
+            | tcr_el1::T1SZ_16                  // T1SZ = 16 (48-bit VA for TTBR1)
+            | tcr_el1::EPD1_ENABLE              // Enable TTBR1 page walks (CRITICAL!)
+            | tcr_el1::EPD0_ENABLE              // Keep TTBR0 page walks enabled
+            | tcr_el1::TG1_4KB                  // 4KB granule for TTBR1
+            | tcr_el1::SH1_INNER_SHAREABLE      // Inner Shareable for TTBR1
+            | tcr_el1::ORGN1_WRITE_BACK         // Write-Back Write-Allocate for TTBR1
+            | tcr_el1::IRGN1_WRITE_BACK;        // Write-Back Write-Allocate for TTBR1
+            // T0SZ and other T0 attributes remain unchanged from UEFI's setting
+
+        crate::kernel::uart_write_string("[MMU] Current TCR: 0x");
+        print_hex(current_tcr);
+        crate::kernel::uart_write_string("\r\n");
+        crate::kernel::uart_write_string("[MMU] New TCR: 0x");
+        print_hex(new_tcr);
+        crate::kernel::uart_write_string("\r\n");
+
+        // Check MAIR_EL1 (Memory Attribute Indirection Register)
+        let mair = MAIR_EL1.get();
+        crate::kernel::uart_write_string("[MMU] MAIR_EL1: 0x");
+        print_hex(mair);
+        crate::kernel::uart_write_string("\r\n");
+
+        crate::kernel::uart_write_string("[MMU] Jumping to higher-half kernel trampoline...\r\n");
+        crate::kernel::uart_write_string("[MMU] CRITICAL: TCR will be updated AFTER switching TTBR1!\r\n");
+
+        // === IMPLEMENT HIGHER-Half KERNEL TRAMPOLINE ===
+        // IMPORTANT: Pass both the page table address AND the new TCR value
+        // The assembly will switch TTBR1 FIRST, then update TCR
+        unsafe {
+            let kernel_l0_table_addr = (&KERNEL_L0_TABLE as *const PageTable) as u64;
+            kernel_trampoline_to_high_half_with_tcr(kernel_l0_table_addr, new_tcr);
+        }
+
+        // This function never returns
+        crate::kernel::uart_write_string("[MMU] ERROR: Returned from higher-half trampoline - should not happen!\r\n");
+        loop { aarch64_cpu::asm::wfe(); }
     }
 }
 
@@ -314,13 +413,15 @@ pub extern "C" fn setup_user_page_tables(user_stack_top: u64) -> (u64, u64) {
         crate::kernel::uart_write_string("[MMU] Preparing kernel high-half mapping...\r\n");
 
         // Add kernel high-half mapping to TTBR1
+        // KERNEL_BASE = 0xFFFF_0000_0000_0000, L0 index = bits[47:39] = 510
         let kernel_l1_table_addr = (&KERNEL_L1_TABLE as *const PageTable) as u64;
         let kernel_l0_entry = PageTableEntry::new_table(kernel_l1_table_addr);
-        KERNEL_L0_TABLE.entries[511] = kernel_l0_entry; // L0 index 511 gives high half
+        KERNEL_L0_TABLE.entries[510] = kernel_l0_entry; // L0 index 510 for 0xFFFF_0000_...
 
-        // Map kernel space in high half (copy first 1GB of physical memory)
+        // Map kernel space in high half using 1GB block mappings at L1 level
+        // L1 has 512 entries, each covering 1GB, so this covers 512GB of physical memory
         for i in 0..512usize {
-            let addr = (i as u64) * 0x200000; // 2MB blocks
+            let addr = (i as u64) * 0x40000000; // 1GB blocks (0x40000000 = 1GB)
             let entry = PageTableEntry::new_block(addr, false, true, true); // Kernel RW, execute
             KERNEL_L1_TABLE.entries[i] = entry;
         }
@@ -415,16 +516,109 @@ pub fn setup_mmu_page_tables() {
         crate::kernel::uart_write_string("[MMU] Setting up kernel high-half mapping...\r\n");
 
         // Add kernel high-half mapping to TTBR1
+        // KERNEL_BASE = 0xFFFF_FF00_0000_0000, L0 index = bits[47:39] = 510
         let kernel_l1_table_addr = (&KERNEL_L1_TABLE as *const PageTable) as u64;
         let kernel_l0_entry = PageTableEntry::new_table(kernel_l1_table_addr);
-        KERNEL_L0_TABLE.entries[511] = kernel_l0_entry; // L0 index 511 gives high half
+        KERNEL_L0_TABLE.entries[510] = kernel_l0_entry; // L0 index 510 for 0xFFFF_FF00_...
 
-        // Map kernel space in high half (first 1GB of physical memory)
+        // Set up L2 tables for 0-4GB using 2MB blocks
+        // L2[0]: 0-1GB
+        let l2_0_addr = (&KERNEL_L2_TABLE_0 as *const PageTable) as u64;
+        KERNEL_L1_TABLE.entries[0] = PageTableEntry::new_table(l2_0_addr);
         for i in 0..512usize {
-            let addr = (i as u64) * 0x200000; // 2MB blocks
-            let entry = PageTableEntry::new_block(addr, false, true, true); // Kernel RW, execute
-            KERNEL_L1_TABLE.entries[i] = entry;
+            let addr = (i as u64) * 0x200000;
+            KERNEL_L2_TABLE_0.entries[i] = PageTableEntry::new_block(addr, false, true, true);
         }
+
+        // L2[1]: 1-2GB (where the kernel code is!)
+        let l2_1_addr = (&KERNEL_L2_TABLE_1 as *const PageTable) as u64;
+        KERNEL_L1_TABLE.entries[1] = PageTableEntry::new_table(l2_1_addr);
+        for i in 0..512usize {
+            let addr = 0x40000000 + (i as u64) * 0x200000;
+            KERNEL_L2_TABLE_1.entries[i] = PageTableEntry::new_block(addr, false, true, true);
+        }
+
+        // L2[2]: 2-3GB
+        let l2_2_addr = (&KERNEL_L2_TABLE_2 as *const PageTable) as u64;
+        KERNEL_L1_TABLE.entries[2] = PageTableEntry::new_table(l2_2_addr);
+        for i in 0..512usize {
+            let addr = 0x80000000 + (i as u64) * 0x200000;
+            KERNEL_L2_TABLE_2.entries[i] = PageTableEntry::new_block(addr, false, true, true);
+        }
+
+        // L2[3]: 3-4GB
+        let l2_3_addr = (&KERNEL_L2_TABLE_3 as *const PageTable) as u64;
+        KERNEL_L1_TABLE.entries[3] = PageTableEntry::new_table(l2_3_addr);
+        for i in 0..512usize {
+            let addr = 0xC0000000 + (i as u64) * 0x200000;
+            KERNEL_L2_TABLE_3.entries[i] = PageTableEntry::new_block(addr, false, true, true);
+        }
+
+        crate::kernel::uart_write_string("[MMU] Mapped first 4GB using 2MB blocks (4 L2 tables)\r\n");
+
+        // Debug: Print some key page table addresses
+        crate::kernel::uart_write_string("[MMU] DEBUG: L0 table @ 0x");
+        print_hex((&KERNEL_L0_TABLE as *const PageTable) as u64);
+        crate::kernel::uart_write_string("\r\n");
+        crate::kernel::uart_write_string("[MMU] DEBUG: L1 table @ 0x");
+        print_hex((&KERNEL_L1_TABLE as *const PageTable) as u64);
+        crate::kernel::uart_write_string("\r\n");
+        crate::kernel::uart_write_string("[MMU] DEBUG: L2_1 table @ 0x");
+        print_hex((&KERNEL_L2_TABLE_1 as *const PageTable) as u64);
+        crate::kernel::uart_write_string("\r\n");
+
+        // Debug: Check L0[510] entry
+        crate::kernel::uart_write_string("[MMU] DEBUG: L0[510] = 0x");
+        print_hex(KERNEL_L0_TABLE.entries[510].0);
+        crate::kernel::uart_write_string("\r\n");
+
+        // Debug: Check L1[1] entry (should point to L2_TABLE_1)
+        crate::kernel::uart_write_string("[MMU] DEBUG: L1[1] = 0x");
+        print_hex(KERNEL_L1_TABLE.entries[1].0);
+        crate::kernel::uart_write_string("\r\n");
+
+        // CRITICAL: Clean data cache for ALL page tables
+        // Each page table is 4KB = 64 cache lines (assuming 64-byte cache lines)
+        crate::kernel::uart_write_string("[MMU] Cleaning data cache for all page tables...\r\n");
+
+        // Clean L0 table (4KB)
+        let l0_addr = &KERNEL_L0_TABLE as *const _ as usize;
+        for offset in (0..4096).step_by(64) {
+            core::arch::asm!(
+                "dc civac, {0}",
+                in(reg) l0_addr + offset,
+                options(nostack)
+            );
+        }
+
+        // Clean L1 table (4KB)
+        let l1_addr = &KERNEL_L1_TABLE as *const _ as usize;
+        for offset in (0..4096).step_by(64) {
+            core::arch::asm!(
+                "dc civac, {0}",
+                in(reg) l1_addr + offset,
+                options(nostack)
+            );
+        }
+
+        // Clean all L2 tables (4 x 4KB)
+        for l2_table in [&KERNEL_L2_TABLE_0, &KERNEL_L2_TABLE_1, &KERNEL_L2_TABLE_2, &KERNEL_L2_TABLE_3] {
+            let l2_addr = l2_table as *const _ as usize;
+            for offset in (0..4096).step_by(64) {
+                core::arch::asm!(
+                    "dc civac, {0}",
+                    in(reg) l2_addr + offset,
+                    options(nostack)
+                );
+            }
+        }
+
+        // Final barrier to ensure all cache operations complete
+        core::arch::asm!(
+            "dsb sy",
+            "isb",
+            options(nostack)
+        );
 
         crate::kernel::uart_write_string("[MMU] Setting up user space mappings...\r\n");
 

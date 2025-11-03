@@ -9,7 +9,8 @@ Production-grade ARM64 OS written in Rust. **Last Updated:** 2025-11-03
 **Filesystem:** SimpleFS (32 files, 10MB, persistent across reboots)
 **Hardware:** VirtIO GPU/Input/Block/Net, ARM Generic Timer, PL031 RTC
 **Networking:** smoltcp 0.12 stack, DNS, HTTP/1.0 client, ping, download command
-**Kernel:** Preemptive multitasking, round-robin scheduler, ARM64 context switching
+**Kernel:** Preemptive multitasking, round-robin scheduler, ARM64 context switching, EL0/EL1 privilege separation with syscalls
+**Memory:** Higher-half kernel (0xFFFF...), dual page tables (TTBR0/TTBR1), MMU-based memory protection
 **Shell:** Interactive terminal with filesystem and network commands
 
 ## Quick Start
@@ -47,7 +48,17 @@ ping <ip>, nslookup <domain>, http <url>, download <url>, ifconfig, arp
 
 ## Architecture
 
-### Memory Map
+### Virtual Memory Layout
+**TTBR0 (User space):** 0x0000_0000_0000_0000 - 0x0000_FFFF_FFFF_FFFF
+- User programs execute at EL0 with access to low-half addresses only
+- Isolated per-process page tables for memory protection
+
+**TTBR1 (Kernel space):** 0xFFFF_FF00_0000_0000 - 0xFFFF_FFFF_FFFF_FFFF
+- Kernel executes at EL1 in higher-half (L0 page table index 510)
+- Shared kernel mapping across all processes
+- Physical 0x40000000-0x1_0000_0000 mapped to virtual 0xFFFF_FF00_4000_0000+
+
+**Physical Memory Map:**
 - RAM: 0x40000000+, UART: 0x09000000, RTC: 0x09010000
 - PCI ECAM: 0x4010000000, PCI MMIO: 0x10000000, VirtIO queues: 0x50000000+
 
@@ -141,7 +152,59 @@ When you notice accumulated issues (magic numbers, duplication, unclear logic):
 
 Don't let technical debt accumulate silently.
 
+## Debugging Methodology (MANDATORY for AI Agents)
+
+**When debugging low-level code (MMU, interrupts, assembly), follow this checklist:**
+
+### 1. Verify All Assumptions First
+- **Never trust comments or variable names** - verify the actual values
+- For address calculations: Calculate both directions (index→address AND address→index)
+- Add verification math in comments: `// Verify: (0xFFFF_FF00_0000_0000 >> 39) & 0x1FF = 510 ✓`
+
+### 2. Binary Search for the Bug Layer
+When something doesn't work, verify each layer systematically:
+```
+Hardware configured? → Page tables set up? → Addresses calculated correctly? →
+Barriers in right places? → Cache coherency maintained? → Permissions correct?
+```
+Don't skip layers! Simple bugs often hide in "obvious" places.
+
+### 3. Stop After 3 Failed Attempts
+If you try 3 different fixes and none work:
+1. STOP adding complexity
+2. Go back to first principles
+3. Verify ALL assumptions from scratch
+4. Check if the symptom matches a fundamentally different root cause
+
+### 4. Add Diagnostic Output for Calculations
+Don't just print values - print the *expected* vs *actual*:
+```rust
+uart_write_string(&format!("[DEBUG] KERNEL_BASE = {:#018x}\r\n", KERNEL_BASE));
+uart_write_string(&format!("[DEBUG] → Calculated L0 index = {}\r\n", (KERNEL_BASE >> 39) & 0x1FF));
+uart_write_string(&format!("[DEBUG] → Expected L0 index = 510\r\n"));
+```
+Mismatches jump out immediately.
+
+### 5. Prefer Simple Explanations
+**Occam's Razor for kernel debugging:**
+- Wrong constant value (common) vs. obscure hardware interaction (rare)
+- Arithmetic error (common) vs. cache coherency issue (less common)
+- Missing permission bit (common) vs. ARM64 errata (very rare)
+
+Try the simple explanation first.
+
 ## Critical Gotchas
+
+**MMU/Address Arithmetic:**
+- **ALWAYS verify address calculations with explicit bit math in comments**
+- L0 page table index = bits [47:39] of virtual address (9 bits = 0-511)
+- Example: L0 index 510 = 0x1FE = 0b1_1111_1110
+  - When placed at bits [47:39]: bit 39 must be 0, bits [47:40] = 0xFF
+  - This gives 0xFFFF_FF00_0000_0000 (NOT 0xFFFF_FE80_0000_0000!)
+- **Verify both directions:** Calculate address from index, then extract index from address
+- Add compile-time assertions for critical addresses: `const _: () = assert!((ADDR >> 39) & 0x1FF == EXPECTED_INDEX);`
+- Bit 39 determines L0 index parity: 0 = even (510, 512...), 1 = odd (509, 511...)
+- TTBR0 uses low addresses (bit 55 = 0), TTBR1 uses high addresses (bit 55 = 1, canonical form = all upper bits 1)
 
 **VirtIO:**
 - 64-bit BARs need both BAR4 and BAR5 programmed
@@ -178,6 +241,8 @@ Don't let technical debt accumulate silently.
 
 ## Key Wins
 
+- **Higher-half kernel:** TTBR0/TTBR1 split with kernel at 0xFFFF_FF00_0000_0000, full MMU-based memory protection
+- **EL0/EL1 privilege separation:** User programs run at EL0 with syscall interface for kernel services
 - **Async browser:** Event-driven HTTP/image loading, stays responsive during network I/O (no blocking)
 - **Image caching & reflow:** Smart layout recalculation when dimensions change, prevents duplicate downloads
 - **Viewport clipping:** Pixel-perfect image clipping at viewport edges using signed arithmetic

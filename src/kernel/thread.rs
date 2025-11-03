@@ -167,12 +167,12 @@ impl Thread {
     }
 
     /// Create a new user thread
-    pub fn new_user(id: usize, process_id: usize, entry_point: extern "C" fn() -> !, kernel_stack_top: u64) -> Self {
+    pub fn new_user(id: usize, process_id: usize, entry_point: extern "C" fn() -> !, kernel_stack_top: u64, user_stack_top: u64) -> Self {
         Thread {
             id,
             process_id,
             thread_type: ThreadType::User,
-            context: ThreadContext::new_user(entry_point, kernel_stack_top, 0), // user_stack_top will be set later
+            context: ThreadContext::new_user(entry_point, kernel_stack_top, user_stack_top),
             state: ThreadState::Ready,
             kernel_entry_point: None,
             user_entry_point: Some(entry_point),
@@ -206,16 +206,32 @@ impl ThreadContext {
         // Allocate space for ExceptionContext on the kernel stack
         let exception_context_addr = kernel_stack_top - core::mem::size_of::<crate::kernel::interrupts::ExceptionContext>() as u64;
 
+        // CRITICAL: Convert higher-half kernel address to low-half physical address
+        // After higher-half transition, entry_point is like 0xFFFF_FF00_7C6A_5840
+        // But EL0 uses TTBR0 with identity mappings: virt 0x7C6A_5840 → phys 0x7C6A_5840
+        // So we need to strip off the KERNEL_BASE to get the physical offset
+        // KERNEL_BASE = 0xFFFF_FF00_0000_0000, so we keep only bits [39:0]
+        let entry_point_high = entry_point as u64;
+        let entry_point_low = entry_point_high & 0x0000_00FF_FFFF_FFFF; // Keep only lower 40 bits
+
+        crate::kernel::uart_write_string(&alloc::format!(
+            "[USER-THREAD] Converting entry point: 0x{:016x} → 0x{:016x}\r\n",
+            entry_point_high, entry_point_low
+        ));
+
         // Create the ExceptionContext that will transition to EL0
         let exception_context = crate::kernel::interrupts::ExceptionContext {
             // General purpose registers start as 0 for security
             x0: 0, x1: 0, x2: 0, x3: 0, x4: 0, x5: 0, x6: 0, x7: 0,
             x8: 0, x9: 0, x10: 0, x11: 0, x12: 0, x13: 0, x14: 0, x15: 0,
             x16: 0, x17: 0, x18: 0, x19: 0, x20: 0, x21: 0, x22: 0, x23: 0,
-            x24: 0, x25: 0, x26: 0, x27: 0, x28: 0, x29: 0, x30: user_stack_top, // SP_EL0 in x30
+            x24: 0, x25: 0, x26: 0, x27: 0, x28: 0, x29: user_stack_top, x30: 0, // Store user stack in x29
 
-            // ELR_EL1 = user entry point - where we'll return to in EL0
-            elr_el1: entry_point as u64,
+            // Padding to match assembly layout (8-byte gap after x30)
+            _padding: 0,
+
+            // ELR_EL1 = user entry point in low-half (TTBR0-accessible address)
+            elr_el1: entry_point_low,
 
             // SPSR_EL1 = EL0t with interrupts enabled (0x0)
             // Bits: [3:0]=0000 (EL0t), [6]=0 (FIQ enabled), [7]=0 (IRQ enabled), [8]=0 (SError enabled)
@@ -228,16 +244,19 @@ impl ThreadContext {
             context_ptr.write_volatile(exception_context);
         }
 
-        // Import the assembly function that will handle the return from exception
+              // Use the higher-half kernel trampoline approach
+        // el0_syscall_entry_return must be reachable from high-half kernel addresses
+        // CRITICAL: x30 must point to the assembly trampoline, NOT the user entry point!
+        // The trampoline will ERET to the user program using the ExceptionContext we created.
+
         extern "C" {
             fn el0_syscall_entry_return() -> !;
         }
 
         ThreadContext {
             x19: 0, x20: 0, x21: 0, x22: 0, x23: 0, x24: 0,
-            x25: 0, x26: 0, x27: 0, x28: 0, x29: 0,
-            // Point to the assembly function that will restore the ExceptionContext and eret
-            x30: el0_syscall_entry_return as u64,
+            x25: 0, x26: 0, x27: 0, x28: 0, x29: user_stack_top, // User stack in x29
+            x30: el0_syscall_entry_return as u64, // Point to assembly trampoline (higher-half kernel code)
             sp: exception_context_addr, // Point to the ExceptionContext we just created
         }
     }
@@ -307,21 +326,43 @@ pub fn spawn(entry_point: fn()) -> usize {
     SCHEDULER.lock().spawn(entry_point)
 }
 
+/// Static context for kernel/shell when yielding from non-thread context
+static mut KERNEL_YIELD_CONTEXT: ThreadContext = ThreadContext {
+    x19: 0, x20: 0, x21: 0, x22: 0, x23: 0, x24: 0,
+    x25: 0, x26: 0, x27: 0, x28: 0, x29: 0, x30: 0, sp: 0,
+};
+
 /// Yield CPU to another thread (cooperative scheduling)
 pub fn yield_now() {
     // Get context switch info while holding the lock
     let switch_info = {
         let mut sched = SCHEDULER.lock();
+
+        // If we're not in a thread context (i.e., shell/kernel), set up kernel context
+        if sched.current_thread.is_none() {
+            unsafe {
+                sched.set_kernel_context(&mut KERNEL_YIELD_CONTEXT as *mut _);
+            }
+        }
+
         sched.yield_now()
     }; // Lock is dropped here!
 
     // Now perform context switch outside the lock
     if let Some((current_ptr, next_ptr, is_first)) = switch_info {
         unsafe {
-            if is_first {
-                jump_to_thread(next_ptr);
+            // If current_ptr is null, use our kernel context
+            let actual_current_ptr = if current_ptr.is_null() {
+                &mut KERNEL_YIELD_CONTEXT as *mut _
             } else {
-                context_switch(current_ptr, next_ptr);
+                current_ptr
+            };
+
+            if is_first {
+                // First time running this thread - jump to it (saves our context first)
+                context_switch(actual_current_ptr, next_ptr);
+            } else {
+                context_switch(actual_current_ptr, next_ptr);
             }
         }
     }
@@ -424,64 +465,61 @@ impl ProcessManager {
     }
 }
 
-// Global process manager
-static mut PROCESS_MANAGER: Option<ProcessManager> = None;
+// Global process manager (protected by mutex for memory safety)
+use spin::Mutex;
+static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
 
 /// Initialize the process manager
 pub fn init_process_manager() {
-    unsafe {
-        PROCESS_MANAGER = Some(ProcessManager::new());
-    }
+    *PROCESS_MANAGER.lock() = Some(ProcessManager::new());
     crate::kernel::uart_write_string("[PROCESS] Process manager initialized\r\n");
 }
 
 /// Create a user process and return its ID
 pub fn create_user_process() -> usize {
-    unsafe {
-        if let Some(ref mut pm) = PROCESS_MANAGER {
-            pm.create_user_process()
-        } else {
-            0 // Error case
-        }
-    }
+    PROCESS_MANAGER.lock()
+        .as_mut()
+        .map(|pm| pm.create_user_process())
+        .unwrap_or(0)
 }
 
 /// Create a kernel process and return its ID
 pub fn create_kernel_process() -> usize {
-    unsafe {
-        if let Some(ref mut pm) = PROCESS_MANAGER {
-            pm.create_kernel_process()
-        } else {
-            0 // Error case
-        }
-    }
+    PROCESS_MANAGER.lock()
+        .as_mut()
+        .map(|pm| pm.create_kernel_process())
+        .unwrap_or(0)
 }
 
-/// Get a mutable reference to a process
-pub fn get_process_mut(id: usize) -> Option<&'static mut Process> {
-    unsafe {
-        if let Some(ref mut pm) = PROCESS_MANAGER {
-            pm.get_process_mut(id)
-        } else {
-            None
-        }
-    }
+/// Get process stack information (safe - returns owned data)
+pub fn get_process_stack_info(id: usize) -> Option<(u64, Option<u64>)> {
+    PROCESS_MANAGER.lock()
+        .as_ref()
+        .and_then(|pm| pm.processes.iter().find(|p| p.id == id))
+        .map(|p| (p.get_kernel_stack_top(), p.get_user_stack_top()))
+}
+
+/// Execute a closure with mutable access to a process (safe - no aliasing)
+pub fn with_process_mut<F, R>(id: usize, f: F) -> Option<R>
+where
+    F: FnOnce(&mut Process) -> R,
+{
+    PROCESS_MANAGER.lock()
+        .as_mut()
+        .and_then(|pm| pm.get_process_mut(id))
+        .map(f)
 }
 
 /// Set the main thread for a process
 pub fn set_process_main_thread(process_id: usize, thread_id: usize) {
-    unsafe {
-        if let Some(ref mut pm) = PROCESS_MANAGER {
-            pm.set_process_main_thread(process_id, thread_id);
-        }
+    if let Some(pm) = PROCESS_MANAGER.lock().as_mut() {
+        pm.set_process_main_thread(process_id, thread_id);
     }
 }
 
 /// Terminate a process
 pub fn terminate_process(id: usize) {
-    unsafe {
-        if let Some(ref mut pm) = PROCESS_MANAGER {
-            pm.terminate_process(id);
-        }
+    if let Some(pm) = PROCESS_MANAGER.lock().as_mut() {
+        pm.terminate_process(id);
     }
 }
