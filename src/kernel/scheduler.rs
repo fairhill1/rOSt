@@ -72,9 +72,13 @@ impl Scheduler {
         // Get the process to extract stack information
         if let Some(process) = get_process_mut(process_id) {
             let kernel_stack_top = process.get_kernel_stack_top();
+            let user_stack_top = process.get_user_stack_top().unwrap_or(0);
 
             // Create the thread with proper references to process memory
-            let thread = Box::new(Thread::new_user(thread_id, process_id, entry_point, kernel_stack_top));
+            let mut thread = Box::new(Thread::new_user(thread_id, process_id, entry_point, kernel_stack_top));
+
+            // Set up the user stack top in the thread's ExceptionContext
+            thread.context = crate::kernel::thread::ThreadContext::new_user(entry_point, kernel_stack_top, user_stack_top);
 
             // Link process and thread using safe function
             set_process_main_thread(process_id, thread_id);

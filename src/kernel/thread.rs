@@ -172,7 +172,7 @@ impl Thread {
             id,
             process_id,
             thread_type: ThreadType::User,
-            context: ThreadContext::new_user(entry_point, kernel_stack_top),
+            context: ThreadContext::new_user(entry_point, kernel_stack_top, 0), // user_stack_top will be set later
             state: ThreadState::Ready,
             kernel_entry_point: None,
             user_entry_point: Some(entry_point),
@@ -201,21 +201,44 @@ impl ThreadContext {
     }
 
     /// Create a new context for a user thread entry point
-    pub fn new_user(entry_point: extern "C" fn() -> !, kernel_stack_top: u64) -> Self {
+    /// This sets up a fake ExceptionContext that seamlessly transitions to EL0
+    pub fn new_user(entry_point: extern "C" fn() -> !, kernel_stack_top: u64, user_stack_top: u64) -> Self {
+        // Allocate space for ExceptionContext on the kernel stack
+        let exception_context_addr = kernel_stack_top - core::mem::size_of::<crate::kernel::interrupts::ExceptionContext>() as u64;
+
+        // Create the ExceptionContext that will transition to EL0
+        let exception_context = crate::kernel::interrupts::ExceptionContext {
+            // General purpose registers start as 0 for security
+            x0: 0, x1: 0, x2: 0, x3: 0, x4: 0, x5: 0, x6: 0, x7: 0,
+            x8: 0, x9: 0, x10: 0, x11: 0, x12: 0, x13: 0, x14: 0, x15: 0,
+            x16: 0, x17: 0, x18: 0, x19: 0, x20: 0, x21: 0, x22: 0, x23: 0,
+            x24: 0, x25: 0, x26: 0, x27: 0, x28: 0, x29: 0, x30: user_stack_top, // SP_EL0 in x30
+
+            // ELR_EL1 = user entry point - where we'll return to in EL0
+            elr_el1: entry_point as u64,
+
+            // SPSR_EL1 = EL0t with interrupts enabled (0x0)
+            // Bits: [3:0]=0000 (EL0t), [6]=0 (FIQ enabled), [7]=0 (IRQ enabled), [8]=0 (SError enabled)
+            spsr_el1: 0x0,
+        };
+
+        // Write the ExceptionContext to the kernel stack
+        unsafe {
+            let context_ptr = exception_context_addr as *mut crate::kernel::interrupts::ExceptionContext;
+            context_ptr.write_volatile(exception_context);
+        }
+
+        // Import the assembly function that will handle the return from exception
+        extern "C" {
+            fn el0_syscall_entry_return() -> !;
+        }
+
         ThreadContext {
-            x19: 0,
-            x20: 0,
-            x21: 0,
-            x22: 0,
-            x23: 0,
-            x24: 0,
-            x25: 0,
-            x26: 0,
-            x27: 0,
-            x28: 0,
-            x29: 0,
-            x30: entry_point as u64, // Entry point for user program
-            sp: kernel_stack_top, // Use kernel stack initially
+            x19: 0, x20: 0, x21: 0, x22: 0, x23: 0, x24: 0,
+            x25: 0, x26: 0, x27: 0, x28: 0, x29: 0,
+            // Point to the assembly function that will restore the ExceptionContext and eret
+            x30: el0_syscall_entry_return as u64,
+            sp: exception_context_addr, // Point to the ExceptionContext we just created
         }
     }
 }

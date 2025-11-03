@@ -123,6 +123,45 @@ handle_el0_syscall_entry:
 
     eret                       // Return to EL0
 
+// Return from fake EL0 exception for user thread launch
+// This is called when a user thread starts for the first time
+// It restores a pre-crafted ExceptionContext and erets to EL0
+.balign 16
+el0_syscall_entry_return:
+    // At this point, sp points to a pre-crafted ExceptionContext
+    // Just restore all registers and eret to EL0 user program
+
+    // Restore all general-purpose registers from ExceptionContext
+    ldp x0, x1, [sp, #16 * 0]
+    ldp x2, x3, [sp, #16 * 1]
+    ldp x4, x5, [sp, #16 * 2]
+    ldp x6, x7, [sp, #16 * 3]
+    ldp x8, x9, [sp, #16 * 4]
+    ldp x10, x11, [sp, #16 * 5]
+    ldp x12, x13, [sp, #16 * 6]
+    ldp x14, x15, [sp, #16 * 7]
+    ldp x16, x17, [sp, #16 * 8]
+    ldp x18, x19, [sp, #16 * 9]
+    ldp x20, x21, [sp, #16 * 10]
+    ldp x22, x23, [sp, #16 * 11]
+    ldp x24, x25, [sp, #16 * 12]
+    ldp x26, x27, [sp, #16 * 13]
+    ldp x28, x29, [sp, #16 * 14]
+    ldr x30, [sp, #16 * 15]
+
+    // Set up SP_EL0 (user stack pointer) from x30 in context
+    msr sp_el0, x30
+
+    // Restore ELR_EL1 and SPSR_EL1 from the end of ExceptionContext
+    ldr x0, [sp, #16 * 16]      // ELR_EL1
+    ldr x1, [sp, #16 * 16 + 8]  // SPSR_EL1
+    msr elr_el1, x0
+    msr spsr_el1, x1
+
+    add sp, sp, #272           // Restore stack pointer
+
+    eret                       // Execute exception return to EL0 user program
+
 // Generic exception entry (for EL1 exceptions)
 .balign 16
 handle_exception_entry:
