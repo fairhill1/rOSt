@@ -4,6 +4,8 @@
 - exception/privilige levels (El0, EL1 etc.)
 - browser improvements
 	- css parsing
+		- margin collapsing
+		- Transition to StyleTree
 	- history
 	- bookmarks
 	- tabs

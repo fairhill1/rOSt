@@ -655,7 +655,8 @@ pub fn layout_element(
     }
 
     // Track starting position for full-width backgrounds (AFTER margin applied)
-    let block_start_y = current_y;
+    // NOTE: May be updated for special tags (e.g., headings) that add extra spacing
+    let mut block_start_y = current_y;
     let block_start_idx = browser.layout.len();
 
     // Handle special tags
@@ -820,6 +821,7 @@ pub fn layout_element(
             // Only add spacing before if there's already content above
             if !browser.layout.is_empty() {
                 current_y += element_height; // Extra spacing before heading
+                block_start_y = current_y;   // Update background start (was captured before spacing)
             }
             // Don't early return - let headings use full-width background handling below
         }
@@ -830,6 +832,7 @@ pub fn layout_element(
             // Add extra spacing before nested lists (x > 10 means we're indented)
             if !browser.layout.is_empty() && x > 10 {
                 current_y += element_height / 2; // Extra space before nested list
+                block_start_y = current_y;       // Update background start (was captured before spacing)
             }
 
             for (i, child) in node.children.iter().enumerate() {
