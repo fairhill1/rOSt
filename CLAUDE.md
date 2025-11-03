@@ -11,13 +11,17 @@ Production-grade ARM64 OS written in Rust. **Last Updated:** 2025-11-03
 **Networking:** smoltcp 0.12 stack, DNS, HTTP/1.0 client, ping, download command
 **Kernel:** Preemptive multitasking, round-robin scheduler, ARM64 context switching, EL0/EL1 privilege separation with syscalls
 **Memory:** Higher-half kernel (0xFFFF...), dual page tables (TTBR0/TTBR1), MMU-based memory protection
+**Userspace:** Production ELF loader, standalone userspace binaries, microkernel architecture
 **Shell:** Interactive terminal with filesystem and network commands
 
 ## Quick Start
 
 ```bash
-# Build
-cargo build --release --target aarch64-unknown-uefi --bin uefi_boot
+# Build kernel
+cargo build --release --target aarch64-unknown-uefi -p rust_os
+
+# Build userspace shell (optional - embedded in kernel)
+cargo build --release --target aarch64-unknown-none --bin shell
 
 # Create disk (first time)
 qemu-img create -f raw test_disk.img 10M
@@ -44,6 +48,7 @@ qemu-system-aarch64 \
 ```
 ls, cat <file>, create <name> <size>, write <file> <text>, rm <file>, rename <old> <new>
 ping <ip>, nslookup <domain>, http <url>, download <url>, ifconfig, arp
+exec shell - Load and run userspace shell ELF at EL0
 ```
 
 ## Architecture
@@ -73,15 +78,53 @@ ping <ip>, nslookup <domain>, http <url>, download <url>, ifconfig, arp
 
 ### Codebase Structure
 ```
-src/kernel/          - Core (mod, memory, dtb, scheduler, thread, interrupts)
-  drivers/           - PCI, timer, RTC, input_events
-    virtio/          - gpu, input, blk, net
-src/system/
-  fs/                - filesystem (SimpleFS)
-  net/               - network, dns, helpers (smoltcp-based)
-src/gui/             - framebuffer, window_manager, html_parser, bmp_decoder, png_decoder, clipboard
-  widgets/           - browser (async), editor, console, file_explorer, text_input, image_viewer
-src/apps/            - shell, snake
+kernel/              - Main OS kernel (EL1)
+  src/kernel/        - Core (mod, memory, dtb, scheduler, thread, interrupts, elf_loader)
+    drivers/         - PCI, timer, RTC, input_events
+      virtio/        - gpu, input, blk, net
+  src/system/
+    fs/              - filesystem (SimpleFS)
+    net/             - network, dns, helpers (smoltcp-based)
+  src/gui/           - framebuffer, window_manager, html_parser, bmp_decoder, png_decoder
+    widgets/         - browser (async), editor, console, file_explorer, text_input, image_viewer
+  src/apps/          - shell (kernel), snake
+
+librost/             - Userspace runtime library (#![no_std])
+  src/runtime/       - Syscall wrappers (exit, print_debug, open, read, write, socket, etc.)
+
+userspace/           - Userspace applications (EL0)
+  shell/             - Standalone shell ELF binary
+```
+
+### Userspace Architecture
+
+**Cargo Workspace:**
+- 3 crates: `kernel` (EL1), `librost` (runtime), `userspace/*` (EL0 apps)
+- Kernel builds to `aarch64-unknown-uefi` (UEFI bootable)
+- Userspace builds to `aarch64-unknown-none` (freestanding ELF)
+
+**ELF Loading:**
+- Parse with `xmas-elf` crate
+- Load LOAD segments into memory
+- Calculate entry points (ELF vaddr → physical offset)
+- Spawn as isolated process via scheduler
+
+**Syscall Interface (`librost`):**
+- Process: `exit(code)`
+- File I/O: `open(path, flags)`, `read(fd, buf)`, `write(fd, buf)`, `close(fd)`
+- Time: `get_time()`
+- Debug: `print_debug(msg)`
+- Framebuffer: `fb_info()`, `fb_map()`, `fb_flush()`
+- Input: `poll_event()`
+- Network: `socket()`, `connect()`, `send()`, `recv()`
+
+**Testing:**
+```
+> exec shell
+=== Loading Userspace Shell ELF ===
+[ELF] Loaded 234 bytes at 0x7a68bb48
+[USER] === rOSt Userspace Shell ===
+[USER] Running at EL0 with privilege separation
 ```
 
 ## Code Quality Standards (MANDATORY)
@@ -241,8 +284,10 @@ Try the simple explanation first.
 
 ## Key Wins
 
+- **Production userspace:** Cargo workspace, ELF loader, standalone binaries, microkernel architecture
+- **True privilege separation:** EL0 userspace processes, EL1 kernel, syscall interface (librost)
+- **ELF loading:** xmas-elf parsing, segment loading, entry point calculation, process spawning
 - **Higher-half kernel:** TTBR0/TTBR1 split with kernel at 0xFFFF_FF00_0000_0000, full MMU-based memory protection
-- **EL0/EL1 privilege separation:** User programs run at EL0 with syscall interface for kernel services
 - **Async browser:** Event-driven HTTP/image loading, stays responsive during network I/O (no blocking)
 - **Image caching & reflow:** Smart layout recalculation when dimensions change, prevents duplicate downloads
 - **Viewport clipping:** Pixel-perfect image clipping at viewport edges using signed arithmetic
@@ -250,7 +295,7 @@ Try the simple explanation first.
 - **smoltcp migration:** Production TCP/IP stack, 91% code reduction (834→76 lines)
 - **Buffer exhaustion fix:** Auto-replenish RX buffers after each packet
 - **ARM Generic Timer:** Hardware-independent timing (no CPU-dependent delays)
-- **Modular architecture:** Clean separation (drivers/system/gui/apps)
+- **Modular architecture:** Clean separation (kernel/librost/userspace)
 
 ---
 
