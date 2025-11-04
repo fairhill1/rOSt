@@ -1,7 +1,6 @@
 # TODO (in no specific order)
 
 - fatfs
--  Single open_file(filename, explorer_id) function that both code paths call. That would be in window_manager.rs or a file operations module.
 - process manager
 - browser improvements
 	- css parsing
@@ -36,3 +35,4 @@
 - MMU
 - syscalls
 - elf loader
+- shared function open_file_by_type for all file types for both double click and enter

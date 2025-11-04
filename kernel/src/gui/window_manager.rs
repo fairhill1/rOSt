@@ -678,11 +678,6 @@ impl WindowManager {
                                 if self.windows.len() >= 4 {
                                     crate::kernel::drivers::input_events::set_menu_status("Cannot open: 4 windows max");
                                 } else {
-                                    // Check file type
-                                    let lower = filename.to_lowercase();
-                                    let is_image = lower.ends_with(".bmp") || lower.ends_with(".png");
-                                    let is_csv = lower.ends_with(".csv");
-
                                     // Get filesystem from file explorer
                                     if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(instance_id) {
                                         if let (Some(ref fs), Some(device_idx)) = (&explorer.filesystem, explorer.device_index) {
@@ -698,53 +693,8 @@ impl WindowManager {
                                                 if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
                                                     if let Some(device) = devices.get_mut(device_idx) {
                                                         if let Ok(bytes_read) = fs.read_file(device, &filename, &mut buffer) {
-                                                            if is_csv {
-                                                                // Open in CSV viewer (userspace app)
-                                                                // First, write the CSV data to "data.csv" so the viewer can find it
-                                                                if let Ok(mut target_fs) = crate::system::fs::filesystem::SimpleFilesystem::mount(device) {
-                                                                    // Delete old data.csv if it exists
-                                                                    let _ = target_fs.delete_file(device, "data.csv");
-
-                                                                    // Write the CSV data to data.csv
-                                                                    if let Ok(_) = target_fs.create_file(device, "data.csv", bytes_read as u32) {
-                                                                        if let Ok(_) = target_fs.write_file(device, "data.csv", &buffer[..bytes_read]) {
-                                                                            // Launch CSV viewer userspace app
-                                                                            let csv_viewer_elf = crate::kernel::embedded_apps::CSV_VIEWER_ELF;
-                                                                            let _process_id = crate::kernel::elf_loader::load_elf_and_spawn(csv_viewer_elf);
-
-                                                                            crate::kernel::drivers::input_events::set_menu_status(&alloc::format!("Opened {} in CSV viewer", filename));
-
-                                                                            // Yield to scheduler so CSV viewer can run
-                                                                            crate::kernel::thread::yield_now();
-                                                                        }
-                                                                    }
-                                                                }
-                                                            } else if is_image {
-                                                                // Open in image viewer
-                                                                let viewer_id = crate::gui::widgets::image_viewer::create_image_viewer_with_data(
-                                                                    &filename,
-                                                                    &buffer[..bytes_read]
-                                                                );
-                                                                let title = alloc::format!("Image - {}", filename);
-                                                                let window = Window::new(0, 0, 800, 600, &title, WindowContent::ImageViewer, viewer_id);
-                                                                self.add_window(window);
-                                                            } else {
-                                                                // Open in text editor
-                                                                // Find the actual content length (for text files)
-                                                                let actual_len = buffer[..bytes_read].iter()
-                                                                    .position(|&b| b == 0)
-                                                                    .unwrap_or(bytes_read);
-
-                                                                if let Ok(text) = core::str::from_utf8(&buffer[..actual_len]) {
-                                                                    let editor_id = crate::gui::widgets::editor::create_editor_with_content(
-                                                                        &filename,
-                                                                        text
-                                                                    );
-                                                                    let title = alloc::format!("Editor - {}", filename);
-                                                                    let window = Window::new(0, 0, 640, 480, &title, WindowContent::Editor, editor_id);
-                                                                    self.add_window(window);
-                                                                }
-                                                            }
+                                                            // Use shared function for all file types
+                                                            open_file_by_type(&filename, &buffer, bytes_read, device);
                                                         }
                                                     }
                                                 }
@@ -1013,6 +963,74 @@ pub fn add_window(window: Window) -> usize {
         } else {
             0
         }
+    }
+}
+
+/// Open a file with the appropriate viewer based on file type
+/// Returns true if the file was successfully opened
+pub fn open_file_by_type(
+    filename: &str,
+    buffer: &[u8],
+    bytes_read: usize,
+    device: &mut crate::kernel::drivers::virtio::blk::VirtioBlkDevice,
+) -> bool {
+    use alloc::format;
+
+    // Detect file type by extension
+    let lower = filename.to_lowercase();
+    let is_image = lower.ends_with(".bmp") || lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg");
+    let is_csv = lower.ends_with(".csv");
+
+    if is_csv {
+        // Open in CSV viewer (userspace app)
+        if let Ok(mut target_fs) = crate::system::fs::filesystem::SimpleFilesystem::mount(device) {
+            // Delete old data.csv if it exists
+            let _ = target_fs.delete_file(device, "data.csv");
+
+            // Write the CSV data to data.csv
+            if let Ok(_) = target_fs.create_file(device, "data.csv", bytes_read as u32) {
+                if let Ok(_) = target_fs.write_file(device, "data.csv", &buffer[..bytes_read]) {
+                    // Launch CSV viewer userspace app
+                    let csv_viewer_elf = crate::kernel::embedded_apps::CSV_VIEWER_ELF;
+                    let _process_id = crate::kernel::elf_loader::load_elf_and_spawn(csv_viewer_elf);
+
+                    crate::kernel::drivers::input_events::set_menu_status(&format!("Opened {} in CSV viewer", filename));
+
+                    // Yield to scheduler so CSV viewer can run
+                    crate::kernel::thread::yield_now();
+                    return true;
+                }
+            }
+        }
+        return false;
+    } else if is_image {
+        // Open in image viewer
+        let viewer_id = crate::gui::widgets::image_viewer::create_image_viewer_with_data(
+            filename,
+            &buffer[..bytes_read]
+        );
+        let title = format!("Image - {}", filename);
+        let window = Window::new(0, 0, 800, 600, &title, WindowContent::ImageViewer, viewer_id);
+        add_window(window);
+        return true;
+    } else {
+        // Open in text editor (default for unknown types)
+        // Find the actual content length (for text files)
+        let actual_len = buffer[..bytes_read].iter()
+            .position(|&b| b == 0)
+            .unwrap_or(bytes_read);
+
+        if let Ok(text) = core::str::from_utf8(&buffer[..actual_len]) {
+            let editor_id = crate::gui::widgets::editor::create_editor_with_content(
+                filename,
+                text
+            );
+            let title = format!("Editor - {}", filename);
+            let window = Window::new(0, 0, 640, 480, &title, WindowContent::Editor, editor_id);
+            add_window(window);
+            return true;
+        }
+        return false;
     }
 }
 
