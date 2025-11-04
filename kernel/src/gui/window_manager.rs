@@ -1343,3 +1343,43 @@ pub fn close_window_by_index(index: usize) {
         }
     }
 }
+
+/// Close a window by its instance ID
+pub fn close_window_by_id(instance_id: usize) {
+    unsafe {
+        if let Some(ref mut wm) = WINDOW_MANAGER {
+            if let Some(index) = wm.windows.iter().position(|w| w.instance_id == instance_id) {
+                wm.remove_window(index);
+            }
+        }
+    }
+}
+
+/// Focus a window by its instance ID
+pub fn focus_window_by_id(instance_id: usize) {
+    unsafe {
+        if let Some(ref mut wm) = WINDOW_MANAGER {
+            // Unfocus all windows first
+            for window in &mut wm.windows {
+                window.is_focused = false;
+            }
+            // Focus the requested window
+            if let Some(window) = wm.windows.iter_mut().find(|w| w.instance_id == instance_id) {
+                window.is_focused = true;
+            }
+        }
+    }
+}
+
+/// Get window content type and instance ID by instance ID
+pub fn get_window_by_id(instance_id: usize) -> Option<(WindowContent, usize)> {
+    unsafe {
+        if let Some(ref wm) = WINDOW_MANAGER {
+            wm.windows.iter()
+                .find(|w| w.instance_id == instance_id)
+                .map(|w| (w.content, w.instance_id))
+        } else {
+            None
+        }
+    }
+}

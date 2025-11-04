@@ -38,6 +38,10 @@ current_el_spx_serror:
 // Lower EL using AArch64 (offset 0x400) - USER MODE SYSCALLS
 .balign 128
 lower_el_aarch64_sync:
+    // DEBUG: Print 'S' to show we got EL0 sync exception
+    mov x10, #0x09000000
+    mov x11, #'S'
+    strb w11, [x10]
     b handle_el0_syscall_entry
 .balign 128
 lower_el_aarch64_irq:
@@ -66,10 +70,25 @@ lower_el_aarch32_serror:
 // EL0 syscall entry point - saves all registers, calls Rust handler, restores, returns
 .balign 16
 handle_el0_syscall_entry:
+    // DEBUG: Print 'K' to show we entered handler
+    mov x10, #0x09000000
+    mov x11, #'K'
+    strb w11, [x10]
+
     // Save all general-purpose registers to stack
     sub sp, sp, #272           // 34 registers * 8 bytes = 272 bytes
 
+    // DEBUG: Print 'L' after sub sp
+    mov x10, #0x09000000
+    mov x11, #'L'
+    strb w11, [x10]
+
     stp x0, x1, [sp, #16 * 0]
+
+    // DEBUG: Print 'M' after first stp
+    mov x10, #0x09000000
+    mov x11, #'M'
+    strb w11, [x10]
     stp x2, x3, [sp, #16 * 1]
     stp x4, x5, [sp, #16 * 2]
     stp x6, x7, [sp, #16 * 3]
@@ -89,12 +108,35 @@ handle_el0_syscall_entry:
     // Save ELR_EL1 (return address) and SPSR_EL1 (saved program status)
     mrs x0, elr_el1
     mrs x1, spsr_el1
+    // CRITICAL: Clear IRQ mask bit (bit 7) in SPSR so interrupts work after eret
+    // When handling syscalls, SPSR has IRQ masked (we're in exception handler)
+    // We must clear this bit so EL0 can receive timer interrupts
+    bic x1, x1, #(1 << 7)      // Clear bit 7 (IRQ mask)
     stp x0, x1, [sp, #16 * 16]
+
+    // DEBUG: Print 'N' before calling Rust
+    mov x10, #0x09000000
+    mov x11, #'N'
+    strb w11, [x10]
+
+    // DON'T switch TTBR0 here! The OS architect is correct:
+    // - Kernel runs from TTBR1 (high-half 0xFFFF...)
+    // - User memory accessible through TTBR0 (stays as USER_TTBR0)
+    // - Only switch TTBR0 if kernel needs special user memory access
+    // Removing the incorrect UEFI_TTBR0 switching that was causing hangs
 
     // Call Rust syscall handler
     // Pass pointer to saved context as first argument
     mov x0, sp
     bl handle_el0_syscall_rust
+
+    // DEBUG: Print 'O' after Rust handler returns
+    mov x10, #0x09000000
+    mov x11, #'O'
+    strb w11, [x10]
+
+    // No need to switch TTBR0 back - it never changed!
+    // TTBR0 stays as USER_TTBR0 throughout syscall handling
 
     // Restore ELR_EL1 and SPSR_EL1
     ldp x0, x1, [sp, #16 * 16]
@@ -128,24 +170,41 @@ handle_el0_syscall_entry:
 // It restores a pre-crafted ExceptionContext and erets to EL0
 .balign 16
 el0_syscall_entry_return:
+    // DEBUG: Print 'A' to UART to show we entered trampoline
+    mov x10, #0x09000000
+    mov x11, #'A'
+    strb w11, [x10]
+
     // At this point, sp points to a pre-crafted ExceptionContext
     // Save sp (we'll need it later)
     mov x20, sp
 
-    // CRITICAL: Switch to user page tables before dropping to EL0
-    // Load USER_TABLE_ADDR directly from memory
-    adrp x10, USER_TABLE_ADDR
-    add x10, x10, :lo12:USER_TABLE_ADDR
-    ldr x0, [x10]               // x0 = USER_TABLE_ADDR
+    // DEBUG: Print 'B'
+    mov x11, #'B'
+    strb w11, [x10]
 
-    // Switch TTBR0 to user page tables
-    msr ttbr0_el1, x0           // Switch TTBR0 to user page tables
-    tlbi vmalle1                // Invalidate TLB
-    dsb sy
+    // Switch TTBR0 to user tables before launching into EL0
+    adrp x10, USER_TTBR0
+    ldr x10, [x10, #:lo12:USER_TTBR0]
+    msr ttbr0_el1, x10
+    dsb ish
     isb
+
+    // DEBUG: Print 'C'
+    mov x10, #0x09000000
+    mov x11, #'C'
+    strb w11, [x10]
+
+    // DEBUG: Print 'D'
+    mov x11, #'D'
+    strb w11, [x10]
 
     // Restore sp
     mov sp, x20
+
+    // DEBUG: Print 'E'
+    mov x11, #'E'
+    strb w11, [x10]
 
     // Just restore all registers and eret to EL0 user program
 
@@ -174,13 +233,14 @@ el0_syscall_entry_return:
     ldr x0, [sp, #16 * 16]      // ELR_EL1
     ldr x1, [sp, #16 * 16 + 8]  // SPSR_EL1
 
-    // Debug: Print the address we're about to jump to
-    // We'll temporarily save x0/x1, write to UART, then restore
+    // Debug: Print 'F'
+    mov x2, #0x09000000
+    mov x3, #'F'
+    strb w3, [x2]
+
+    // Save ELR/SPSR
     mov x2, x0              // Save ELR_EL1
     mov x3, x1              // Save SPSR_EL1
-
-    // Debug output would go here - for now just continue
-    // The infinite sync exceptions suggest the issue is deeper
 
     // Restore the saved registers
     mov x0, x2              // Restore ELR_EL1
@@ -189,13 +249,29 @@ el0_syscall_entry_return:
     msr elr_el1, x0
     msr spsr_el1, x1
 
+    // DEBUG: Print 'G' before eret
+    mov x4, #0x09000000
+    mov x5, #'G'
+    strb w5, [x4]
+
     add sp, sp, #272           // Restore stack pointer
+
+    // DEBUG: Print 'H' right before eret
+    mov x4, #0x09000000
+    mov x5, #'H'
+    strb w5, [x4]
 
     eret                       // Execute exception return to EL0 user program
 
 // Generic exception entry (for EL1 exceptions)
 .balign 16
 handle_exception_entry:
+    // DEBUG: Print '!' to show unexpected exception
+    mov x10, #0x09000000
+    mov x11, #'!'
+    strb w11, [x10]
+    mov x11, #'X'
+    strb w11, [x10]
     b .  // Infinite loop for now
 
 // IRQ handler entry - handles timer interrupts from both EL1 and EL0

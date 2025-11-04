@@ -51,6 +51,9 @@ static mut CURSOR_Y: u32 = 0;
 static mut SCREEN_WIDTH: u32 = 0;
 static mut SCREEN_HEIGHT: u32 = 0;
 
+// Window manager PID (for IPC communication)
+static mut WINDOW_MANAGER_PID: usize = 0;
+
 // Boot info and framebuffer for kernel_init_high_half
 static mut BOOT_INFO: Option<&'static BootInfo> = None;
 static mut GPU_FRAMEBUFFER_INFO: Option<crate::gui::framebuffer::FramebufferInfo> = None;
@@ -121,6 +124,540 @@ fn print_hex_simple(n: u64) {
         unsafe {
             core::ptr::write_volatile(0x09000000 as *mut u8, buffer[i - 1 - j]);
         }
+    }
+}
+
+/// Kernel-side message send (for kernel threads to send to other processes)
+/// Returns 0 on success, negative on error
+fn kernel_send_message(dest_pid: u32, data: &[u8]) -> i64 {
+    use crate::kernel::syscall::{IpcMessage, MAX_MESSAGE_SIZE};
+
+    if data.len() > MAX_MESSAGE_SIZE {
+        return -1; // Message too large
+    }
+
+    // Create message structure
+    let mut msg = IpcMessage {
+        sender_pid: 0, // Will be filled by dest process if needed
+        data_len: data.len() as u32,
+        data: [0u8; MAX_MESSAGE_SIZE],
+    };
+    msg.data[..data.len()].copy_from_slice(data);
+
+    // Push message to destination process queue
+    let result = thread::with_process_mut(dest_pid as usize, |process| {
+        process.message_queue.push(msg)
+    });
+
+    match result {
+        Some(true) => 0,  // Success
+        Some(false) => -2, // Queue full
+        None => -3,       // Process not found
+    }
+}
+
+/// Kernel-side message receive (non-blocking, for kernel threads)
+/// Returns number of bytes received (0 if no message available)
+fn kernel_recv_message(buf: &mut [u8; 256]) -> i64 {
+    // Get current thread's process ID
+    let scheduler = scheduler::SCHEDULER.lock();
+    let process_id = if let Some(thread_id) = scheduler.current_thread {
+        scheduler.threads.iter()
+            .find(|t| t.id == thread_id)
+            .map(|t| t.process_id)
+    } else {
+        None
+    };
+    drop(scheduler); // Release lock before accessing process
+
+    if let Some(pid) = process_id {
+        // Try to pop a message from the current process's queue
+        let msg = thread::with_process_mut(pid, |process| {
+            process.message_queue.pop()
+        });
+
+        if let Some(Some(msg)) = msg {
+            // Copy message data to buffer
+            let copy_len = core::cmp::min(msg.data_len as usize, buf.len());
+            buf[..copy_len].copy_from_slice(&msg.data[..copy_len]);
+            return copy_len as i64;
+        }
+    }
+
+    0 // No message available or no current thread
+}
+
+/// Route input event to a specific window by instance ID
+fn route_input_to_window(window_id: usize, event: drivers::input_events::InputEvent) {
+    use drivers::input_events::InputEvent;
+
+    // Get the window content type to determine how to route the input
+    if let Some((content_type, _)) = crate::gui::window_manager::get_window_by_id(window_id) {
+        match event {
+            InputEvent::KeyPressed { key, modifiers } => {
+                // Route keyboard input based on window content type
+                match content_type {
+                    crate::gui::window_manager::WindowContent::Terminal => {
+                        if let Some(ascii) = drivers::input_events::evdev_to_ascii(key, modifiers) {
+                            if let Some(shell) = crate::apps::shell::get_shell(window_id) {
+                                shell.handle_char(ascii);
+                            }
+                        }
+                    }
+                    crate::gui::window_manager::WindowContent::Editor => {
+                        // Check for Ctrl modifier
+                        let is_ctrl = (modifiers & 0x11) != 0; // LEFT_CTRL | RIGHT_CTRL
+                        let is_shift = (modifiers & 0x22) != 0; // LEFT_SHIFT | RIGHT_SHIFT
+
+                        if let Some(editor) = crate::gui::widgets::editor::get_editor(window_id) {
+                            // Handle special keys
+                            match key {
+                                103 => editor.move_up(), // KEY_UP
+                                108 => editor.move_down(), // KEY_DOWN
+                                105 => editor.move_left(), // KEY_LEFT
+                                106 => editor.move_right(), // KEY_RIGHT
+                                _ => {
+                                    if is_ctrl && key == 31 { // Ctrl+S
+                                        // Save would go here (requires access to filesystem)
+                                    } else if !is_ctrl {
+                                        if let Some(ascii) = drivers::input_events::evdev_to_ascii(key, modifiers) {
+                                            if ascii == b'\n' {
+                                                editor.insert_newline();
+                                            } else if ascii == 8 { // Backspace
+                                                editor.delete_char();
+                                            } else if ascii >= 32 && ascii < 127 {
+                                                editor.insert_char(ascii as char);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    crate::gui::window_manager::WindowContent::FileExplorer => {
+                        // File explorer keyboard navigation
+                        match key {
+                            103 => { // KEY_UP
+                                crate::gui::widgets::file_explorer::move_selection_up(window_id);
+                            }
+                            108 => { // KEY_DOWN
+                                crate::gui::widgets::file_explorer::move_selection_down(window_id);
+                            }
+                            28 => { // KEY_ENTER
+                                // Handle file opening (complex logic from old code)
+                                let _ = crate::gui::widgets::file_explorer::open_selected(window_id);
+                            }
+                            _ => {}
+                        }
+                    }
+                    crate::gui::window_manager::WindowContent::Snake => {
+                        // Snake game controls
+                        match key {
+                            103 => { // KEY_UP
+                                if let Some(game) = crate::apps::snake::get_snake_game(window_id) {
+                                    game.set_direction(crate::apps::snake::Direction::Up);
+                                }
+                            }
+                            108 => { // KEY_DOWN
+                                if let Some(game) = crate::apps::snake::get_snake_game(window_id) {
+                                    game.set_direction(crate::apps::snake::Direction::Down);
+                                }
+                            }
+                            105 => { // KEY_LEFT
+                                if let Some(game) = crate::apps::snake::get_snake_game(window_id) {
+                                    game.set_direction(crate::apps::snake::Direction::Left);
+                                }
+                            }
+                            106 => { // KEY_RIGHT
+                                if let Some(game) = crate::apps::snake::get_snake_game(window_id) {
+                                    game.set_direction(crate::apps::snake::Direction::Right);
+                                }
+                            }
+                            19 => { // KEY_R (restart)
+                                if let Some(game) = crate::apps::snake::get_snake_game(window_id) {
+                                    game.reset();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    crate::gui::window_manager::WindowContent::Browser => {
+                        let is_shift = (modifiers & 0x22) != 0;
+                        let is_ctrl = (modifiers & 0x11) != 0;
+
+                        // Handle arrow keys
+                        match key {
+                            105 => { // KEY_LEFT
+                                crate::gui::widgets::browser::handle_arrow_key(
+                                    window_id,
+                                    crate::gui::widgets::text_input::ArrowKey::Left,
+                                    is_shift
+                                );
+                            }
+                            106 => { // KEY_RIGHT
+                                crate::gui::widgets::browser::handle_arrow_key(
+                                    window_id,
+                                    crate::gui::widgets::text_input::ArrowKey::Right,
+                                    is_shift
+                                );
+                            }
+                            102 => { // KEY_HOME
+                                crate::gui::widgets::browser::handle_arrow_key(
+                                    window_id,
+                                    crate::gui::widgets::text_input::ArrowKey::Home,
+                                    is_shift
+                                );
+                            }
+                            107 => { // KEY_END
+                                crate::gui::widgets::browser::handle_arrow_key(
+                                    window_id,
+                                    crate::gui::widgets::text_input::ArrowKey::End,
+                                    is_shift
+                                );
+                            }
+                            _ => {
+                                // Regular keyboard input
+                                if let Some(ascii) = drivers::input_events::evdev_to_ascii(key, modifiers) {
+                                    crate::gui::widgets::browser::handle_key(window_id, ascii as char, is_ctrl, is_shift);
+                                }
+                            }
+                        }
+                    }
+                    _ => {} // Other window types don't handle keyboard input yet
+                }
+            }
+            InputEvent::MouseButton { button, pressed } => {
+                // Mouse button handling would go here
+                // For now, most mouse handling is done by the window manager itself
+                // (dragging, clicking title bars, etc.)
+            }
+            InputEvent::MouseWheel { delta } => {
+                // Handle scroll wheel in focused window
+                match content_type {
+                    crate::gui::window_manager::WindowContent::Editor => {
+                        if let Some(editor) = crate::gui::widgets::editor::get_editor(window_id) {
+                            editor.scroll(-delta as i32 * 3);
+                        }
+                    }
+                    crate::gui::window_manager::WindowContent::Browser => {
+                        // Get browser window height for scroll handling
+                        let browsers = crate::gui::window_manager::get_all_browsers();
+                        if let Some((_, _, _, _, height)) = browsers.iter().find(|(id, _, _, _, _)| *id == window_id) {
+                            if let Some(browser) = crate::gui::widgets::browser::get_browser(window_id) {
+                                browser.handle_scroll(-delta as i32, *height as usize);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Kernel GUI thread - handles input polling, rendering, and IPC with WM
+fn kernel_gui_thread() {
+    uart_write_string("[GUI-THREAD] Kernel GUI thread started\r\n");
+
+    // CRITICAL: Enable interrupts for this thread!
+    // Kernel threads don't save/restore DAIF during context switches,
+    // so we must explicitly enable interrupts when each thread starts.
+    unsafe {
+        core::arch::asm!("msr daifclr, #2"); // Clear IRQ mask
+    }
+    uart_write_string("[GUI-THREAD] Interrupts enabled for this thread\r\n");
+
+    // Get framebuffer info from global
+    let fb_info = unsafe { GPU_FRAMEBUFFER_INFO.unwrap() };
+
+    let mut needs_full_render = true;
+    let mut last_minute = drivers::rtc::get_datetime().minute;
+    let mut loop_count = 0;
+
+    uart_write_string("[GUI-THREAD] Entering main loop\r\n");
+
+    loop {
+        loop_count += 1;
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] Loop iteration 1 start\r\n");
+        }
+
+        // PHASE 3: Check for WM responses from previous iteration
+        // This must happen BEFORE polling new input to handle the async pipeline:
+        // Loop N: send input → WM scheduled → Loop N+1: receive response
+        unsafe {
+            if WINDOW_MANAGER_PID > 0 {
+                // Check for all pending responses (non-blocking)
+                loop {
+                    let mut response_buf = [0u8; 256];
+                    let result = kernel_recv_message(&mut response_buf);
+
+                    if result > 0 {
+                        // Parse WMToKernel response
+                        let msg_type = response_buf[0];
+
+                        match msg_type {
+                            0 => { // RouteInput
+                                let window_id = usize::from_le_bytes([
+                                    response_buf[1], response_buf[2], response_buf[3], response_buf[4],
+                                    response_buf[5], response_buf[6], response_buf[7], response_buf[8]
+                                ]);
+
+                                let event_type = u32::from_le_bytes([response_buf[9], response_buf[10], response_buf[11], response_buf[12]]);
+
+                                // Reconstruct the input event from the response
+                                let kernel_event = match event_type {
+                                    1 => drivers::input_events::InputEvent::KeyPressed {
+                                        key: response_buf[13],
+                                        modifiers: response_buf[14]
+                                    },
+                                    2 => drivers::input_events::InputEvent::KeyReleased {
+                                        key: response_buf[13],
+                                        modifiers: response_buf[14]
+                                    },
+                                    3 => drivers::input_events::InputEvent::MouseMove {
+                                        x_delta: response_buf[17] as i8,
+                                        y_delta: response_buf[18] as i8
+                                    },
+                                    4 => drivers::input_events::InputEvent::MouseButton {
+                                        button: response_buf[15],
+                                        pressed: response_buf[16] != 0
+                                    },
+                                    5 => drivers::input_events::InputEvent::MouseWheel {
+                                        delta: response_buf[19] as i8
+                                    },
+                                    _ => continue, // Unknown event type
+                                };
+
+                                // Route the input event to the specified window
+                                route_input_to_window(window_id, kernel_event);
+                                needs_full_render = true;
+                            }
+                            1 => { // RequestFocus
+                                let window_id = usize::from_le_bytes([
+                                    response_buf[1], response_buf[2], response_buf[3], response_buf[4],
+                                    response_buf[5], response_buf[6], response_buf[7], response_buf[8]
+                                ]);
+
+                                // Update focused window
+                                crate::gui::window_manager::focus_window_by_id(window_id);
+                                needs_full_render = true;
+                            }
+                            2 => { // RequestClose
+                                let window_id = usize::from_le_bytes([
+                                    response_buf[1], response_buf[2], response_buf[3], response_buf[4],
+                                    response_buf[5], response_buf[6], response_buf[7], response_buf[8]
+                                ]);
+
+                                // Close the specified window
+                                crate::gui::window_manager::close_window_by_id(window_id);
+                                needs_full_render = true;
+                            }
+                            3 => { // NoAction
+                                // Nothing to do
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        break; // No more messages
+                    }
+                }
+            }
+        }
+
+        // Check if minute has changed - redraw clock every minute
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] Checking RTC...\r\n");
+        }
+        let current_minute = drivers::rtc::get_datetime().minute;
+        if current_minute != last_minute {
+            last_minute = current_minute;
+            needs_full_render = true;
+        }
+
+        // Poll VirtIO input devices for real trackpad/keyboard input
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] Polling input...\r\n");
+        }
+        drivers::virtio::input::poll_virtio_input();
+
+        // Forward input events to window manager via IPC
+        // PHASE 2: IPC-based input routing
+        unsafe {
+            if WINDOW_MANAGER_PID > 0 {
+                // Poll for input events and forward each one to WM
+                let mut event_count = 0;
+                while let Some(kernel_event) = drivers::input_events::get_input_event() {
+                    event_count += 1;
+                    if event_count <= 3 {  // Limit debug spam
+                        uart_write_string(&alloc::format!("[GUI-THREAD] Got input event #{}\r\n", event_count));
+                    }
+                    // Convert kernel InputEvent to librost InputEvent format
+                    let (event_type, key, modifiers, button, pressed, x_delta, y_delta, wheel_delta) = match kernel_event {
+                        drivers::input_events::InputEvent::KeyPressed { key, modifiers } => {
+                            (1u32, key, modifiers, 0u8, 0u8, 0i8, 0i8, 0i8)
+                        }
+                        drivers::input_events::InputEvent::KeyReleased { key, modifiers } => {
+                            (2u32, key, modifiers, 0u8, 0u8, 0i8, 0i8, 0i8)
+                        }
+                        drivers::input_events::InputEvent::MouseMove { x_delta, y_delta } => {
+                            // Update cursor position
+                            let new_x = (CURSOR_X as i32 + x_delta as i32).max(0).min(SCREEN_WIDTH as i32 - 1);
+                            let new_y = (CURSOR_Y as i32 + y_delta as i32).max(0).min(SCREEN_HEIGHT as i32 - 1);
+                            CURSOR_X = new_x as u32;
+                            CURSOR_Y = new_y as u32;
+                            crate::gui::framebuffer::set_cursor_pos(CURSOR_X as i32, CURSOR_Y as i32);
+
+                            // Update VirtIO GPU hardware cursor
+                            if let Some(ref mut gpu) = GPU_DRIVER {
+                                let _ = gpu.update_cursor(CURSOR_X, CURSOR_Y, 0, 0);
+                            }
+
+                            (3u32, 0u8, 0u8, 0u8, 0u8, x_delta, y_delta, 0i8)
+                        }
+                        drivers::input_events::InputEvent::MouseButton { button, pressed } => {
+                            (4u32, 0u8, 0u8, button, if pressed { 1 } else { 0 }, 0i8, 0i8, 0i8)
+                        }
+                        drivers::input_events::InputEvent::MouseWheel { delta } => {
+                            (5u32, 0u8, 0u8, 0u8, 0u8, 0i8, 0i8, delta)
+                        }
+                    };
+
+                    // Create IPC message with current cursor position and event data
+                    let mut msg_buf = [0u8; 256];
+                    msg_buf[0] = 0; // KernelToWM::InputEvent type
+                    msg_buf[1..5].copy_from_slice(&(CURSOR_X as i32).to_le_bytes());
+                    msg_buf[5..9].copy_from_slice(&(CURSOR_Y as i32).to_le_bytes());
+                    msg_buf[9..13].copy_from_slice(&event_type.to_le_bytes());
+                    msg_buf[13] = key;
+                    msg_buf[14] = modifiers;
+                    msg_buf[15] = button;
+                    msg_buf[16] = pressed;
+                    msg_buf[17] = x_delta as u8;
+                    msg_buf[18] = y_delta as u8;
+                    msg_buf[19] = wheel_delta as u8;
+
+                    // Send to window manager (kernel-side IPC)
+                    // Response will be processed at the start of next loop iteration
+                    kernel_send_message(WINDOW_MANAGER_PID as u32, &msg_buf);
+
+                    if event_count <= 3 {
+                        uart_write_string(&alloc::format!("[GUI-THREAD] Sent event type {} to WM (async)\r\n", event_type));
+                    }
+                }
+                if event_count > 0 && event_count <= 3 {
+                    uart_write_string(&alloc::format!("[GUI-THREAD] Total events processed: {}\r\n", event_count));
+                }
+            }
+        }
+
+        // Poll network stack (process packets, timers, etc.)
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] Polling network...\r\n");
+        }
+        unsafe {
+            if let Some(ref mut stack) = NETWORK_STACK {
+                stack.poll();
+            }
+        }
+
+        // Poll browser async HTTP state machines
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] Polling browsers...\r\n");
+        }
+        if crate::gui::widgets::browser::poll_all_browsers() {
+            needs_full_render = true;
+        }
+
+        // Phase 2: Input events are now forwarded to WM via IPC (above)
+        // The old direct input processing is disabled
+        // The WM will handle input routing and send responses back if needed
+        let needs_cursor_redraw = false; // Cursor updates happen in IPC forwarding above
+
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] Loop iteration 1 complete!\r\n");
+        }
+
+        // Update snake games and only render if any game changed state
+        if !crate::gui::window_manager::get_all_snakes().is_empty() {
+            if crate::apps::snake::update_all_games() {
+                needs_full_render = true;
+            }
+        }
+
+        // Render desktop with windows and cursor
+        if fb_info.base_address != 0 {
+            if needs_full_render {
+                // Full redraw to back buffer - clear, render windows, console, cursor
+                crate::gui::framebuffer::clear_screen(0xFF1A1A1A);
+                crate::gui::window_manager::render();
+
+                // Render all terminals INSIDE their windows
+                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_terminals() {
+                    crate::gui::widgets::console::render_at(instance_id, cx, cy, cw, ch);
+                }
+
+                // Render all editors INSIDE their windows
+                for (instance_id, cx, cy, _cw, ch) in crate::gui::window_manager::get_all_editors() {
+                    crate::gui::widgets::editor::render_at(instance_id, cx, cy, ch);
+                }
+
+                // Render all file explorers INSIDE their windows
+                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_file_explorers() {
+                    crate::gui::widgets::file_explorer::render_at(instance_id, cx, cy, cw, ch);
+                }
+
+                // Render all snake games INSIDE their windows (already updated above)
+                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_snakes() {
+                    if let Some(game) = crate::apps::snake::get_snake_game(instance_id) {
+                        let fb = crate::gui::framebuffer::get_back_buffer();
+                        let (screen_width, _) = crate::gui::framebuffer::get_screen_dimensions();
+
+                        // Center the game in the window
+                        let game_width = game.width() as i32;
+                        let game_height = game.height() as i32;
+                        let centered_x = cx + ((cw as i32 - game_width) / 2).max(0);
+                        let centered_y = cy + ((ch as i32 - game_height) / 2).max(0);
+
+                        game.render(fb, screen_width as usize, ch as usize, centered_x as usize, centered_y as usize);
+                    }
+                }
+
+                // Render all browser windows INSIDE their windows
+                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_browsers() {
+                    crate::gui::widgets::browser::render_at(instance_id, cx as usize, cy as usize, cw as usize, ch as usize);
+                }
+
+                // Render all image viewer windows INSIDE their windows
+                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_image_viewers() {
+                    crate::gui::widgets::image_viewer::render_at(instance_id, cx, cy, cw, ch);
+                }
+
+                // Swap buffers - copy back buffer to screen in one fast operation
+                crate::gui::framebuffer::swap_buffers();
+
+                // Flush to VirtIO GPU display
+                unsafe {
+                    if let Some(ref mut gpu) = GPU_DRIVER {
+                        let _ = gpu.flush_display();
+                    }
+                }
+
+                needs_full_render = false;
+            } else if needs_cursor_redraw {
+                // Hardware cursor is now handled by VirtIO GPU
+                // No need to redraw software cursor or flush for cursor-only updates
+            }
+        }
+
+        // Small delay to prevent CPU overload
+        for _ in 0..10000 {
+            unsafe { core::arch::asm!("nop"); }
+        }
+
+        // Yield to scheduler so other threads can run
+        thread::yield_now();
     }
 }
 
@@ -875,124 +1412,73 @@ pub extern "C" fn kernel_init_high_half() -> ! {
     uart_write_string("===================================\r\n\r\n");
     */
 
-    let mut needs_full_render = true; // Force initial render
-    let mut last_minute = drivers::rtc::get_datetime().minute; // Track last rendered minute
+    // ===== SPAWN KERNEL GUI THREAD =====
+    uart_write_string("\n=== SPAWNING KERNEL GUI THREAD ===\r\n");
+    let gui_thread_id = {
+        let mut sched = scheduler::SCHEDULER.lock();
+        sched.spawn(kernel_gui_thread)
+    };
+    uart_write_string(&alloc::format!("✓ Kernel GUI thread spawned as thread {}\r\n", gui_thread_id));
+
+    // CRITICAL: Enable interrupts BEFORE loading ELF binaries
+    // ELF parser/allocator may require interrupts to be enabled
+    uart_write_string("\nEnabling interrupts before ELF loading...\r\n");
+    unsafe {
+        core::arch::asm!("msr daifclr, #2"); // Clear IRQ mask bit
+    }
+    uart_write_string("✓ Interrupts enabled for boot thread\r\n\r\n");
+
+    // ===== SPAWN USERSPACE WINDOW MANAGER =====
+    // WORKAROUND: First ELF load hangs. Load IPC sender first to complete xmas-elf initialization.
+    // IPC sender is a minimal binary that won't crash like CSV viewer does.
+    uart_write_string("=== SPAWNING USERSPACE APPLICATIONS ===\r\n");
+    uart_write_string("Loading IPC sender (warm-up for ELF parser)...\r\n");
+    let warmup_pid = elf_loader::load_elf_and_spawn(embedded_apps::IPC_SENDER_ELF);
+    uart_write_string(&alloc::format!("✓ IPC sender spawned as PID {} (warm-up complete)\r\n", warmup_pid));
+
+    uart_write_string("\nNow loading window manager...\r\n");
+    let wm_elf = embedded_apps::WINDOW_MANAGER_ELF;
+    let wm_pid = elf_loader::load_elf_and_spawn(wm_elf);
+    uart_write_string(&alloc::format!("✓ Window manager spawned as PID {}\r\n", wm_pid));
+
+    unsafe {
+        WINDOW_MANAGER_PID = wm_pid;
+    }
+
+    uart_write_string("Window manager will handle input routing via IPC...\r\n");
+    uart_write_string("===================================\r\n\r\n");
+
+    // Boot thread now idles - GUI thread and WM thread handle everything
+    uart_write_string("Boot complete, entering idle loop...\r\n");
+    uart_write_string("Scheduler will round-robin between:\r\n");
+    uart_write_string("  - Thread 1: Kernel GUI (EL1)\r\n");
+    uart_write_string("  - Thread 2: Window Manager (EL0)\r\n");
+    uart_write_string("  + Any user apps spawned later\r\n\r\n");
+
+    // DEBUG: Check DAIF register to confirm interrupts are enabled
+    let daif: u64;
+    let timer_ctl: u64;
+    let timer_tval: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, daif", out(reg) daif);
+        core::arch::asm!("mrs {}, cntp_ctl_el0", out(reg) timer_ctl);
+        core::arch::asm!("mrs {}, cntp_tval_el0", out(reg) timer_tval);
+    }
+    uart_write_string(&alloc::format!("[DEBUG] DAIF register = {:#x} (bit 7 should be 0 for IRQ enabled)\r\n", daif));
+    uart_write_string(&alloc::format!("[DEBUG] Timer CTL = {:#x}, TVAL = {} (should be counting down)\r\n", timer_ctl, timer_tval as i32));
+
+    // DEBUG: Check GIC CPU interface
+    let gicc_ctlr = unsafe { core::ptr::read_volatile(0x08010000 as *const u32) };
+    let gicc_pmr = unsafe { core::ptr::read_volatile(0x08010004 as *const u32) };
+    uart_write_string(&alloc::format!("[DEBUG] GIC CPU CTLR = {:#x}, PMR = {:#x}\r\n", gicc_ctlr, gicc_pmr));
+
+    uart_write_string("Interrupts enabled! Timer should now fire every 10ms.\r\n");
 
     loop {
-        // Worker threads scheduled via timer preemption only (every 10ms)
-
-        // Check if minute has changed - redraw clock every minute
-        let current_minute = drivers::rtc::get_datetime().minute;
-        if current_minute != last_minute {
-            last_minute = current_minute;
-            needs_full_render = true;
-        }
-
-        // Poll VirtIO input devices for real trackpad/keyboard input
-        drivers::virtio::input::poll_virtio_input();
-
-        // Poll network stack (process packets, timers, etc.)
-        unsafe {
-            if let Some(ref mut stack) = NETWORK_STACK {
-                stack.poll();
-            }
-        }
-
-        // Poll browser async HTTP state machines
-        if crate::gui::widgets::browser::poll_all_browsers() {
-            needs_full_render = true;
-        }
-
-        // Process queued input events - returns (needs_full_redraw, needs_cursor_redraw)
-        let (needs_full_redraw, needs_cursor_redraw) = drivers::input_events::test_input_events();
-        if needs_full_redraw {
-            needs_full_render = true;
-        }
-
-        // Update snake games and only render if any game changed state
-        if !crate::gui::window_manager::get_all_snakes().is_empty() {
-            if crate::apps::snake::update_all_games() {
-                needs_full_render = true;
-            }
-        }
-
-        // Render desktop with windows and cursor
-        if fb_info.base_address != 0 {
-            if needs_full_render {
-                // Full redraw to back buffer - clear, render windows, console, cursor
-                crate::gui::framebuffer::clear_screen(0xFF1A1A1A);
-                crate::gui::window_manager::render();
-
-                // Render all terminals INSIDE their windows
-                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_terminals() {
-                    crate::gui::widgets::console::render_at(instance_id, cx, cy, cw, ch);
-                }
-
-                // Render all editors INSIDE their windows
-                for (instance_id, cx, cy, _cw, ch) in crate::gui::window_manager::get_all_editors() {
-                    crate::gui::widgets::editor::render_at(instance_id, cx, cy, ch);
-                }
-
-                // Render all file explorers INSIDE their windows
-                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_file_explorers() {
-                    crate::gui::widgets::file_explorer::render_at(instance_id, cx, cy, cw, ch);
-                }
-
-                // Render all snake games INSIDE their windows (already updated above)
-                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_snakes() {
-                    if let Some(game) = crate::apps::snake::get_snake_game(instance_id) {
-                        let fb = crate::gui::framebuffer::get_back_buffer();
-                        let (screen_width, _) = crate::gui::framebuffer::get_screen_dimensions();
-
-                        // Center the game in the window
-                        let game_width = game.width() as i32;
-                        let game_height = game.height() as i32;
-                        let centered_x = cx + ((cw as i32 - game_width) / 2).max(0);
-                        let centered_y = cy + ((ch as i32 - game_height) / 2).max(0);
-
-                        game.render(fb, screen_width as usize, ch as usize, centered_x as usize, centered_y as usize);
-                    }
-                }
-
-                // Render all browser windows INSIDE their windows
-                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_browsers() {
-                    crate::gui::widgets::browser::render_at(instance_id, cx as usize, cy as usize, cw as usize, ch as usize);
-                }
-
-                // Render all image viewer windows INSIDE their windows
-                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_image_viewers() {
-                    crate::gui::widgets::image_viewer::render_at(instance_id, cx, cy, cw, ch);
-                }
-
-                // Hardware cursor is now handled by VirtIO GPU, no need for software cursor
-                // crate::gui::framebuffer::draw_cursor();
-
-                // Swap buffers - copy back buffer to screen in one fast operation
-                // This eliminates ALL flickering!
-                crate::gui::framebuffer::swap_buffers();
-
-                // Flush to VirtIO GPU display
-                unsafe {
-                    if let Some(ref mut gpu) = GPU_DRIVER {
-                        let _ = gpu.flush_display();
-                    }
-                }
-
-                needs_full_render = false;
-            } else if needs_cursor_redraw {
-                // Hardware cursor is now handled by VirtIO GPU
-                // No need to redraw software cursor or flush for cursor-only updates
-                // The hardware cursor updates happen in handle_mouse_movement()
-            }
-        }
-
-        // Small delay to prevent CPU overload
-        for _ in 0..10000 {
+        // Boot thread idles forever - all work done by scheduled threads
+        for _ in 0..100000 {
             unsafe { core::arch::asm!("nop"); }
         }
-
-        // CRITICAL: Yield to scheduler so spawned processes can run
-        // Without this, the main kernel loop monopolizes CPU between timer interrupts
         thread::yield_now();
     }
 }

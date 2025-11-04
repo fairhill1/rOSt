@@ -19,22 +19,34 @@ use alloc::boxed::Box;
 pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
     // Disable interrupts during ELF loading (critical section)
     // Timer interrupts during parsing/allocation can cause context switches in invalid states
-    unsafe {
-        core::arch::asm!("msr daifset, #2"); // Mask IRQ
-    }
+    // TEMPORARILY DISABLED TO DEBUG HANG
+    // unsafe {
+    //     core::arch::asm!("msr daifset, #2"); // Mask IRQ
+    // }
 
     crate::kernel::uart_write_string("[ELF] Starting ELF load...\r\n");
 
+    // Debug: Check ELF data before parsing
+    crate::kernel::uart_write_string(&alloc::format!(
+        "[ELF] ELF data size: {} bytes\r\n", elf_data.len()
+    ));
+    if elf_data.len() >= 4 {
+        crate::kernel::uart_write_string(&alloc::format!(
+            "[ELF] First 4 bytes (magic): {:02x} {:02x} {:02x} {:02x}\r\n",
+            elf_data[0], elf_data[1], elf_data[2], elf_data[3]
+        ));
+    }
+
     // Parse ELF file
-    crate::kernel::uart_write_string("[ELF] Parsing ELF file...\r\n");
+    crate::kernel::uart_write_string("[ELF] About to call ElfFile::new()...\r\n");
     let elf = match ElfFile::new(elf_data) {
         Ok(e) => {
             crate::kernel::uart_write_string("[ELF] ELF parsed successfully\r\n");
             e
         }
-        Err(_) => {
-            crate::kernel::uart_write_string("[ELF] Error: Failed to parse ELF file\r\n");
-            unsafe { core::arch::asm!("msr daifclr, #2"); } // Re-enable interrupts
+        Err(e) => {
+            crate::kernel::uart_write_string(&alloc::format!("[ELF] Error: Failed to parse ELF file: {:?}\r\n", e));
+            // unsafe { core::arch::asm!("msr daifclr, #2"); } // Re-enable interrupts
             return 0;
         }
     };
@@ -42,7 +54,7 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
     // Verify it's an AArch64 executable
     if elf.header.pt2.machine().as_machine() != xmas_elf::header::Machine::AArch64 {
         crate::kernel::uart_write_string("[ELF] Error: Not an AArch64 binary\r\n");
-        unsafe { core::arch::asm!("msr daifclr, #2"); } // Re-enable interrupts
+        // unsafe { core::arch::asm!("msr daifclr, #2"); } // Re-enable interrupts
         return 0;
     }
 
@@ -57,7 +69,7 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
         Ok(result) => result,
         Err(e) => {
             crate::kernel::uart_write_string(&alloc::format!("[ELF] Error loading segments: {}\r\n", e));
-            unsafe { core::arch::asm!("msr daifclr, #2"); } // Re-enable interrupts
+            // unsafe { core::arch::asm!("msr daifclr, #2"); } // Re-enable interrupts
             return 0;
         }
     };
@@ -98,9 +110,10 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
     Box::leak(loaded_memory);
 
     // Re-enable interrupts before returning
-    unsafe {
-        core::arch::asm!("msr daifclr, #2"); // Unmask IRQ
-    }
+    // TEMP DISABLED FOR DEBUG
+    // unsafe {
+    //     core::arch::asm!("msr daifclr, #2"); // Unmask IRQ
+    // }
 
     process_id
 }

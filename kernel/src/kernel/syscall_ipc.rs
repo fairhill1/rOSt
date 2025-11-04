@@ -187,7 +187,14 @@ pub fn sys_recv_message(buf: *mut u8, len: usize, timeout_ms: u32) -> i64 {
 
     // Try to receive message (with simple polling if timeout > 0)
     let start_time = crate::kernel::get_time_ms();
+    let mut loop_count = 0;
     loop {
+        loop_count += 1;
+        if loop_count <= 3 || loop_count % 100 == 0 {
+            crate::kernel::uart_write_string(&alloc::format!("[SYSCALL] recv_message loop #{}, start={}, now={}\r\n",
+                loop_count, start_time, crate::kernel::get_time_ms()));
+        }
+
         let msg = crate::kernel::thread::with_process_mut(process_id, |process| {
             process.message_queue.pop()
         });

@@ -13,6 +13,11 @@ pub extern "C" fn kernel_high_half_cleanup() {
     crate::kernel::uart_write_string("[MMU] In high-half, cleaning up identity map...\r\n");
     // TODO: Implement the actual cleanup
 
+    // TODO: TTBR0 switching breaks VirtIO descriptor access - need better solution
+    // For now, keep UEFI's page tables for TTBR0 to allow kernel device access
+    // This means user processes can't access low addresses yet, but system boots
+    // switch_ttbr0_to_user_tables();
+
     // Continue with kernel initialization in the high half.
     crate::kernel::kernel_init_high_half();
 }
@@ -311,7 +316,7 @@ pub fn init_virtual_memory() {
         let current_tcr = TCR_EL1.get();
 
         // Save original TTBR0 so we can restore it after user programs exit
-        ORIGINAL_TTBR0 = current_ttbr0;
+        UEFI_TTBR0 = current_ttbr0;
 
         crate::kernel::uart_write_string("[MMU] Current TTBR0: 0x");
         print_hex(current_ttbr0);
@@ -677,7 +682,35 @@ pub fn setup_mmu_page_tables() {
         USER_L1_TABLE.entries[2] = PageTableEntry::new_table(user_l2_2_addr); // 2-3GB
         USER_L1_TABLE.entries[3] = PageTableEntry::new_table(user_l2_3_addr); // 3-4GB
 
-        // Clean data cache for user page tables
+        // CRITICAL: Copy UEFI's mappings for 4GB-512GB range (includes PCI ECAM at 256GB!)
+        // UEFI's L0 entry 0 points to an L1 table that covers 0-512GB
+        // We've replaced entries 0-3 (0-4GB) with our user-accessible mappings
+        // Now copy entries 4-511 (4GB-512GB) from UEFI's L1 table
+        let uefi_l0_entry_0 = core::ptr::read_volatile(uefi_l0.add(0));
+        if uefi_l0_entry_0.0 & PageTableEntry::VALID != 0 {
+            // Extract L1 table address from UEFI's L0 entry 0
+            let uefi_l1_addr = (uefi_l0_entry_0.0 & 0x0000_FFFF_FFFF_F000) as *const PageTableEntry;
+
+            crate::kernel::uart_write_string("[MMU] Copying UEFI L1 entries 4-511 (4GB-512GB range) for device access...\r\n");
+
+            // Copy entries 4-511 from UEFI's L1 table to preserve device mappings
+            for i in 4..512usize {
+                let uefi_l1_entry = core::ptr::read_volatile(uefi_l1_addr.add(i));
+                USER_L1_TABLE.entries[i] = uefi_l1_entry;
+            }
+        }
+
+        // Clean data cache for USER_L1_TABLE (we just modified it)
+        let l1_addr = &USER_L1_TABLE as *const _ as usize;
+        for offset in (0..4096).step_by(64) {
+            core::arch::asm!(
+                "dc civac, {0}",
+                in(reg) l1_addr + offset,
+                options(nostack)
+            );
+        }
+
+        // Clean data cache for user L2 page tables
         for l2_table in [&USER_L2_TABLE_0, &USER_L2_TABLE_1, &USER_L2_TABLE_2, &USER_L2_TABLE_3] {
             let l2_addr = l2_table as *const _ as usize;
             for offset in (0..4096).step_by(64) {
@@ -733,22 +766,74 @@ pub fn setup_mmu_page_tables() {
         crate::kernel::uart_write_string("[MMU] USER_L0_TABLE[0] -> USER_L1_TABLE connected\r\n");
         crate::kernel::uart_write_string("[MMU] TLB invalidated for user page tables\r\n");
 
-        // Store page table addresses for the assembly code
-        USER_TABLE_ADDR = (&USER_L0_TABLE as *const PageTable) as u64;
-        KERNEL_TABLE_ADDR = (&KERNEL_L0_TABLE as *const PageTable) as u64;
+        // Initialize TTBR0 addresses for per-thread switching
+        use aarch64_cpu::registers::*;
+        UEFI_TTBR0 = TTBR0_EL1.get();  // Save original UEFI TTBR0 (for kernel operations)
+        let user_table_virt = (&USER_L0_TABLE as *const PageTable) as u64;
+        USER_TTBR0 = virt_to_phys(user_table_virt);  // Convert user table address to physical
+        USER_TABLE_ADDR = USER_TTBR0;  // Legacy name for compatibility
+
+        let kernel_table_virt = (&KERNEL_L0_TABLE as *const PageTable) as u64;
+        KERNEL_TABLE_ADDR = virt_to_phys(kernel_table_virt);  // Convert kernel table to physical (for compatibility)
+
+        crate::kernel::uart_write_string("[MMU] Initialized TTBR0 addresses:\r\n");
+        crate::kernel::uart_write_string("  UEFI_TTBR0 (kernel) = 0x");
+        print_hex(UEFI_TTBR0);
+        crate::kernel::uart_write_string("\r\n  USER_TTBR0 (EL0) = 0x");
+        print_hex(USER_TTBR0);
+        crate::kernel::uart_write_string("\r\n");
 
         crate::kernel::uart_write_string("[MMU] Page tables prepared!\r\n");
         crate::kernel::uart_write_string("[MMU] Ready for TTBR0/TTBR1 switch\r\n");
     }
 }
 
+/// Switch TTBR0 to user page tables (called once during boot)
+/// After this, we don't need to switch TTBR0 on context switches - just leave it on user tables
+pub fn switch_ttbr0_to_user_tables() {
+    use aarch64_cpu::registers::*;
+
+    unsafe {
+        let user_table_virt = (&USER_L0_TABLE as *const PageTable) as u64;
+        let user_table_phys = virt_to_phys(user_table_virt);
+
+        crate::kernel::uart_write_string("[MMU] Switching TTBR0 to user page tables (virt=0x");
+        print_hex(user_table_virt);
+        crate::kernel::uart_write_string(", phys=0x");
+        print_hex(user_table_phys);
+        crate::kernel::uart_write_string(")...\r\n");
+
+        // Switch TTBR0 to user page tables (must use PHYSICAL address!)
+        TTBR0_EL1.set(user_table_phys);
+
+        // CRITICAL: Must invalidate TLB to flush stale TTBR0 entries!
+        // We invalidate ALL entries (TTBR0 + TTBR1), but that's OK because:
+        // - Execution continues from high-half (TTBR1) and will refill TLB as needed
+        // - This ensures TTBR0 entries point to correct USER page tables, not stale UEFI tables
+        core::arch::asm!(
+            "dsb sy",              // Ensure TTBR0 write is visible
+            "tlbi vmalle1is",      // Invalidate ALL TLB entries for EL1 (both TTBR0 and TTBR1)
+            "dsb ish",             // Ensure TLB invalidation completes
+            "isb",                 // Synchronize context
+            options(nostack)
+        );
+
+        crate::kernel::uart_write_string("[MMU] TTBR0 switched to user page tables\r\n");
+        crate::kernel::uart_write_string("[MMU] User processes can now access low addresses with USER permissions\r\n");
+    }
+}
+
 // Global storage for page table addresses (so assembly can access them)
 #[no_mangle]
-pub static mut USER_TABLE_ADDR: u64 = 0;
+pub static mut USER_TTBR0: u64 = 0;      // Physical address of user page table
 #[no_mangle]
-pub static mut KERNEL_TABLE_ADDR: u64 = 0;
+pub static mut UEFI_TTBR0: u64 = 0;      // Original UEFI page table (for kernel)
+
+// Legacy names for compatibility with get_page_table_addresses()
 #[no_mangle]
-pub static mut ORIGINAL_TTBR0: u64 = 0;  // Save original UEFI page table
+static mut USER_TABLE_ADDR: u64 = 0;     // Same as USER_TTBR0 (physical address)
+#[no_mangle]
+static mut KERNEL_TABLE_ADDR: u64 = 0;   // Kernel table (not used with per-thread TTBR0 switching)
 
 /// Get the prepared page table addresses for assembly code
 #[no_mangle]
@@ -765,7 +850,7 @@ pub fn restore_kernel_mmu_context() {
 
     unsafe {
         // Restore original TTBR0 (UEFI's page table)
-        let original_ttbr0 = ORIGINAL_TTBR0;
+        let original_ttbr0 = UEFI_TTBR0;
         crate::kernel::uart_write_string("[MMU] Restoring TTBR0 to: 0x");
         print_hex(original_ttbr0);
         crate::kernel::uart_write_string("\r\n");

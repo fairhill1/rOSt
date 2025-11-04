@@ -9,6 +9,7 @@ members = [
     "userspace/ipc_sender",
     "userspace/ipc_receiver",
     "userspace/csv_viewer",
+    "userspace/window_manager",
 ]
 
 # Shared profile settings for all workspace members

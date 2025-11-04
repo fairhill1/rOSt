@@ -67,6 +67,15 @@ pub fn init_exception_vectors() {
 /// Handles interrupts from both EL1 and EL0
 #[no_mangle]
 extern "C" fn handle_irq_rust() {
+    // DEBUG: Print that we received an IRQ
+    static mut IRQ_COUNT: u64 = 0;
+    unsafe {
+        IRQ_COUNT += 1;
+        if IRQ_COUNT <= 10 {
+            crate::kernel::uart_write_string(&alloc::format!("[IRQ] IRQ #{} received\r\n", IRQ_COUNT));
+        }
+    }
+
     // Handle IRQ interrupts
     // Read from GIC to determine interrupt source
     unsafe {
@@ -93,6 +102,25 @@ extern "C" fn handle_irq_rust() {
 /// Context pointer points to saved registers on the stack
 #[no_mangle]
 extern "C" fn handle_el0_syscall_rust(ctx: *mut ExceptionContext) {
+    // NOTE: We keep TTBR0 on kernel tables even at EL0
+    // MMU still enforces USER permissions on pages, so EL0 can't access kernel memory
+
+    // DEBUG: Print that we entered syscall handler
+    static mut SYSCALL_ENTRY_COUNT: u64 = 0;
+    unsafe {
+        SYSCALL_ENTRY_COUNT += 1;
+        if SYSCALL_ENTRY_COUNT <= 10 {
+            crate::kernel::uart_write_string(&alloc::format!("[SYSCALL] Entry #{}\r\n", SYSCALL_ENTRY_COUNT));
+        }
+    }
+
+    // CRITICAL: ARM64 automatically disables IRQ interrupts when taking a synchronous exception (SVC).
+    // We must re-enable interrupts here to allow timer interrupts to fire during syscall execution,
+    // enabling preemptive multitasking even during long-running syscalls (e.g., recv_message with timeout).
+    unsafe {
+        core::arch::asm!("msr daifclr, #2"); // Clear IRQ mask (bit 1 of DAIF)
+    }
+
     let ctx = unsafe { &mut *ctx };
 
     // Check ESR to verify this is actually an SVC
@@ -181,6 +209,21 @@ extern "C" fn handle_el0_syscall_rust(ctx: *mut ExceptionContext) {
 
     // Write result back to X0 (will be restored on return)
     ctx.x0 = result as u64;
+
+    // DEBUG: Print SPSR value to verify interrupts are enabled
+    static mut SYSCALL_RETURN_COUNT: u64 = 0;
+    unsafe {
+        SYSCALL_RETURN_COUNT += 1;
+        if SYSCALL_RETURN_COUNT <= 5 {
+            crate::kernel::uart_write_string(&alloc::format!(
+                "[SYSCALL] Returning to EL0, SPSR=0x{:x} (bit7={})\r\n",
+                ctx.spsr_el1, (ctx.spsr_el1 >> 7) & 1
+            ));
+        }
+    }
+
+    // NOTE: We keep TTBR0 on kernel tables even when returning to EL0
+    // MMU still enforces USER permissions on pages
 
     // Syscall completed successfully - return to EL0
 }
@@ -336,12 +379,12 @@ pub fn init_gic() {
         
         // Enable CPU interface
         core::ptr::write_volatile(GICC_CTLR as *mut u32, 1);
-        
-        // Enable interrupts at CPU level
-        // Clear interrupt mask bit (unmask IRQ)
-        unsafe {
-            core::arch::asm!("msr daifclr, #2");
-        }
+
+        // NOTE: Do NOT enable interrupts here!
+        // Interrupts will be enabled explicitly after the scheduler is running.
+        // Enabling interrupts during boot causes timer interrupts to fire during
+        // ELF loading, before the scheduler is ready for preemption.
+        // Each thread will enable interrupts when it starts running.
     }
 }
 
@@ -395,6 +438,13 @@ fn handle_timer_interrupt() {
         TICK_COUNT += 1;
         if TICK_COUNT >= PREEMPT_TICKS {
             TICK_COUNT = 0;
+
+            // DEBUG: Log timer preemption
+            static mut PREEMPT_COUNT: u64 = 0;
+            PREEMPT_COUNT += 1;
+            if PREEMPT_COUNT <= 5 {
+                crate::kernel::uart_write_string(&alloc::format!("[TIMER] Preemption #{}\r\n", PREEMPT_COUNT));
+            }
 
             // Preempt current thread - get context switch info while holding lock
             let switch_info = {

@@ -295,6 +295,21 @@ fn set_cell(&mut self, row: usize, col: usize) {
 
 ## Critical Gotchas
 
+**Heap Allocations in Critical Paths:**
+- **NEVER use `alloc::format!()` or any heap allocations in syscall handlers, interrupt handlers, or scheduler code**
+- Heap allocations can cause re-entrancy issues when the allocator is called from kernel critical paths
+- Symptoms: Synchronous exceptions (`!X`), system freezes when userspace threads make blocking syscalls
+- Solution: Use static strings for debug output in critical paths:
+```rust
+// ❌ BROKEN - crashes in syscall/scheduler context
+uart_write_string(&alloc::format!("[SCHED] yield_now #{}\r\n", count));
+
+// ✅ FIXED - no heap allocations in critical path
+uart_write_string("[SCHED] yield_now entered\r\n");
+```
+- If you need formatted output for debugging, add it OUTSIDE the critical path (e.g., before syscall entry, after return to userspace)
+- This applies to: `format!()`, `String::from()`, `vec![]`, `Box::new()`, etc. - anything that allocates
+
 **MMU/Address Arithmetic:**
 - **ALWAYS verify address calculations with explicit bit math in comments**
 - L0 page table index = bits [47:39] of virtual address (9 bits = 0-511)

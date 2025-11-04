@@ -169,10 +169,26 @@ impl Process {
 
     /// Create a new user process
     pub fn new_user(id: usize) -> Self {
-        // Allocate user stack (larger for user programs)
-        let user_stack = vec![0u8; STACK_SIZE * 2].into_boxed_slice(); // 128KB for user
+        // Allocate user stack at fixed low physical address (identity-mapped in user page tables)
+        // This is critical because user stacks must be accessible with user page tables
+        let user_stack = unsafe {
+            let idx = NEXT_USER_STACK_INDEX;
+            if idx >= MAX_USER_PROCESSES {
+                panic!("Too many user processes!");
+            }
+            NEXT_USER_STACK_INDEX += 1;
 
-        // Allocate kernel stack for syscalls
+            // Calculate address for this process's stack
+            let stack_addr = (USER_STACK_BASE + (idx as u64 * USER_STACK_SIZE as u64)) as *mut u8;
+
+            // Zero the stack memory
+            core::ptr::write_bytes(stack_addr, 0, USER_STACK_SIZE);
+
+            // Create a Box from this fixed address (never actually freed)
+            Box::from_raw(core::slice::from_raw_parts_mut(stack_addr, USER_STACK_SIZE))
+        };
+
+        // Allocate kernel stack for syscalls (from heap is fine - always accessed at EL1)
         let kernel_stack = vec![0u8; STACK_SIZE].into_boxed_slice();
 
         Process {
@@ -210,6 +226,17 @@ impl Process {
 }
 
 const STACK_SIZE: usize = 64 * 1024; // 64KB per thread
+const USER_STACK_SIZE: usize = 128 * 1024; // 128KB for user stacks
+const MAX_USER_PROCESSES: usize = 8; // Maximum 8 user processes
+
+// User stacks are allocated at fixed low physical address (identity-mapped in page tables)
+// CRITICAL: MUST be within actual RAM! QEMU gives us 1GB starting at 0x40000000
+// Physical RAM: 0x40000000 to 0x80000000 (1GB)
+// IMPORTANT: Avoid 0x50000000 - VirtIO allocates descriptor tables there!
+// Use 0x48000000 (128MB into RAM, well within the 1GB limit, doesn't conflict with VirtIO)
+const USER_STACK_BASE: u64 = 0x48000000;
+
+static mut NEXT_USER_STACK_INDEX: usize = 0;
 
 /// Thread context - saved/restored during context switch
 /// Contains callee-saved registers per ARM64 calling convention
@@ -632,10 +659,17 @@ pub fn with_process_mut<F, R>(id: usize, f: F) -> Option<R>
 where
     F: FnOnce(&mut Process) -> R,
 {
-    PROCESS_MANAGER.lock()
+    crate::kernel::uart_write_string(&alloc::format!("[PROCESS] with_process_mut({}) attempting lock...\r\n", id));
+    let mut guard = PROCESS_MANAGER.lock();
+    crate::kernel::uart_write_string(&alloc::format!("[PROCESS] with_process_mut({}) lock acquired!\r\n", id));
+
+    let result = guard
         .as_mut()
         .and_then(|pm| pm.get_process_mut(id))
-        .map(f)
+        .map(f);
+
+    crate::kernel::uart_write_string(&alloc::format!("[PROCESS] with_process_mut({}) releasing lock\r\n", id));
+    result
 }
 
 /// Search all processes for a shared memory region by ID

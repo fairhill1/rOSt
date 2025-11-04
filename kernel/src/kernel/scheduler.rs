@@ -112,16 +112,29 @@ impl Scheduler {
 
     /// Yield CPU to another thread (cooperative)
     pub fn yield_now(&mut self) -> Option<(*mut crate::kernel::thread::ThreadContext, *const crate::kernel::thread::ThreadContext, bool)> {
+        crate::kernel::uart_write_string("[SCHED] yield_now() entered\r\n");
+
         if let Some(current_id) = self.current_thread {
+            crate::kernel::uart_write_string("[SCHED] current_thread is Some\r\n");
             // Mark current thread as ready and add to back of queue
             if let Some(thread) = self.threads.iter_mut().find(|t| t.id == current_id) {
+                crate::kernel::uart_write_string("[SCHED] Found current thread\r\n");
                 if thread.state == ThreadState::Running {
+                    crate::kernel::uart_write_string("[SCHED] Thread is Running, marking as Ready\r\n");
                     thread.state = ThreadState::Ready;
                     self.ready_queue.push_back(current_id);
+                    crate::kernel::uart_write_string("[SCHED] Thread re-queued\r\n");
+                } else {
+                    crate::kernel::uart_write_string("[SCHED] Thread NOT Running, skipping re-queue\r\n");
                 }
+            } else {
+                crate::kernel::uart_write_string("[SCHED] WARNING: Current thread not found in thread list!\r\n");
             }
+        } else {
+            crate::kernel::uart_write_string("[SCHED] current_thread is None\r\n");
         }
 
+        crate::kernel::uart_write_string("[SCHED] About to call schedule()...\r\n");
         // Schedule next thread and return pointers for context switch
         self.schedule()
     }
