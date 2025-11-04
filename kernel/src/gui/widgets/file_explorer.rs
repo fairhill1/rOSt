@@ -56,7 +56,8 @@ impl FileExplorer {
         unsafe {
             if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
                 if !devices.is_empty() {
-                    let device_idx = 0;
+                    // Use last device for persistent storage (same strategy as boot)
+                    let device_idx = devices.len() - 1;
                     let device = &mut devices[device_idx];
 
                     match SimpleFilesystem::mount(device) {

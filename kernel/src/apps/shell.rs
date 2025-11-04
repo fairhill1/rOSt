@@ -880,7 +880,8 @@ pub fn create_shell(console_id: usize) {
         // Initialize filesystem if block device is available
         if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
             if !devices.is_empty() {
-                let device_idx = 0;
+                // Use last device for persistent storage (same strategy as boot)
+                let device_idx = devices.len() - 1;
                 if let Some(device) = devices.get_mut(device_idx) {
                     match crate::system::fs::filesystem::SimpleFilesystem::mount(device) {
                         Ok(fs) => {

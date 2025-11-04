@@ -63,6 +63,7 @@ exec shell - Load and run userspace shell ELF at EL0
 - Kernel executes at EL1 in higher-half (L0 page table index 510)
 - Shared kernel mapping across all processes
 - Physical 0x40000000-0x1_0000_0000 mapped to virtual 0xFFFF_FF00_4000_0000+
+- **⚠️ CRITICAL for DMA:** VirtIO devices require PHYSICAL addresses, use `memory::virt_to_phys()` for all DMA buffers (stack, heap, etc.)
 
 **Physical Memory Map:**
 - RAM: 0x40000000+, UART: 0x09000000, RTC: 0x09010000

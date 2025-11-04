@@ -34,7 +34,8 @@ fn try_load_font() {
                 return;
             }
 
-            let device_idx = 0;
+            // Use same strategy as main boot: last device is persistent storage
+            let device_idx = devices.len() - 1;
             let device = &mut devices[device_idx];
 
             // Mount the filesystem directly

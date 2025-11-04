@@ -619,6 +619,15 @@ pub extern "C" fn kernel_init_high_half() -> ! {
                 match crate::system::fs::SimpleFilesystem::format(&mut blk_devices[fs_device_idx], 20480) {
                     Ok(()) => {
                         uart_write_string("✓ Disk formatted successfully!\r\n");
+                        // Flush writes to ensure they persist
+                        uart_write_string("Flushing write cache...\r\n");
+                        if let Err(e) = blk_devices[fs_device_idx].flush() {
+                            uart_write_string("✗ Flush failed: ");
+                            uart_write_string(e);
+                            uart_write_string("\r\n");
+                        } else {
+                            uart_write_string("✓ Write cache flushed\r\n");
+                        }
                     }
                     Err(e) => {
                         uart_write_string("✗ Format failed: ");

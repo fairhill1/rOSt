@@ -183,8 +183,6 @@ impl Scheduler {
             None => {
                 // No threads ready - return to kernel if we have a kernel context
                 if let Some(kernel_ctx) = self.kernel_context {
-                    crate::kernel::uart_write_string("All threads finished, returning to kernel\r\n");
-
                     // Get current thread context if any
                     let current_ptr = if let Some(id) = self.current_thread {
                         self.threads

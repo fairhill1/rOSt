@@ -270,8 +270,19 @@ static mut USER_L2_TABLE_3: PageTable = PageTable::new(); // User L2 for 3-4GB
 /// L0 index 510 = 0x1FE = 0b1_1111_1110
 /// When placed at bits [47:39]: bit 39 = 0, bits [40:47] = 0xFF
 /// This gives bits [47:32] = 0xFF00, so address = 0xFFFF_FF00_0000_0000 (canonical form)
-const KERNEL_BASE: u64 = 0xFFFF_FF00_0000_0000; // High half for kernel (L0 index 510)
+pub const KERNEL_BASE: u64 = 0xFFFF_FF00_0000_0000; // High half for kernel (L0 index 510)
 const USER_BASE: u64 = 0x0000_0000_0000_0000;   // Low half for user
+
+/// Convert kernel virtual address to physical address
+/// Required for DMA operations (VirtIO, etc.) which need physical addresses
+#[inline]
+pub fn virt_to_phys(virt: u64) -> u64 {
+    if virt >= KERNEL_BASE {
+        virt - KERNEL_BASE
+    } else {
+        virt // Already physical or user space
+    }
+}
 
 /// Initialize virtual memory with TTBR0/TTBR1 separation
 pub fn init_virtual_memory() {

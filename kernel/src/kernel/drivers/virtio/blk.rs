@@ -27,9 +27,13 @@ const VIRTIO_PCI_CAP_DEVICE_CFG: u8 = 4;
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2;
 
+// VirtIO Block Feature Bits
+const VIRTIO_BLK_F_FLUSH: u32 = 9; // Flush command supported
+
 // VirtIO Block Request Types
 const VIRTIO_BLK_T_IN: u32 = 0;  // Read
 const VIRTIO_BLK_T_OUT: u32 = 1; // Write
+const VIRTIO_BLK_T_FLUSH: u32 = 4; // Flush write cache
 
 // VirtIO Block Status
 const VIRTIO_BLK_S_OK: u8 = 0;
@@ -291,9 +295,11 @@ impl VirtioBlkDevice {
 
         crate::kernel::uart_write_string("Device acknowledged, driver bit set\r\n");
 
-        // 4. Feature negotiation (we don't need any special features for now)
+        // 4. Feature negotiation - enable FLUSH support
         ptr::write_volatile(&mut (*common_cfg).driver_feature_select, 0);
-        ptr::write_volatile(&mut (*common_cfg).driver_feature, 0);
+        // Request FLUSH feature (bit 9)
+        let requested_features = 1u32 << VIRTIO_BLK_F_FLUSH;
+        ptr::write_volatile(&mut (*common_cfg).driver_feature, requested_features);
         mb();
 
         // 5. Set FEATURES_OK
@@ -463,7 +469,9 @@ impl VirtioBlkDevice {
             (*self.virtq.desc.add(d1 as usize)).next = d2;
 
             // Descriptor 2: Data buffer (write for device on read)
-            (*self.virtq.desc.add(d2 as usize)).addr = buffer.as_ptr() as u64;
+            // CRITICAL: Convert virtual to physical address for DMA
+            let buffer_phys = crate::kernel::memory::virt_to_phys(buffer.as_ptr() as u64);
+            (*self.virtq.desc.add(d2 as usize)).addr = buffer_phys;
             (*self.virtq.desc.add(d2 as usize)).len = SECTOR_SIZE as u32;
             (*self.virtq.desc.add(d2 as usize)).flags = VIRTQ_DESC_F_WRITE | VIRTQ_DESC_F_NEXT;
             (*self.virtq.desc.add(d2 as usize)).next = d3;
@@ -551,7 +559,9 @@ impl VirtioBlkDevice {
             (*self.virtq.desc.add(d1 as usize)).next = d2;
 
             // Descriptor 2: Data buffer (READ-ONLY for device on write - device reads from it!)
-            (*self.virtq.desc.add(d2 as usize)).addr = buffer.as_ptr() as u64;
+            // CRITICAL: Convert virtual to physical address for DMA
+            let buffer_phys = crate::kernel::memory::virt_to_phys(buffer.as_ptr() as u64);
+            (*self.virtq.desc.add(d2 as usize)).addr = buffer_phys;
             (*self.virtq.desc.add(d2 as usize)).len = SECTOR_SIZE as u32;
             (*self.virtq.desc.add(d2 as usize)).flags = VIRTQ_DESC_F_NEXT;  // NO WRITE flag!
             (*self.virtq.desc.add(d2 as usize)).next = d3;
@@ -601,6 +611,82 @@ impl VirtioBlkDevice {
             self.virtq.free_desc(d1);
             self.virtq.free_desc(d2);
             self.virtq.free_desc(d3);
+
+            self.virtq.last_seen_used = ptr::read_volatile(ptr::addr_of!((*self.virtq.used).idx));
+
+            Ok(())
+        }
+    }
+
+    /// Flush the write cache to ensure data is persisted
+    pub fn flush(&mut self) -> Result<(), &'static str> {
+        unsafe {
+            // Allocate memory for request header
+            let header_phys = 0x50100000u64;
+            let header = header_phys as *mut VirtioBlkReqHeader;
+
+            // Allocate memory for status byte
+            let status_phys = 0x50100200u64;
+            let status_ptr = status_phys as *mut u8;
+
+            // Fill in request header for FLUSH
+            ptr::write_volatile(ptr::addr_of_mut!((*header).req_type), VIRTIO_BLK_T_FLUSH);
+            ptr::write_volatile(ptr::addr_of_mut!((*header).reserved), 0);
+            ptr::write_volatile(ptr::addr_of_mut!((*header).sector), 0); // Ignored for flush
+
+            // Initialize status to 0xFF
+            ptr::write_volatile(status_ptr, 0xFF);
+
+            // Build 2-descriptor chain (header + status, no data buffer for flush)
+            let d1 = self.virtq.alloc_desc(header as u64).ok_or("No descriptors available")?;
+            let d2 = self.virtq.alloc_desc(status_phys).ok_or("No descriptors available")?;
+
+            // Descriptor 1: Request header
+            (*self.virtq.desc.add(d1 as usize)).addr = header_phys;
+            (*self.virtq.desc.add(d1 as usize)).len = core::mem::size_of::<VirtioBlkReqHeader>() as u32;
+            (*self.virtq.desc.add(d1 as usize)).flags = VIRTQ_DESC_F_NEXT;
+            (*self.virtq.desc.add(d1 as usize)).next = d2;
+
+            // Descriptor 2: Status byte
+            (*self.virtq.desc.add(d2 as usize)).addr = status_phys;
+            (*self.virtq.desc.add(d2 as usize)).len = 1;
+            (*self.virtq.desc.add(d2 as usize)).flags = VIRTQ_DESC_F_WRITE;
+            (*self.virtq.desc.add(d2 as usize)).next = 0;
+
+            // Add to available ring
+            let avail_idx = ptr::read_volatile(ptr::addr_of!((*self.virtq.avail).idx));
+            ptr::write_volatile(self.virtq.avail_ring.add(avail_idx as usize % QUEUE_SIZE as usize), d1);
+            mb();
+            ptr::write_volatile(ptr::addr_of_mut!((*self.virtq.avail).idx), avail_idx.wrapping_add(1));
+            mb();
+
+            // Notify device
+            let queue_notify_off = ptr::read_volatile(&(*self.common_cfg).queue_notify_off);
+            let notify_addr = self.notify_base + (queue_notify_off as u64 * self.notify_off_multiplier as u64);
+            ptr::write_volatile(notify_addr as *mut u16, 0);
+            mb();
+
+            // Poll for completion
+            let start_used_idx = self.virtq.last_seen_used;
+            loop {
+                let used_idx = ptr::read_volatile(ptr::addr_of!((*self.virtq.used).idx));
+                if used_idx != start_used_idx {
+                    break;
+                }
+                for _ in 0..1000 {
+                    core::arch::asm!("nop");
+                }
+            }
+
+            // Check status
+            let final_status = ptr::read_volatile(status_ptr);
+            if final_status != VIRTIO_BLK_S_OK {
+                return Err("Flush failed");
+            }
+
+            // Free descriptors
+            self.virtq.free_desc(d1);
+            self.virtq.free_desc(d2);
 
             self.virtq.last_seen_used = ptr::read_volatile(ptr::addr_of!((*self.virtq.used).idx));
 
