@@ -25,3 +25,9 @@ pub static IPC_RECEIVER_ELF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../target/aarch64-unknown-none/release/ipc_receiver"
 ));
+
+/// Embedded CSV viewer ELF binary
+pub static CSV_VIEWER_ELF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../target/aarch64-unknown-none/release/csv_viewer"
+));

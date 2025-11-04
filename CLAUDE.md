@@ -1,6 +1,10 @@
+## START HERE 
+
+The goal is to build a modern, robust, modular Production-grade ARM64 Desktop OS written in Rust. no_std environment.
+
 # rOSt - Rust ARM64 Operating System
 
-Production-grade ARM64 Desktop OS written in Rust. **Last Updated:** 2025-11-03
+**Last Updated:** 2025-11-03
 
 ## Features
 
@@ -245,6 +249,49 @@ Mismatches jump out immediately.
 - Missing permission bit (common) vs. ARM64 errata (very rare)
 
 Try the simple explanation first.
+
+### 6. Recognize Compiler Optimization Symptoms
+**Pattern: "Works with debug output, breaks without debug output"**
+
+This is a **compiler optimization issue**, NOT a logic bug. The debug syscalls/prints act as memory barriers.
+
+**Immediate fixes to try (in order):**
+1. `AtomicUsize`/`AtomicBool` with `Ordering::SeqCst` for shared state
+2. `core::sync::atomic::compiler_fence(Ordering::SeqCst)`
+3. `volatile_store()`/`volatile_load()` for memory-mapped I/O
+
+**DON'T:**
+- Add more debug output (confirms symptom, doesn't fix root cause)
+- Assume the data isn't being written (it is, but compiler optimizes it away)
+- Spend time debugging parsing/logic when the pattern is clear
+
+**Example from CSV viewer:**
+```rust
+// ❌ BROKEN - Compiler optimizes away "dead stores" in release mode
+struct CsvData {
+    rows: usize,
+    cols: usize,
+}
+fn set_cell(&mut self, row: usize, col: usize) {
+    if row >= self.rows { self.rows = row + 1; }  // Optimized away!
+}
+
+// ✅ FIXED - Atomic forces actual memory writes
+struct CsvData {
+    rows: AtomicUsize,
+    cols: AtomicUsize,
+}
+fn set_cell(&mut self, row: usize, col: usize) {
+    let current = self.rows.load(Ordering::SeqCst);
+    if row >= current { self.rows.store(row + 1, Ordering::SeqCst); }
+}
+```
+
+**Why this happens:**
+- Release mode (`--release`) enables aggressive optimizations
+- Compiler sees `self.rows = X` but `self.rows` is never read in the same function
+- Assumes it's a dead store and eliminates it
+- Debug syscalls act as opaque function calls that could read memory, preventing optimization
 
 ## Critical Gotchas
 

@@ -639,9 +639,10 @@ pub fn test_input_events() -> (bool, bool) {
                                     if crate::gui::window_manager::get_window_count() >= 4 {
                                         set_menu_status("Cannot open: 4 windows max");
                                     } else {
-                                        // Check if file is an image (BMP, PNG, or JPEG)
+                                        // Check file type
                                         let lower = filename.to_lowercase();
                                         let is_image = lower.ends_with(".bmp") || lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg");
+                                        let is_csv = lower.ends_with(".csv");
 
                                         if let Some(explorer) = crate::gui::widgets::file_explorer::get_file_explorer(explorer_id) {
                                         if let (Some(ref fs), Some(device_idx)) = (&explorer.filesystem, explorer.device_index) {
@@ -657,7 +658,27 @@ pub fn test_input_events() -> (bool, bool) {
                                                     if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
                                                         if let Some(device) = devices.get_mut(device_idx) {
                                                             if let Ok(bytes_read) = fs.read_file(device, &filename, &mut buffer) {
-                                                                if is_image {
+                                                                if is_csv {
+                                                                    // Open in CSV viewer (userspace app)
+                                                                    if let Ok(mut target_fs) = crate::system::fs::filesystem::SimpleFilesystem::mount(device) {
+                                                                        // Delete old data.csv if it exists
+                                                                        let _ = target_fs.delete_file(device, "data.csv");
+
+                                                                        // Write the CSV data to data.csv
+                                                                        if let Ok(_) = target_fs.create_file(device, "data.csv", bytes_read as u32) {
+                                                                            if let Ok(_) = target_fs.write_file(device, "data.csv", &buffer[..bytes_read]) {
+                                                                                // Launch CSV viewer userspace app
+                                                                                let csv_viewer_elf = crate::kernel::embedded_apps::CSV_VIEWER_ELF;
+                                                                                let _process_id = crate::kernel::elf_loader::load_elf_and_spawn(csv_viewer_elf);
+
+                                                                                set_menu_status(&alloc::format!("Opened {} in CSV viewer", filename));
+
+                                                                                // Yield to scheduler so CSV viewer can run
+                                                                                crate::kernel::thread::yield_now();
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                } else if is_image {
                                                                     // Open in image viewer
                                                                     let viewer_id = crate::gui::widgets::image_viewer::create_image_viewer_with_data(
                                                                         &filename,

@@ -63,7 +63,33 @@ pub fn init_exception_vectors() {
     }
 }
 
-/// Rust handler called from assembly syscall stub
+/// Rust IRQ handler called from assembly IRQ entry stub
+/// Handles interrupts from both EL1 and EL0
+#[no_mangle]
+extern "C" fn handle_irq_rust() {
+    // Handle IRQ interrupts
+    // Read from GIC to determine interrupt source
+    unsafe {
+        let intid = gic_acknowledge_interrupt();
+
+        match intid {
+            30 => {
+                // Don't print every timer interrupt, way too spammy
+                handle_timer_interrupt()
+            }
+            _ => {
+                crate::kernel::uart_write_string("[IRQ] Unknown interrupt: ");
+                if intid < 10 {
+                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + intid as u8);
+                }
+                crate::kernel::uart_write_string("\r\n");
+            }
+        }
+
+        gic_end_interrupt(intid);
+    }
+}
+
 /// Context pointer points to saved registers on the stack
 #[no_mangle]
 extern "C" fn handle_el0_syscall_rust(ctx: *mut ExceptionContext) {
@@ -90,10 +116,14 @@ extern "C" fn handle_el0_syscall_rust(ctx: *mut ExceptionContext) {
         // Print EC (Exception Class) and ISS (Instruction Specific Syndrome)
         let ec = (esr >> 26) & 0x3F;
         let iss = esr & 0xFFFFFF;
-        crate::kernel::uart_write_string(&alloc::format!("[FAULT] EC=0x{:02x}, ISS=0x{:06x}\r\n", ec, iss));
+        crate::kernel::uart_write_string("[FAULT] EC=0x");
+        print_hex_simple(ec as u64);
+        crate::kernel::uart_write_string(", ISS=0x");
+        print_hex_simple(iss as u64);
+        crate::kernel::uart_write_string("\r\n");
 
         // Print ELR_EL1 (Exception Link Register - faulting address)
-        crate::kernel::uart_write_string("[FAULT] ELR_EL1 (fault address): 0x");
+        crate::kernel::uart_write_string("[FAULT] ELR_EL1 (fault PC): 0x");
         print_hex_simple(elr);
         crate::kernel::uart_write_string("\r\n");
 

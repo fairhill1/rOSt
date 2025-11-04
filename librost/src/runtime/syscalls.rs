@@ -15,6 +15,41 @@ pub unsafe fn syscall(num: u64, arg0: u64, arg1: u64, arg2: u64) -> i64 {
         inout("x0") arg0 => result,
         in("x1") arg1,
         in("x2") arg2,
+        // Mark unused caller-saved registers as potentially clobbered
+        // X0, X1, X2, X8 are already inputs, so only mark X3-X7, X9-X18
+        out("x3") _,
+        out("x4") _,
+        out("x5") _,
+        out("x6") _,
+        out("x7") _,
+        out("x9") _,
+        out("x10") _,
+        out("x11") _,
+        out("x12") _,
+        out("x13") _,
+        out("x14") _,
+        out("x15") _,
+        out("x16") _,
+        out("x17") _,
+        // X18 is platform reserved, don't clobber
+    );
+    result
+}
+
+/// Syscall wrapper with 6 arguments (for drawing syscalls)
+/// ARM64 calling convention: X0-X7 for arguments, X8 for syscall number
+#[inline(always)]
+pub unsafe fn syscall6(num: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i64 {
+    let result: i64;
+    asm!(
+        "svc #0",
+        in("x8") num,
+        inout("x0") arg0 => result,
+        in("x1") arg1,
+        in("x2") arg2,
+        in("x3") arg3,
+        in("x4") arg4,
+        in("x5") arg5,
     );
     result
 }
@@ -407,5 +442,64 @@ pub fn recv_message(buf: &mut [u8], timeout_ms: u32) -> isize {
             buf.len() as u64,
             timeout_ms as u64
         ) as isize
+    }
+}
+
+// ============================================================================
+// DRAWING SYSCALLS (TrueType Font Rendering)
+// ============================================================================
+
+/// Draw text to the framebuffer using kernel's TrueType font renderer
+/// x, y: Position in pixels
+/// text: Text string to draw
+/// color: ARGB color (0xAARRGGBB)
+/// Returns: 0 on success, negative error code on failure
+pub fn draw_text(x: i32, y: i32, text: &str, color: u32) -> i32 {
+    unsafe {
+        syscall6(
+            31, // SyscallNumber::DrawText
+            x as u64,
+            y as u64,
+            text.as_ptr() as u64,
+            text.len() as u64,
+            color as u64,
+            0 // unused arg
+        ) as i32
+    }
+}
+
+/// Draw a filled rectangle to the framebuffer
+/// x, y: Top-left position in pixels
+/// width, height: Dimensions in pixels
+/// color: ARGB color (0xAARRGGBB)
+/// Returns: 0 on success, negative error code on failure
+pub fn draw_rect(x: i32, y: i32, width: u32, height: u32, color: u32) -> i32 {
+    unsafe {
+        syscall6(
+            32, // SyscallNumber::DrawRect
+            x as u64,
+            y as u64,
+            width as u64,
+            height as u64,
+            color as u64,
+            0 // unused arg
+        ) as i32
+    }
+}
+
+// ============================================================================
+// SCHEDULER SYSCALLS
+// ============================================================================
+
+/// Yield CPU to scheduler - let other threads/processes run
+/// This is critical for cooperative multitasking in userspace apps
+pub fn sched_yield() {
+    unsafe {
+        syscall(
+            33, // SyscallNumber::Yield
+            0,
+            0,
+            0
+        );
     }
 }

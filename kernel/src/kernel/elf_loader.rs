@@ -17,6 +17,12 @@ use alloc::boxed::Box;
 ///
 /// Returns process ID on success, 0 on failure
 pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
+    // Disable interrupts during ELF loading (critical section)
+    // Timer interrupts during parsing/allocation can cause context switches in invalid states
+    unsafe {
+        core::arch::asm!("msr daifset, #2"); // Mask IRQ
+    }
+
     crate::kernel::uart_write_string("[ELF] Starting ELF load...\r\n");
 
     // Parse ELF file
@@ -28,6 +34,7 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
         }
         Err(_) => {
             crate::kernel::uart_write_string("[ELF] Error: Failed to parse ELF file\r\n");
+            unsafe { core::arch::asm!("msr daifclr, #2"); } // Re-enable interrupts
             return 0;
         }
     };
@@ -35,6 +42,7 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
     // Verify it's an AArch64 executable
     if elf.header.pt2.machine().as_machine() != xmas_elf::header::Machine::AArch64 {
         crate::kernel::uart_write_string("[ELF] Error: Not an AArch64 binary\r\n");
+        unsafe { core::arch::asm!("msr daifclr, #2"); } // Re-enable interrupts
         return 0;
     }
 
@@ -49,6 +57,7 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
         Ok(result) => result,
         Err(e) => {
             crate::kernel::uart_write_string(&alloc::format!("[ELF] Error loading segments: {}\r\n", e));
+            unsafe { core::arch::asm!("msr daifclr, #2"); } // Re-enable interrupts
             return 0;
         }
     };
@@ -87,6 +96,11 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
     // The process needs this memory to stay alive
     // In a real OS, this would be managed by the process manager
     Box::leak(loaded_memory);
+
+    // Re-enable interrupts before returning
+    unsafe {
+        core::arch::asm!("msr daifclr, #2"); // Unmask IRQ
+    }
 
     process_id
 }

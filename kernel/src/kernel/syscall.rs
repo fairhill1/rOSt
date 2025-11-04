@@ -57,6 +57,13 @@ pub enum SyscallNumber {
     ShmUnmap = 28,
     SendMessage = 29,
     RecvMessage = 30,
+
+    // Drawing operations (TrueType font rendering)
+    DrawText = 31,
+    DrawRect = 32,
+
+    // Scheduler operations
+    Yield = 33,
 }
 
 impl SyscallNumber {
@@ -94,6 +101,9 @@ impl SyscallNumber {
             28 => Some(Self::ShmUnmap),
             29 => Some(Self::SendMessage),
             30 => Some(Self::RecvMessage),
+            31 => Some(Self::DrawText),
+            32 => Some(Self::DrawRect),
+            33 => Some(Self::Yield),
             _ => None,
         }
     }
@@ -256,6 +266,9 @@ pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
         SyscallNumber::ShmUnmap => sys_shm_unmap(args.arg0 as i32),
         SyscallNumber::SendMessage => sys_send_message(args.arg0 as u32, args.arg1 as *const u8, args.arg2 as usize),
         SyscallNumber::RecvMessage => sys_recv_message(args.arg0 as *mut u8, args.arg1 as usize, args.arg2 as u32),
+        SyscallNumber::DrawText => sys_draw_text(args.arg0 as i32, args.arg1 as i32, args.arg2 as *const u8, args.arg3 as usize, args.arg4 as u32),
+        SyscallNumber::DrawRect => sys_draw_rect(args.arg0 as i32, args.arg1 as i32, args.arg2 as u32, args.arg3 as u32, args.arg4 as u32),
+        SyscallNumber::Yield => sys_yield(),
         _ => SyscallError::NotImplemented.as_i64(),
     }
 }
@@ -673,29 +686,16 @@ fn sys_fb_map() -> i64 {
 }
 
 fn sys_fb_flush() -> i64 {
-    crate::kernel::uart_write_string("[SYSCALL] fb_flush() called\r\n");
-
     // Get GPU driver and flush the display
     let result = unsafe {
         match crate::kernel::GPU_DRIVER.as_mut() {
             Some(gpu) => {
                 match gpu.flush_display() {
-                    Ok(_) => {
-                        crate::kernel::uart_write_string("[SYSCALL] fb_flush() -> success\r\n");
-                        0
-                    }
-                    Err(e) => {
-                        crate::kernel::uart_write_string("[SYSCALL] fb_flush() -> failed: ");
-                        crate::kernel::uart_write_string(e);
-                        crate::kernel::uart_write_string("\r\n");
-                        SyscallError::InvalidArgument.as_i64()
-                    }
+                    Ok(_) => 0,
+                    Err(_) => SyscallError::InvalidArgument.as_i64()
                 }
             }
-            None => {
-                crate::kernel::uart_write_string("[SYSCALL] fb_flush() -> no GPU driver\r\n");
-                SyscallError::InvalidArgument.as_i64()
-            }
+            None => SyscallError::InvalidArgument.as_i64()
         }
     };
 
@@ -709,14 +709,11 @@ fn sys_poll_event(event_ptr: *mut InputEventUser) -> i64 {
         return SyscallError::InvalidArgument.as_i64();
     }
 
-    crate::kernel::uart_write_string("[SYSCALL] poll_event() called\r\n");
-
     // Get event from kernel input queue
     let kernel_event = crate::kernel::drivers::input_events::get_input_event();
 
     match kernel_event {
         Some(event) => {
-            crate::kernel::uart_write_string("[SYSCALL] poll_event() -> found event!\r\n");
 
             // Convert kernel InputEvent to user InputEventUser
             let user_event = match event {
@@ -1213,4 +1210,77 @@ fn sys_send_message(dest_pid: u32, data: *const u8, len: usize) -> i64 {
 
 fn sys_recv_message(buf: *mut u8, len: usize, timeout_ms: u32) -> i64 {
     crate::kernel::syscall_ipc::sys_recv_message(buf, len, timeout_ms)
+}
+
+// ============================================================================
+// Drawing syscalls (TrueType font rendering)
+// ============================================================================
+
+fn sys_draw_text(x: i32, y: i32, text_ptr: *const u8, text_len: usize, color: u32) -> i64 {
+    if text_ptr.is_null() || text_len == 0 {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    // Read text from userspace
+    let text_slice = unsafe { core::slice::from_raw_parts(text_ptr, text_len) };
+    let text = match core::str::from_utf8(text_slice) {
+        Ok(s) => s,
+        Err(_) => return SyscallError::InvalidArgument.as_i64(),
+    };
+
+    // Draw text using kernel framebuffer module (with TrueType font)
+    crate::gui::framebuffer::draw_string(x as u32, y as u32, text, color);
+
+    0 // Success
+}
+
+fn sys_draw_rect(x: i32, y: i32, width: u32, height: u32, color: u32) -> i64 {
+    // For large rectangles (like full screen clears), use efficient bulk write
+    if width > 100 && height > 100 {
+
+        // Get direct framebuffer access
+        let fb_info = unsafe { crate::kernel::GPU_FRAMEBUFFER_INFO };
+        if let Some(fb) = fb_info {
+            let fb_ptr = fb.base_address as *mut u32;
+            let stride = fb.pixels_per_scanline as usize;
+
+            // Fill rectangle efficiently
+            for dy in 0..height as usize {
+                let screen_y = y as usize + dy;
+                if screen_y < fb.height as usize {
+                    let row_start = screen_y * stride + x as usize;
+                    unsafe {
+                        for dx in 0..width as usize {
+                            *fb_ptr.add(row_start + dx) = color;
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Small rectangles - use pixel-by-pixel (for borders, etc.)
+        for dy in 0..height {
+            for dx in 0..width {
+                let px = x + dx as i32;
+                let py = y + dy as i32;
+                if px >= 0 && py >= 0 {
+                    crate::gui::framebuffer::draw_pixel(px as u32, py as u32, color);
+                }
+            }
+        }
+    }
+
+    0 // Success
+}
+
+// ============================================================================
+// Scheduler syscalls
+// ============================================================================
+
+fn sys_yield() -> i64 {
+    // For userspace threads, just return from the syscall
+    // The preemptive timer interrupt will handle thread switching
+    // (Calling thread::yield_now() here doesn't work because we're in syscall context
+    //  and the user's registers are on the exception stack, not in the TCB)
+    0 // Success
 }

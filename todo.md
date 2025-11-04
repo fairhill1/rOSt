@@ -1,6 +1,7 @@
 # TODO (in no specific order)
 
 - fatfs
+-  Single open_file(filename, explorer_id) function that both code paths call. That would be in window_manager.rs or a file operations module.
 - process manager
 - browser improvements
 	- css parsing

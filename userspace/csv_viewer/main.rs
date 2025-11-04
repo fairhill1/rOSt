@@ -67,11 +67,13 @@ const MAX_ROWS: usize = 100;
 const MAX_COLS: usize = 20;
 const MAX_CELL_LEN: usize = 64;
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 struct CsvData {
     cells: [[[u8; MAX_CELL_LEN]; MAX_COLS]; MAX_ROWS],
     cell_lens: [[usize; MAX_COLS]; MAX_ROWS],
-    rows: usize,
-    cols: usize,
+    rows: AtomicUsize,
+    cols: AtomicUsize,
 }
 
 impl CsvData {
@@ -79,8 +81,8 @@ impl CsvData {
         Self {
             cells: [[[0; MAX_CELL_LEN]; MAX_COLS]; MAX_ROWS],
             cell_lens: [[0; MAX_COLS]; MAX_ROWS],
-            rows: 0,
-            cols: 0,
+            rows: AtomicUsize::new(0),
+            cols: AtomicUsize::new(0),
         }
     }
 
@@ -94,16 +96,21 @@ impl CsvData {
         self.cells[row][col][len] = 0; // Null terminator
         self.cell_lens[row][col] = len;
 
-        if row >= self.rows {
-            self.rows = row + 1;
+        let current_rows = self.rows.load(Ordering::SeqCst);
+        if row >= current_rows {
+            self.rows.store(row + 1, Ordering::SeqCst);
         }
-        if col >= self.cols {
-            self.cols = col + 1;
+
+        let current_cols = self.cols.load(Ordering::SeqCst);
+        if col >= current_cols {
+            self.cols.store(col + 1, Ordering::SeqCst);
         }
     }
 
     fn get_cell(&self, row: usize, col: usize) -> &[u8] {
-        if row >= self.rows || col >= self.cols {
+        let rows = self.rows.load(Ordering::SeqCst);
+        let cols = self.cols.load(Ordering::SeqCst);
+        if row >= rows || col >= cols {
             return &[];
         }
         &self.cells[row][col][..self.cell_lens[row][col]]
@@ -119,27 +126,32 @@ fn render_spreadsheet(
     selected_row: usize,
     selected_col: usize,
 ) {
+    use core::sync::atomic::Ordering;
+
     // Clear screen
     draw_rect(0, 0, fb_width as u32, fb_height as u32, 0xFF_00_00_00);
 
     // Draw header
     draw_rect(0, 0, fb_width as u32, HEADER_HEIGHT as u32, HEADER_BG);
-    draw_text_proper(10, 8, "CSV Viewer - Arrow keys to navigate, Q to quit", TEXT_COLOR);
+    draw_text(10, 8, "CSV Viewer - Arrow keys to navigate, Q to quit", TEXT_COLOR);
 
     let start_y = HEADER_HEIGHT + 10;
     let visible_rows = (fb_height - start_y) / CELL_HEIGHT;
     let visible_cols = fb_width / CELL_WIDTH;
 
     // Draw grid
+    let data_rows = data.rows.load(Ordering::SeqCst);
+    let data_cols = data.cols.load(Ordering::SeqCst);
+
     for row_idx in 0..visible_rows {
         let data_row = scroll_y + row_idx;
-        if data_row >= data.rows {
+        if data_row >= data_rows {
             break;
         }
 
         for col_idx in 0..visible_cols {
             let data_col = scroll_x + col_idx;
-            if data_col >= data.cols {
+            if data_col >= data_cols {
                 break;
             }
 
@@ -153,17 +165,17 @@ fn render_spreadsheet(
                 CELL_BG
             };
 
-            draw_rect(x as u32, y as u32, (CELL_WIDTH - 1) as u32, (CELL_HEIGHT - 1) as u32, bg_color);
+            draw_rect(x as i32, y as i32, (CELL_WIDTH - 1) as u32, (CELL_HEIGHT - 1) as u32, bg_color);
 
             // Draw cell border
-            draw_rect((x + CELL_WIDTH - 1) as u32, y as u32, 1, CELL_HEIGHT as u32, BORDER_COLOR);
-            draw_rect(x as u32, (y + CELL_HEIGHT - 1) as u32, CELL_WIDTH as u32, 1, BORDER_COLOR);
+            draw_rect((x + CELL_WIDTH - 1) as i32, y as i32, 1, CELL_HEIGHT as u32, BORDER_COLOR);
+            draw_rect(x as i32, (y + CELL_HEIGHT - 1) as i32, CELL_WIDTH as u32, 1, BORDER_COLOR);
 
             // Draw cell text
             let cell_data = data.get_cell(data_row, data_col);
             if !cell_data.is_empty() {
                 if let Ok(text) = core::str::from_utf8(cell_data) {
-                    draw_text_proper((x + 4) as i32, (y + 6) as i32, text, TEXT_COLOR);
+                    draw_text((x + 4) as i32, (y + 6) as i32, text, TEXT_COLOR);
                 }
             }
         }
@@ -172,6 +184,8 @@ fn render_spreadsheet(
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
+    use core::sync::atomic::Ordering;
+
     print_debug("=== rOSt CSV Viewer ===\r\n");
     print_debug("Running at EL0\r\n");
 
@@ -209,16 +223,12 @@ pub extern "C" fn _start() -> ! {
         data.set_cell(4, 2, b"Seattle");
         data.set_cell(4, 3, b"diana@example.com");
     } else {
-        print_debug("Reading CSV data...\r\n");
-
         // Read file into buffer
         let mut file_buf = [0u8; 4096];
         let bytes_read = read(fd, &mut file_buf);
         close(fd);
 
         if bytes_read > 0 {
-            print_debug("Parsing CSV...\r\n");
-
             // Parse CSV using csv-core
             let csv_data = &file_buf[..bytes_read as usize];
             let mut reader = Reader::new();
@@ -265,10 +275,6 @@ pub extern "C" fn _start() -> ! {
                     }
                 }
             }
-
-            print_debug("CSV parsing complete\r\n");
-        } else {
-            print_debug("Failed to read file\r\n");
         }
     }
 
@@ -290,8 +296,6 @@ pub extern "C" fn _start() -> ! {
     let mut selected_row = 0;
     let mut selected_col = 0;
 
-    print_debug("Starting main loop...\r\n");
-
     // Main loop
     loop {
         // Render
@@ -306,6 +310,12 @@ pub extern "C" fn _start() -> ! {
         );
 
         fb_flush();
+
+        // Small delay to prevent excessive CPU usage (16ms ≈ 60 FPS)
+        let target_time = get_time() + 16;
+        while get_time() < target_time {
+            // Busy wait for now (could use a sleep syscall in the future)
+        }
 
         // Handle input
         if let Some(event) = poll_event() {
@@ -324,7 +334,7 @@ pub extern "C" fn _start() -> ! {
                         }
                     }
                     108 => {  // Down arrow (KEY_DOWN)
-                        if selected_row + 1 < data.rows {
+                        if selected_row + 1 < data.rows.load(Ordering::SeqCst) {
                             selected_row += 1;
                             let visible_rows = (fb_height - HEADER_HEIGHT - 10) / CELL_HEIGHT;
                             if selected_row >= scroll_y + visible_rows {
@@ -341,7 +351,7 @@ pub extern "C" fn _start() -> ! {
                         }
                     }
                     106 => {  // Right arrow (KEY_RIGHT)
-                        if selected_col + 1 < data.cols {
+                        if selected_col + 1 < data.cols.load(Ordering::SeqCst) {
                             selected_col += 1;
                             let visible_cols = fb_width / CELL_WIDTH;
                             if selected_col >= scroll_x + visible_cols {
@@ -354,10 +364,8 @@ pub extern "C" fn _start() -> ! {
             }
         }
 
-        // Small delay to avoid busy-waiting
-        for _ in 0..50000 {
-            unsafe { core::arch::asm!("nop"); }
-        }
+        // Yield to scheduler to allow GUI and other processes to run
+        sched_yield();
     }
 }
 
