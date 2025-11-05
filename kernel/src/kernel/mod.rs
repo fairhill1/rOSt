@@ -369,23 +369,6 @@ fn kernel_gui_thread() {
         core::arch::asm!("msr daifclr, #2"); // Clear IRQ mask
     }
 
-    // Debug: Print this thread's process ID
-    {
-        let scheduler = scheduler::SCHEDULER.lock();
-        if let Some(thread_id) = scheduler.current_thread {
-            if let Some(thread) = scheduler.threads.iter().find(|t| t.id == thread_id) {
-                uart_write_string("[GUI-THREAD] My process_id = ");
-                let pid = thread.process_id;
-                let hex_chars = b"0123456789ABCDEF";
-                unsafe {
-                    core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(pid >> 4) as usize]);
-                    core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(pid & 0xF) as usize]);
-                }
-                uart_write_string("\r\n");
-            }
-        }
-    }
-
     // Get framebuffer info from global
     let fb_info = unsafe { GPU_FRAMEBUFFER_INFO.unwrap() };
 
@@ -470,11 +453,9 @@ fn kernel_gui_thread() {
                             3 => { // NoAction
                                 // Only handle menu clicks if the event was a button press, not hover
                                 if last_event_was_click {
-                                    uart_write_string("[KERNEL] NoAction for button press - checking menu\r\n");
                                     let (cursor_x, cursor_y) = crate::gui::framebuffer::get_cursor_pos();
                                     if let Some(menu_idx) = crate::gui::window_manager::get_hovered_menu_button(cursor_x, cursor_y) {
                                         // Menu button clicked! Open corresponding window
-                                        uart_write_string("[MENU] Button clicked, opening window\r\n");
                                         crate::gui::window_manager::open_window_by_menu_index(menu_idx);
                                         needs_full_render = true;
                                     }

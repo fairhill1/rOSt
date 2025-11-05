@@ -352,17 +352,15 @@ impl WindowManager {
             }
         }
 
-        // Skip text-based prompts and status messages (require font rendering)
-        // TODO: Re-enable when bitmap font is stable
-
-        // Draw menu items with backgrounds but no text
+        // Draw menu items with text using bitmap font fallback
         let (cursor_x, cursor_y) = framebuffer::get_cursor_pos();
         let at_limit = self.windows.len() >= 4;
 
         let mut current_x = MENU_START_X;
         for item in MENU_ITEMS.iter() {
-            // Fixed width since we can't measure text without font
-            let item_width = 100u32; // Approximate width for menu items
+            // Use bitmap font width (16px per char)
+            let text_width = (item.label.len() * 16) as u32;
+            let item_width = text_width + MENU_ITEM_PADDING_X * 2;
             let item_y = MENU_START_Y;
 
             // Check if cursor is hovering over this item
@@ -380,6 +378,12 @@ impl WindowManager {
                 COLOR_MENU_ITEM
             };
 
+            let text_color = if at_limit {
+                0xFF666666 // Dim gray when disabled
+            } else {
+                COLOR_TEXT
+            };
+
             // Draw menu item border
             self.draw_menu_rect(current_x, item_y, item_width, MENU_ITEM_HEIGHT, COLOR_MENU_ITEM_BORDER);
 
@@ -388,8 +392,10 @@ impl WindowManager {
                                item_width - 2, MENU_ITEM_HEIGHT - 2,
                                bg_color);
 
-            // Skip text rendering for now
-            // TODO: Add bitmap font rendering here
+            // Draw text (bitmap font: 16px tall)
+            let text_x = current_x + MENU_ITEM_PADDING_X;
+            let text_y = item_y + (MENU_ITEM_HEIGHT - 16) / 2; // Center 16px bitmap font
+            framebuffer::draw_string(text_x, text_y, item.label, text_color);
 
             // Move to next position
             current_x += item_width + MENU_ITEM_SPACING;
