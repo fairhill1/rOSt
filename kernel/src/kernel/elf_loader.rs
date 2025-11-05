@@ -19,36 +19,16 @@ use alloc::boxed::Box;
 pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
     // NOTE: RLSF allocator handles interrupt masking internally
     // DO NOT disable interrupts here - causes deadlock if GUI thread holds allocator mutex
-    crate::kernel::uart_write_string("[ELF] Starting ELF load...\r\n");
-    crate::kernel::uart_write_string("[ELF] ELF data size: ");
-    crate::kernel::uart_write_string(if elf_data.len() < 100000 { "OK\r\n" } else { "LARGE\r\n" });
 
-    // Check ELF magic bytes
+    // Validate size
     if elf_data.len() < 4 {
         crate::kernel::uart_write_string("[ELF] Error: Data too small\r\n");
         return 0;
     }
 
-    crate::kernel::uart_write_string("[ELF] Magic bytes: ");
-    for i in 0..4 {
-        let byte = elf_data[i];
-        let hex_chars = b"0123456789ABCDEF";
-        unsafe {
-            core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(byte >> 4) as usize]);
-            core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(byte & 0xF) as usize]);
-            core::ptr::write_volatile(0x09000000 as *mut u8, b' ');
-        }
-    }
-    crate::kernel::uart_write_string("\r\n");
-
-    crate::kernel::uart_write_string("[ELF] About to call ElfFile::new()...\r\n");
-
-    // Parse ELF file - NO allocations before this!
+    // Parse ELF file
     let elf = match ElfFile::new(elf_data) {
-        Ok(e) => {
-            crate::kernel::uart_write_string("[ELF] ELF parsed successfully\r\n");
-            e
-        }
+        Ok(e) => e,
         Err(_e) => {
             crate::kernel::uart_write_string("[ELF] Error: Failed to parse ELF file\r\n");
             return 0;
@@ -63,7 +43,6 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
 
     // Get entry point
     let entry_point = elf.header.pt2.entry_point();
-    crate::kernel::uart_write_string("[ELF] Got entry point\r\n");
 
     // Load program segments into memory
     let (loaded_memory, base_vaddr) = match load_program_segments(&elf, elf_data) {
@@ -75,7 +54,6 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
     };
 
     let loaded_base = loaded_memory.as_ptr() as u64;
-    crate::kernel::uart_write_string("[ELF] Loaded program into memory\r\n");
 
     // Calculate entry point offset from the ELF base virtual address
     let entry_offset = entry_point - base_vaddr;
@@ -87,8 +65,6 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
 
     // Spawn through scheduler
     let process_id = crate::kernel::scheduler::SCHEDULER.lock().spawn_user_process(entry_fn);
-
-    crate::kernel::uart_write_string("[ELF] Spawned process\r\n");
 
     // CRITICAL: We leak the memory here on purpose!
     // The process needs this memory to stay alive
