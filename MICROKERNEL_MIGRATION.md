@@ -188,14 +188,16 @@ enum AppToWM {
   - Currently fb_flush() has no parameters
   - Add dirty region tracking
 
-### Phase 2: WM Ownership (2-3 hours) 🚧 IN PROGRESS (80% complete)
+### Phase 2: WM Ownership (2-3 hours) ✅ COMPLETED
 - [x] Move window list to userspace WM
   - Port `WindowState` struct to userspace (already existed)
   - Port tiling layout logic (1/2/3/4 window configs)
   - Port menu bar logic (rendering with hover)
 - [x] Update WM to handle `CreateWindow` IPC from apps (already implemented)
-- [ ] Update WM to composite app buffers to FB
-- [~] Update WM to spawn apps via `sys_spawn_elf` (menu click detection done, spawn call TODO)
+- [x] Update WM to composite app buffers to FB
+- [x] Update WM to spawn apps via `sys_spawn_elf` (menu clicks spawn apps correctly)
+- [x] Implement text rendering with shared bitmap font (librost/graphics.rs)
+- [x] Workaround ELF relocation issues (runtime string initialization)
 
 ### Phase 3: Convert Terminal (3-4 hours) ✅ COMPLETED
 - [x] Create `userspace/terminal/` crate
@@ -215,10 +217,11 @@ enum AppToWM {
 - [ ] Convert File Explorer to `userspace/file_explorer/`
 - [ ] Convert Snake to `userspace/snake/`
 
-### Phase 5: Cleanup (1-2 hours)
-- [ ] Delete `kernel/src/gui/window_manager.rs`
-- [ ] Delete `kernel/src/gui/widgets/`
-- [ ] Delete `kernel/src/apps/shell.rs`
+### Phase 5: Cleanup (1-2 hours) 🚧 IN PROGRESS
+- [x] Disable kernel GUI initialization (commented out, not deleted yet)
+- [ ] Delete `kernel/src/gui/window_manager.rs` (currently disabled, ready to delete)
+- [ ] Delete `kernel/src/gui/widgets/` (currently disabled, ready to delete)
+- [ ] Delete `kernel/src/apps/shell.rs` (currently disabled, ready to delete)
 - [ ] Remove unused imports/dependencies
 - [ ] Update kernel size metrics
 
@@ -261,6 +264,26 @@ enum AppToWM {
 **Root Cause:** `find_shared_memory()` searched all processes including zombies. Terminal's `shm_map(1)` found zombie IPC sender's shared memory with same ID.
 **Solution:** Skip terminated processes in `find_shared_memory()` at `kernel/src/kernel/thread.rs:743-745`
 **Impact:** System now stable with 3+ concurrent processes
+
+### ELF Relocation Missing (Critical Limitation)
+**Symptom:** Userspace WM crashed with data abort when accessing string literals. FAR showed ASCII text addresses from `.rodata` section (e.g., `0x657473696C202D20` = "etsil - ")
+**Root Cause:** ELF loader copies LOAD segments but doesn't perform relocations. Code contains references to `.rodata` addresses from original link-time layout, which are invalid after loading at different base address.
+**Workaround:** Initialize all constant strings at runtime using character literals:
+```rust
+// ❌ Broken: String literal in .rodata (wrong address after ELF load)
+const MENU_TEXT: &str = "Terminal";
+
+// ✅ Works: Runtime initialization with character literals (immediate values)
+static mut MENU_TEXT: [u8; 8] = [0; 8];
+fn init() {
+    MENU_TEXT[0] = b'T';  // Character literals are immediate values in code
+    MENU_TEXT[1] = b'e';
+    // ...
+}
+```
+**Files Affected:** `userspace/window_manager/main.rs` - menu labels, app names, all debug strings
+**Impact:** All userspace apps must avoid string literals until proper ELF relocation is implemented
+**Future Work:** Implement proper ELF relocation (process `.rela.dyn` section, patch GOT/PLT)
 
 ## Notes
 
