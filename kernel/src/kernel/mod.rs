@@ -1417,16 +1417,23 @@ pub extern "C" fn kernel_init_high_half() -> ! {
     // CRITICAL: Load ELF files with ONLY this thread running to avoid allocator contention
     uart_write_string("\n=== Loading userspace applications ===\r\n");
     fn elf_loader_thread() {
+        uart_write_string("[ELF-LOADER] Thread started\r\n");
+
         // Warm up allocator first
         for i in 0..10 {
             let _ = alloc::format!("init{}", i);
         }
+        uart_write_string("[ELF-LOADER] Allocator warmed up\r\n");
 
         // Load IPC sender
+        uart_write_string("[ELF-LOADER] Loading IPC sender...\r\n");
         let _warmup_pid = elf_loader::load_elf_and_spawn(embedded_apps::IPC_SENDER_ELF);
+        uart_write_string("[ELF-LOADER] IPC sender loaded\r\n");
 
         // Load window manager
+        uart_write_string("[ELF-LOADER] Loading window manager...\r\n");
         let wm_pid = elf_loader::load_elf_and_spawn(embedded_apps::WINDOW_MANAGER_ELF);
+        uart_write_string("[ELF-LOADER] Window manager loaded\r\n");
 
         // Store PID with Release ordering so GUI thread sees it with Acquire
         WINDOW_MANAGER_PID.store(wm_pid, Ordering::Release);
@@ -1456,7 +1463,9 @@ pub extern "C" fn kernel_init_high_half() -> ! {
     uart_write_string("✓ Boot complete, starting scheduler\r\n\r\n");
 
     // CRITICAL: Yield once to kickstart the scheduler
+    uart_write_string("[BOOT] About to yield to scheduler for first time...\r\n");
     thread::yield_now();
+    uart_write_string("[BOOT] Returned from first yield\r\n");
 
     // Boot thread now permanently yields to scheduler
     // Use WFI (wait for interrupt) to save power

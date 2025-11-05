@@ -56,6 +56,7 @@ static ALLOCATOR: BumpAllocator = BumpAllocator::new();
 const MAX_WINDOWS: usize = 16;
 const TITLE_BAR_HEIGHT: u32 = 30;
 const BORDER_WIDTH: u32 = 2;
+const CLOSE_BUTTON_SIZE: u32 = 18;
 
 // Colors
 const TITLE_BAR_COLOR: u32 = 0xFF_2D_2D_30;
@@ -128,6 +129,14 @@ fn is_in_title_bar(window: &WindowState, x: i32, y: i32) -> bool {
     y >= window.y && y < (window.y + TITLE_BAR_HEIGHT as i32)
 }
 
+/// Check if click is on close button
+fn is_in_close_button(window: &WindowState, x: i32, y: i32) -> bool {
+    let btn_x = window.x + window.width as i32 - CLOSE_BUTTON_SIZE as i32 - 4;
+    let btn_y = window.y + ((TITLE_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2) as i32;
+    x >= btn_x && x < btn_x + CLOSE_BUTTON_SIZE as i32 &&
+    y >= btn_y && y < btn_y + CLOSE_BUTTON_SIZE as i32
+}
+
 /// Handle input event and determine routing
 fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
     // Update mouse position
@@ -144,6 +153,12 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
             for i in 0..count {
                 let window = unsafe { &mut WINDOWS[i] };
                 if window.id == window_id {
+                    // Check if click is on close button first
+                    if is_in_close_button(window, mouse_x, mouse_y) {
+                        // Request window close
+                        return WMToKernel::RequestClose { window_id };
+                    }
+
                     // Check if click is in title bar (for focus/drag)
                     if is_in_title_bar(window, mouse_x, mouse_y) {
                         // Request focus change

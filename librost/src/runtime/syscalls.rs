@@ -515,3 +515,53 @@ pub fn sched_yield() {
         );
     }
 }
+
+// ============================================================================
+// PROCESS MANAGEMENT SYSCALLS (for microkernel WM)
+// ============================================================================
+
+/// Spawn a new process from an ELF file
+/// path: Path to ELF file (e.g., "/bin/terminal")
+/// Returns: PID of new process, or negative error code on failure
+pub fn spawn_elf(path: &str) -> i64 {
+    unsafe {
+        syscall(
+            34, // SyscallNumber::SpawnElf
+            path.as_ptr() as u64,
+            path.len() as u64,
+            0
+        )
+    }
+}
+
+/// Kill a process by PID
+/// pid: Process ID to kill
+/// Returns: 0 on success, negative error code on failure
+pub fn kill(pid: u64) -> i32 {
+    unsafe {
+        syscall(
+            35, // SyscallNumber::Kill
+            pid,
+            0,
+            0
+        ) as i32
+    }
+}
+
+/// Flush a region of the framebuffer to the display
+/// x, y: Top-left corner of region
+/// width, height: Dimensions of region
+/// Returns: 0 on success, negative error code on failure
+pub fn fb_flush_region(x: u32, y: u32, width: u32, height: u32) -> i32 {
+    unsafe {
+        syscall6(
+            36, // SyscallNumber::FbFlushRegion
+            x as u64,
+            y as u64,
+            width as u64,
+            height as u64,
+            0, // unused
+            0  // unused
+        ) as i32
+    }
+}

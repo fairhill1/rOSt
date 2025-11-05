@@ -64,6 +64,13 @@ pub enum SyscallNumber {
 
     // Scheduler operations
     Yield = 33,
+
+    // Process management (for microkernel WM)
+    SpawnElf = 34,
+    Kill = 35,
+
+    // Framebuffer operations (dirty regions)
+    FbFlushRegion = 36,
 }
 
 impl SyscallNumber {
@@ -104,6 +111,9 @@ impl SyscallNumber {
             31 => Some(Self::DrawText),
             32 => Some(Self::DrawRect),
             33 => Some(Self::Yield),
+            34 => Some(Self::SpawnElf),
+            35 => Some(Self::Kill),
+            36 => Some(Self::FbFlushRegion),
             _ => None,
         }
     }
@@ -238,7 +248,17 @@ impl SyscallArgs {
 pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
     let syscall = match SyscallNumber::from_u64(syscall_num) {
         Some(sc) => sc,
-        None => return SyscallError::InvalidSyscall.as_i64(),
+        None => {
+            crate::kernel::uart_write_string("[SYSCALL] Invalid syscall number: ");
+            if syscall_num < 100 {
+                unsafe {
+                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + (syscall_num / 10) as u8);
+                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + (syscall_num % 10) as u8);
+                }
+            }
+            crate::kernel::uart_write_string("\r\n");
+            return SyscallError::InvalidSyscall.as_i64();
+        }
     };
 
     match syscall {
@@ -269,6 +289,9 @@ pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
         SyscallNumber::DrawText => sys_draw_text(args.arg0 as i32, args.arg1 as i32, args.arg2 as *const u8, args.arg3 as usize, args.arg4 as u32),
         SyscallNumber::DrawRect => sys_draw_rect(args.arg0 as i32, args.arg1 as i32, args.arg2 as u32, args.arg3 as u32, args.arg4 as u32),
         SyscallNumber::Yield => sys_yield(),
+        SyscallNumber::SpawnElf => sys_spawn_elf(args.arg0 as *const u8, args.arg1 as usize),
+        SyscallNumber::Kill => sys_kill(args.arg0 as u64),
+        SyscallNumber::FbFlushRegion => sys_fb_flush_region(args.arg0 as u32, args.arg1 as u32, args.arg2 as u32, args.arg3 as u32),
         _ => SyscallError::NotImplemented.as_i64(),
     }
 }
@@ -1283,4 +1306,78 @@ fn sys_yield() -> i64 {
     // in the ExceptionContext on the stack, so context switching is safe.
     crate::kernel::thread::yield_now();
     0 // Success
+}
+
+// ============================================================================
+// Process management syscalls (for microkernel)
+// ============================================================================
+
+fn sys_spawn_elf(path: *const u8, path_len: usize) -> i64 {
+    if path.is_null() || path_len == 0 || path_len > 256 {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    // Read path from userspace
+    let path_slice = unsafe { core::slice::from_raw_parts(path, path_len) };
+    let path_str = match core::str::from_utf8(path_slice) {
+        Ok(s) => s,
+        Err(_) => return SyscallError::InvalidArgument.as_i64(),
+    };
+
+    crate::kernel::uart_write_string("[SYSCALL] spawn_elf(\"");
+    crate::kernel::uart_write_string(path_str);
+    crate::kernel::uart_write_string("\") called\r\n");
+
+    // For now, we only support spawning embedded ELFs
+    // Later can add filesystem support
+    match path_str {
+        "/bin/terminal" | "terminal" => {
+            crate::kernel::uart_write_string("[SYSCALL] spawn_elf() -> not implemented yet\r\n");
+            SyscallError::NotImplemented.as_i64()
+        }
+        _ => {
+            crate::kernel::uart_write_string("[SYSCALL] spawn_elf() -> file not found\r\n");
+            SyscallError::FileNotFound.as_i64()
+        }
+    }
+}
+
+fn sys_kill(pid: u64) -> i64 {
+    crate::kernel::uart_write_string("[SYSCALL] kill(pid=");
+    if pid < 10 {
+        unsafe {
+            core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + pid as u8);
+        }
+    }
+    crate::kernel::uart_write_string(") called\r\n");
+
+    // Check that we're not trying to kill kernel threads (PIDs 0-3 are reserved)
+    if pid < 4 {
+        crate::kernel::uart_write_string("[SYSCALL] kill() -> cannot kill kernel thread\r\n");
+        return SyscallError::PermissionDenied.as_i64();
+    }
+
+    // Terminate the process
+    crate::kernel::thread::terminate_process(pid as usize);
+
+    crate::kernel::uart_write_string("[SYSCALL] kill() -> success\r\n");
+    0 // Success
+}
+
+fn sys_fb_flush_region(x: u32, y: u32, width: u32, height: u32) -> i64 {
+    // For now, just flush the entire display
+    // TODO: Implement dirty region tracking for performance
+    let result = unsafe {
+        match crate::kernel::GPU_DRIVER.as_mut() {
+            Some(gpu) => {
+                match gpu.flush_display() {
+                    Ok(_) => 0,
+                    Err(_) => SyscallError::InvalidArgument.as_i64()
+                }
+            }
+            None => SyscallError::InvalidArgument.as_i64()
+        }
+    };
+
+    result
 }
