@@ -125,16 +125,26 @@ impl Scheduler {
 
     /// Terminate current thread and yield to next thread
     /// Used when a thread exits - doesn't save current thread context
-    /// Returns the next thread's context to switch to (without saving current)
-    pub fn terminate_current_and_yield(&mut self) -> Option<*const crate::kernel::thread::ThreadContext> {
-        if let Some(current_id) = self.current_thread {
+    /// Returns (next_context, process_id_to_cleanup) tuple
+    /// CRITICAL: Caller must clean up the process AFTER releasing scheduler lock!
+    pub fn terminate_current_and_yield(&mut self) -> (Option<*const crate::kernel::thread::ThreadContext>, Option<usize>) {
+        let process_to_cleanup = if let Some(current_id) = self.current_thread {
+            // Get process ID before terminating the thread
+            let process_id = self.threads.iter()
+                .find(|t| t.id == current_id)
+                .map(|t| t.process_id);
+
             // Mark current thread as terminated (don't add back to ready queue)
             if let Some(thread) = self.threads.iter_mut().find(|t| t.id == current_id) {
                 thread.state = ThreadState::Terminated;
                 // NOTE: No heap allocations in scheduler path!
             }
             self.current_thread = None;
-        }
+
+            process_id
+        } else {
+            None
+        };
 
         // Pick next thread to run
         let next_id = match self.pick_next() {
@@ -143,21 +153,24 @@ impl Scheduler {
                 // No threads ready - check if we have a kernel context to return to
                 if let Some(kernel_ctx) = self.kernel_context {
                     crate::kernel::uart_write_string("[SCHEDULER] No more threads, returning to kernel context (shell)\r\n");
-                    return Some(kernel_ctx as *const _);
+                    return (Some(kernel_ctx as *const _), process_to_cleanup);
                 }
 
                 crate::kernel::uart_write_string("[SCHEDULER] No more threads and no kernel context\r\n");
-                return None;
+                return (None, process_to_cleanup);
             }
         };
 
         // Get next thread and mark it as running
-        let next_thread = self.threads.iter_mut().find(|t| t.id == next_id)?;
+        let next_thread = match self.threads.iter_mut().find(|t| t.id == next_id) {
+            Some(t) => t,
+            None => return (None, process_to_cleanup),
+        };
         next_thread.state = ThreadState::Running;
         self.current_thread = Some(next_id);
 
-        // Return pointer to next thread's context (no old context to save)
-        Some(&next_thread.context as *const _)
+        // Return pointer to next thread's context and process ID to clean up
+        (Some(&next_thread.context as *const _), process_to_cleanup)
     }
 
     /// Preempt current thread (called by timer interrupt)

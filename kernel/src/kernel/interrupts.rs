@@ -170,11 +170,18 @@ extern "C" fn handle_el0_syscall_rust(ctx: *mut ExceptionContext) {
         crate::kernel::uart_write_string("[KERNEL] Terminating thread and switching to next\r\n");
 
         // Terminate current thread and get next thread's context
-        // CRITICAL: This must be done outside the scheduler lock to avoid deadlock
-        let next_context = {
+        // CRITICAL: Clean up process AFTER releasing scheduler lock to avoid nested locks
+        let (next_context, process_to_cleanup) = {
             let mut scheduler = crate::kernel::scheduler::SCHEDULER.lock();
             scheduler.terminate_current_and_yield()
         };
+
+        // Now mark the process as terminated (scheduler lock is released)
+        // NOTE: We can't actually free the process because we're still on its kernel stack!
+        // The process becomes a "zombie" until a reaper cleans it up
+        if let Some(pid) = process_to_cleanup {
+            crate::kernel::thread::mark_process_terminated(pid);
+        }
 
         // If we have a next thread, jump to it (never returns)
         if let Some(ctx) = next_context {

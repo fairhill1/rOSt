@@ -153,6 +153,16 @@ impl Process {
         // Allocate kernel stack
         let kernel_stack = vec![0u8; STACK_SIZE].into_boxed_slice();
 
+        // DEBUG: Print kernel stack allocation
+        let kernel_stack_ptr = kernel_stack.as_ptr();
+        crate::kernel::uart_write_string(&alloc::format!(
+            "[PROCESS] Kernel stack for kernel process {}: {:#018x} - {:#018x} ({} KB)\r\n",
+            id,
+            kernel_stack_ptr as u64,
+            kernel_stack_ptr as u64 + STACK_SIZE as u64,
+            STACK_SIZE / 1024
+        ));
+
         Process {
             id,
             state: ProcessState::Created,
@@ -181,6 +191,15 @@ impl Process {
             // Calculate address for this process's stack
             let stack_addr = (USER_STACK_BASE + (idx as u64 * USER_STACK_SIZE as u64)) as *mut u8;
 
+            // DEBUG: Print stack allocation
+            crate::kernel::uart_write_string(&alloc::format!(
+                "[PROCESS] User stack for process {}: {:#018x} - {:#018x} ({} KB)\r\n",
+                id,
+                stack_addr as u64,
+                stack_addr as u64 + USER_STACK_SIZE as u64,
+                USER_STACK_SIZE / 1024
+            ));
+
             // Zero the stack memory
             core::ptr::write_bytes(stack_addr, 0, USER_STACK_SIZE);
 
@@ -190,6 +209,16 @@ impl Process {
 
         // Allocate kernel stack for syscalls (from heap is fine - always accessed at EL1)
         let kernel_stack = vec![0u8; STACK_SIZE].into_boxed_slice();
+
+        // DEBUG: Print kernel stack allocation
+        let kernel_stack_ptr = kernel_stack.as_ptr();
+        crate::kernel::uart_write_string(&alloc::format!(
+            "[PROCESS] Kernel stack for process {}: {:#018x} - {:#018x} ({} KB)\r\n",
+            id,
+            kernel_stack_ptr as u64,
+            kernel_stack_ptr as u64 + STACK_SIZE as u64,
+            STACK_SIZE / 1024
+        ));
 
         Process {
             id,
@@ -610,6 +639,32 @@ impl ProcessManager {
         }
     }
 
+    /// Mark a process as terminated and ready for cleanup
+    /// NOTE: We don't actually remove the process from the table here because
+    /// the calling thread is still executing on the process's kernel stack!
+    /// The process will be cleaned up later by a background task or left as "zombie"
+    pub fn mark_process_terminated(&mut self, id: usize) {
+        if let Some(process) = self.get_process_mut(id) {
+            process.state = ProcessState::Terminated;
+
+            // Log termination
+            crate::kernel::uart_write_string("[PROCESS] Process ");
+            if id < 10 {
+                unsafe {
+                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + id as u8);
+                }
+            }
+            crate::kernel::uart_write_string(" marked as terminated (zombie)\r\n");
+
+            // TODO: Implement actual cleanup in a background reaper thread
+            // For now, the process becomes a "zombie" - marked terminated but not freed
+            // This is safe because:
+            // 1. The thread is marked Terminated so scheduler won't run it
+            // 2. The process is marked Terminated so syscalls won't access it
+            // 3. Memory is not freed (small leak but prevents use-after-free)
+        }
+    }
+
     /// Set the main thread ID for a process
     pub fn set_process_main_thread(&mut self, process_id: usize, thread_id: usize) {
         if let Some(process) = self.get_process_mut(process_id) {
@@ -646,6 +701,13 @@ pub fn create_kernel_process() -> usize {
         .unwrap_or(0)
 }
 
+/// Mark a process as terminated (becomes zombie until reaped)
+pub fn mark_process_terminated(id: usize) {
+    PROCESS_MANAGER.lock()
+        .as_mut()
+        .map(|pm| pm.mark_process_terminated(id));
+}
+
 /// Get process stack information (safe - returns owned data)
 pub fn get_process_stack_info(id: usize) -> Option<(u64, Option<u64>)> {
     PROCESS_MANAGER.lock()
@@ -672,10 +734,16 @@ where
 
 /// Search all processes for a shared memory region by ID
 /// Returns the physical address if found, None otherwise
+/// NOTE: Skips terminated (zombie) processes to avoid reusing freed resources
 pub fn find_shared_memory(shm_id: i32) -> Option<u64> {
     let mut pm_lock = PROCESS_MANAGER.lock();
     if let Some(pm) = pm_lock.as_mut() {
         for process in &mut pm.processes {
+            // Skip terminated processes (zombies)
+            if process.state == ProcessState::Terminated {
+                continue;
+            }
+
             if let Some(region) = process.shm_table.get_mut(shm_id) {
                 // Found it! Mark as mapped and return physical address
                 region.virtual_addr = Some(region.physical_addr);

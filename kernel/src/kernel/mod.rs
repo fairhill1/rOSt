@@ -1428,8 +1428,18 @@ pub extern "C" fn kernel_init_high_half() -> ! {
         }
         uart_write_string("[ELF-LOADER] Allocator warmed up\r\n");
 
-        // MINIMAL TEST: Load ONLY terminal to isolate the issue
-        uart_write_string("[ELF-LOADER] Loading terminal (minimal test)...\r\n");
+        // TEST: Load all 3 with diagnostics to see actual stack addresses when it crashes
+
+        uart_write_string("[ELF-LOADER] Loading IPC sender...\r\n");
+        let _sender_pid = elf_loader::load_elf_and_spawn(embedded_apps::IPC_SENDER_ELF);
+        uart_write_string("[ELF-LOADER] IPC sender loaded\r\n");
+
+        uart_write_string("[ELF-LOADER] Loading window manager...\r\n");
+        let wm_pid = elf_loader::load_elf_and_spawn(embedded_apps::WINDOW_MANAGER_ELF);
+        uart_write_string("[ELF-LOADER] WM loaded\r\n");
+        WINDOW_MANAGER_PID.store(wm_pid, Ordering::Release);
+
+        uart_write_string("[ELF-LOADER] Loading terminal...\r\n");
         let terminal_pid = elf_loader::load_elf_and_spawn(embedded_apps::TERMINAL_ELF);
         uart_write_string("[ELF-LOADER] Terminal loaded with PID: ");
         if terminal_pid < 10 {
@@ -1439,9 +1449,7 @@ pub extern "C" fn kernel_init_high_half() -> ! {
         }
         uart_write_string("\r\n");
 
-        // Skip other apps for now
-        WINDOW_MANAGER_PID.store(0, Ordering::Release); // No WM
-        uart_write_string("[ELF-LOADER] Skipped IPC sender and WM for minimal test\r\n");
+        uart_write_string("[ELF-LOADER] Test: IPC sender + WM + Terminal (3 processes with diagnostics)\r\n");
 
         // NOW spawn the GUI thread after ELF loading completes
         let _gui_thread_id = {
