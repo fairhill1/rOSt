@@ -2,7 +2,8 @@ ENTRY(_start)
 
 SECTIONS
 {
-    . = 0x40080000;
+    /* Start at 0 for position-independent code (relocatable) */
+    . = 0x0;
     
     .text :
     {
@@ -19,7 +20,16 @@ SECTIONS
     {
         *(.data .data.*)
     }
-    
+
+    /* Relocation sections for PIE/PIC */
+    .rela.dyn :
+    {
+        *(.rela.dyn)
+        *(.rela.text .rela.text.*)
+        *(.rela.rodata .rela.rodata.*)
+        *(.rela.data .rela.data.*)
+    }
+
     .bss ALIGN(8):
     {
         __bss_start = .;

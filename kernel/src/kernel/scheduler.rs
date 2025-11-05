@@ -1,11 +1,36 @@
 /// Round-robin scheduler for rOSt
 /// Manages thread scheduling and context switching
 
+/// Print a number to UART without heap allocations
+fn print_number(mut n: usize) {
+    if n == 0 {
+        crate::kernel::uart_write_string("0");
+        return;
+    }
+
+    let mut buf = [0u8; 20];
+    let mut i = 0;
+    while n > 0 {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+
+    // Print in reverse (we built it backwards)
+    while i > 0 {
+        i -= 1;
+        let ch = [buf[i]];
+        if let Ok(s) = core::str::from_utf8(&ch) {
+            crate::kernel::uart_write_string(s);
+        }
+    }
+}
+
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use spin::Mutex;
-use crate::kernel::thread::{Thread, ThreadState, context_switch, jump_to_thread, Process, set_process_main_thread};
+use crate::kernel::thread::{Thread, ThreadState, ThreadType, context_switch, jump_to_thread, Process, set_process_main_thread};
 
 pub struct Scheduler {
     pub threads: Vec<Box<Thread>>,
@@ -102,6 +127,15 @@ impl Scheduler {
             self.threads.iter().any(|t| t.id == id && t.state != ThreadState::Terminated)
         });
 
+        // DEBUG: Print ready queue contents
+        crate::kernel::uart_write_string("[SCHEDULER] Ready queue before pick: [");
+        for (i, &id) in self.ready_queue.iter().enumerate() {
+            if i > 0 { crate::kernel::uart_write_string(", "); }
+            // Print the actual thread ID number
+            print_number(id);
+        }
+        crate::kernel::uart_write_string("]\r\n");
+
         self.ready_queue.pop_front()
     }
 
@@ -168,6 +202,13 @@ impl Scheduler {
         };
         next_thread.state = ThreadState::Running;
         self.current_thread = Some(next_id);
+
+        // DEBUG: Print what thread we're switching to
+        crate::kernel::uart_write_string("[SCHEDULER] Switching to thread ID ");
+        print_number(next_id);
+        crate::kernel::uart_write_string(", PID ");
+        print_number(next_thread.process_id);
+        crate::kernel::uart_write_string("\r\n");
 
         // Return pointer to next thread's context and process ID to clean up
         (Some(&next_thread.context as *const _), process_to_cleanup)

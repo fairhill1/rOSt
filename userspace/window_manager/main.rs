@@ -8,12 +8,9 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, AtomicU32, AtomicBool, Ordering};
 
-// TEMPORARY: Disable all debug output to avoid .rodata relocation issues
-// The ELF loader doesn't handle relocations yet, so string literals crash
-#[inline(always)]
-fn print_debug(_s: &str) {
-    // No-op
-}
+// TEST: Re-enable one debug call to test ELF relocations
+// If relocations work, string literals should no longer crash
+// Keep this function here temporarily for testing, will remove later
 
 // Bump allocator for userspace
 const HEAP_SIZE: usize = 128 * 1024; // 128KB heap
@@ -112,19 +109,20 @@ impl WindowState {
 }
 
 /// Menu item definition
-#[derive(Copy, Clone)]
 struct MenuItem {
     label: [u8; 16],  // Fixed-size inline array (no pointers)
-    label_len: usize,
 }
 
 static mut MENU_ITEMS: [MenuItem; 5] = [
-    MenuItem { label: [0; 16], label_len: 0 },
-    MenuItem { label: [0; 16], label_len: 0 },
-    MenuItem { label: [0; 16], label_len: 0 },
-    MenuItem { label: [0; 16], label_len: 0 },
-    MenuItem { label: [0; 16], label_len: 0 },
+    MenuItem { label: [0; 16] },
+    MenuItem { label: [0; 16] },
+    MenuItem { label: [0; 16] },
+    MenuItem { label: [0; 16] },
+    MenuItem { label: [0; 16] },
 ];
+
+// Hardcoded label lengths - these never change!
+const MENU_LABEL_LENS: [usize; 5] = [8, 6, 5, 7, 5]; // Terminal, Editor, Files, Browser, Snake
 
 // App names built at runtime (avoids .rodata)
 static mut APP_NAMES: [[u8; 16]; 5] = [[0; 16]; 5];
@@ -142,7 +140,6 @@ fn init_menu_items() {
         MENU_ITEMS[0].label[5] = b'n';
         MENU_ITEMS[0].label[6] = b'a';
         MENU_ITEMS[0].label[7] = b'l';
-        MENU_ITEMS[0].label_len = 8;
 
         // Editor
         MENU_ITEMS[1].label[0] = b'E';
@@ -151,7 +148,6 @@ fn init_menu_items() {
         MENU_ITEMS[1].label[3] = b't';
         MENU_ITEMS[1].label[4] = b'o';
         MENU_ITEMS[1].label[5] = b'r';
-        MENU_ITEMS[1].label_len = 6;
 
         // Files
         MENU_ITEMS[2].label[0] = b'F';
@@ -159,7 +155,6 @@ fn init_menu_items() {
         MENU_ITEMS[2].label[2] = b'l';
         MENU_ITEMS[2].label[3] = b'e';
         MENU_ITEMS[2].label[4] = b's';
-        MENU_ITEMS[2].label_len = 5;
 
         // Browser
         MENU_ITEMS[3].label[0] = b'B';
@@ -169,7 +164,6 @@ fn init_menu_items() {
         MENU_ITEMS[3].label[4] = b's';
         MENU_ITEMS[3].label[5] = b'e';
         MENU_ITEMS[3].label[6] = b'r';
-        MENU_ITEMS[3].label_len = 7;
 
         // Snake
         MENU_ITEMS[4].label[0] = b'S';
@@ -177,7 +171,6 @@ fn init_menu_items() {
         MENU_ITEMS[4].label[2] = b'a';
         MENU_ITEMS[4].label[3] = b'k';
         MENU_ITEMS[4].label[4] = b'e';
-        MENU_ITEMS[4].label_len = 5;
 
         // Initialize app names
         // terminal
@@ -274,59 +267,82 @@ fn is_in_close_button(window: &WindowState, x: i32, y: i32) -> bool {
 
 /// Check if click is in menu bar, return menu item index
 fn check_menu_click(mouse_x: i32, mouse_y: i32) -> Option<usize> {
-    // Check if in menu bar area
-    if mouse_y < 0 || mouse_y >= MENU_BAR_HEIGHT as i32 {
+    // DEBUG: Check Y coordinate - MENU_ITEM_HEIGHT=24, MENU_START_Y=4
+    // Valid Y range should be 4-28
+    if mouse_y < 4 {
+        print_debug("Y<4!");
+        return None;
+    }
+    if mouse_y >= 28 {
+        print_debug("Y>=28!");
         return None;
     }
 
+    // DEBUG: Print first item's X range (Terminal button)
+    let first_width = calculate_menu_item_width(8); // "Terminal" = 8 chars
+    // Terminal should be at X=8 to X=8+first_width
+    if mouse_x < 8 {
+        print_debug("X<8");
+    } else if mouse_x >= (8 + first_width as i32) {
+        print_debug("X>terminal_end");
+    } else {
+        print_debug("X_IN_TERMINAL_RANGE!");
+    }
+
     let mut current_x = MENU_START_X;
-    for (idx, item) in unsafe { MENU_ITEMS.iter() }.enumerate() {
-        let item_width = calculate_menu_item_width(item.label_len);
+    for (idx, _item) in unsafe { MENU_ITEMS.iter() }.enumerate() {
+        let label_len = MENU_LABEL_LENS[idx];
+        let item_width = calculate_menu_item_width(label_len);
         let item_y = MENU_START_Y;
 
         if mouse_x >= current_x as i32 &&
            mouse_x < (current_x + item_width) as i32 &&
            mouse_y >= item_y as i32 &&
            mouse_y < (item_y + MENU_ITEM_HEIGHT) as i32 {
+            print_debug("HIT!");
             return Some(idx);
         }
 
         current_x += item_width + 8; // 8px spacing
     }
 
+    print_debug("LOOP_DONE_NO_HIT");
     None
 }
 
 /// Handle input event and determine routing
 fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
-    // Update mouse position
-    if event.event_type == 3 { // MouseMove
-        MOUSE_X.store(mouse_x as usize, Ordering::SeqCst);
-        MOUSE_Y.store(mouse_y as usize, Ordering::SeqCst);
-    }
+    // ALWAYS update mouse position from kernel's current coordinates
+    // (Kernel sends CURSOR_X/CURSOR_Y with every event, not just MouseMove)
+    MOUSE_X.store(mouse_x as usize, Ordering::SeqCst);
+    MOUSE_Y.store(mouse_y as usize, Ordering::SeqCst);
 
     // Handle mouse button clicks
     if event.event_type == 4 && event.pressed != 0 { // MouseButton pressed
+        print_debug("CLICK!");
+        let click_x = mouse_x;
+        let click_y = mouse_y;
+
         // Check if click is on menu bar first
-        if let Some(menu_idx) = check_menu_click(mouse_x, mouse_y) {
+        let menu_result = check_menu_click(click_x, click_y);
+
+        if let Some(menu_idx) = menu_result {
+            print_debug("MENU_HIT!");
             // Menu item clicked! Spawn corresponding app
             let window_count = WINDOW_COUNT.load(Ordering::SeqCst);
             if window_count >= MAX_WINDOWS {
+                print_debug("MAX_WIN");
                 // Max windows reached, ignore click
                 return WMToKernel::NoAction;
             }
 
-            // Spawn the app (map menu label to app name)
-            print_debug("WM: Menu click, idx = ");
-            // TODO: print menu_idx
-
             // Get app name from runtime-built array (avoids .rodata)
             if menu_idx >= 5 {
-                print_debug("WM: Invalid menu_idx\r\n");
+                print_debug("BAD_IDX");
                 return WMToKernel::NoAction;
             }
 
-            print_debug("WM: About to call spawn_elf\r\n");
+            print_debug("SPAWN_ELF:");
 
             // Build app name string from runtime array
             let app_name_bytes = unsafe { &APP_NAMES[menu_idx][..APP_NAME_LENS[menu_idx]] };
@@ -342,20 +358,20 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
 
             return WMToKernel::NoAction;
         }
-        if let Some(window_id) = find_window_at(mouse_x, mouse_y) {
+        if let Some(window_id) = find_window_at(click_x, click_y) {
             // Find window index
             let count = WINDOW_COUNT.load(Ordering::SeqCst);
             for i in 0..count {
                 let window = unsafe { &mut WINDOWS[i] };
                 if window.id == window_id {
                     // Check if click is on close button first
-                    if is_in_close_button(window, mouse_x, mouse_y) {
+                    if is_in_close_button(window, click_x, click_y) {
                         // Request window close
                         return WMToKernel::RequestClose { window_id };
                     }
 
                     // Check if click is in title bar (for focus/drag)
-                    if is_in_title_bar(window, mouse_x, mouse_y) {
+                    if is_in_title_bar(window, click_x, click_y) {
                         // Request focus change
                         return WMToKernel::RequestFocus { window_id };
                     }
@@ -493,7 +509,8 @@ fn draw_menu_bar() {
 
         let mut current_x = MENU_START_X;
         for (idx, item) in MENU_ITEMS.iter().enumerate() {
-            let item_width = calculate_menu_item_width(item.label_len);
+            let label_len = MENU_LABEL_LENS[idx];
+            let item_width = calculate_menu_item_width(label_len);
             let item_y = MENU_START_Y;
 
             // Check if hovered
@@ -518,7 +535,7 @@ fn draw_menu_bar() {
             // Draw text centered in button (16px tall font, 24px tall button -> 4px vertical padding)
             let text_x = (current_x + MENU_ITEM_PADDING_X) as i32;
             let text_y = (item_y + (MENU_ITEM_HEIGHT - 16) / 2) as i32;
-            draw_text(text_x, text_y, &item.label[..item.label_len], TEXT_COLOR);
+            draw_text(text_x, text_y, &item.label[..label_len], TEXT_COLOR);
 
             current_x += item_width + 8; // 8px spacing between items
         }
@@ -555,38 +572,56 @@ fn draw_window_chrome(window: &WindowState) {
 
 /// Redraw all window chrome and menu bar
 fn redraw_all() {
+    print_debug("[WM] redraw_all: START\r\n");
+
     // Don't recalculate layout on every frame - only when windows change
     // Layout is calculated in handle_create_window() and handle_close_window()
 
     // Clear screen with dark background
     let fb_width = FB_WIDTH.load(Ordering::SeqCst);
     let fb_height = FB_HEIGHT.load(Ordering::SeqCst);
+
+    print_debug("[WM] redraw_all: About to clear screen\r\n");
     unsafe {
         let total_pixels = (fb_width * fb_height) as usize;
         for i in 0..total_pixels {
             FB_PTR.add(i).write_volatile(0xFF_1A_1A_1A); // Dark gray background
+
+            // TODO: yield_now() during syscalls corrupts stack - needs proper fix
+            // // Yield every 100k pixels to prevent CPU monopolization (2M total pixels)
+            // // This allows other processes (Terminal, etc.) to run during the clear
+            // if i % 100000 == 0 {
+            //     yield_now();
+            // }
         }
     }
+    print_debug("[WM] redraw_all: Screen cleared\r\n");
 
     // Draw menu bar first
     draw_rect(0, 0, fb_width, MENU_BAR_HEIGHT, MENU_BAR_COLOR);
     draw_menu_bar();
+    print_debug("[WM] redraw_all: Menu bar drawn\r\n");
 
     // Composite window content from shared memory, then draw chrome
     let count = WINDOW_COUNT.load(Ordering::SeqCst);
+    print_debug("[WM] redraw_all: About to composite windows\r\n");
 
     for i in 0..count {
-        // Use volatile read to ensure we get fresh data from calculate_layout()
+        print_debug("[WM] redraw_all: Compositing window\r\n");
         let window = unsafe { core::ptr::read_volatile(&WINDOWS[i]) };
         if !window.visible {
+            print_debug("[WM] redraw_all: Window not visible, skipping\r\n");
             continue;
         }
 
         // Composite window content from shared memory
         let shm_id = window.id as i32; // Window ID is the shared memory ID
+        print_debug("[WM] redraw_all: Calling shm_map\r\n");
         let shm_ptr = shm_map(shm_id);
+        print_debug("[WM] redraw_all: shm_map returned\r\n");
 
         if !shm_ptr.is_null() {
+            print_debug("[WM] redraw_all: Copying pixels\r\n");
             // Calculate content area (inside title bar and borders)
             let content_x = window.x + BORDER_WIDTH as i32;
             let content_y = window.y + TITLE_BAR_HEIGHT as i32;
@@ -600,25 +635,42 @@ fn redraw_all() {
 
             let fb_w = FB_WIDTH.load(Ordering::SeqCst) as usize;
             let fb_h = FB_HEIGHT.load(Ordering::SeqCst) as usize;
+
+            // Use memcpy-style copy instead of pixel-by-pixel volatile writes
             unsafe {
                 for y in 0..content_height {
-                    for x in 0..content_width {
-                        let screen_x = (content_x + x as i32) as usize;
-                        let screen_y = (content_y + y as i32) as usize;
-                        let src_idx = (y * content_width + x) as usize;
+                    let screen_y = (content_y + y as i32) as usize;
+                    if screen_y >= fb_h {
+                        continue;
+                    }
 
-                        if screen_x < fb_w && screen_y < fb_h && src_idx < src_buffer.len() {
-                            let fb_idx = screen_y * fb_w + screen_x;
-                            FB_PTR.add(fb_idx).write_volatile(src_buffer[src_idx]);
-                        }
+                    let screen_x = content_x as usize;
+                    if screen_x >= fb_w {
+                        continue;
+                    }
+
+                    let copy_width = content_width.min((fb_w - screen_x) as u32) as usize;
+                    let src_offset = (y * content_width) as usize;
+                    let dst_offset = screen_y * fb_w + screen_x;
+
+                    if src_offset + copy_width <= src_buffer.len() {
+                        core::ptr::copy_nonoverlapping(
+                            src_buffer.as_ptr().add(src_offset),
+                            FB_PTR.add(dst_offset),
+                            copy_width
+                        );
                     }
                 }
             }
+            print_debug("[WM] redraw_all: Pixels copied\r\n");
         }
 
         // Draw window chrome on top
+        print_debug("[WM] redraw_all: Drawing chrome\r\n");
         draw_window_chrome(&window);
+        print_debug("[WM] redraw_all: Chrome drawn\r\n");
     }
+    print_debug("[WM] redraw_all: DONE\r\n");
 }
 
 /// Calculate tiling layout for all windows
@@ -880,13 +932,13 @@ pub extern "C" fn _start() -> ! {
             }
 
             messages_processed += 1;
-            print_debug("WM: Received message, type = ");
+            // print_debug("WM: Received message, type = ");
 
             // Parse message
             if let Some(msg) = KernelToWM::from_bytes(&buf) {
                 match msg {
                     KernelToWM::InputEvent { sender_pid, mouse_x, mouse_y, event } => {
-                        print_debug("InputEvent\r\n");
+                        // print_debug("InputEvent\r\n");
                         // Handle input and determine routing
                         let response = handle_input(event, mouse_x, mouse_y);
 
@@ -928,11 +980,8 @@ pub extern "C" fn _start() -> ! {
 
         // Redraw once after processing all messages
         if need_redraw {
-            print_debug("WM: Calling redraw_all()\r\n");
             redraw_all();
-            print_debug("WM: Calling fb_flush()\r\n");
             fb_flush();
-            print_debug("WM: Redraw complete\r\n");
         }
 
         // CRITICAL: Yield to other threads since we use cooperative multitasking

@@ -310,7 +310,7 @@ pub enum ThreadState {
     Terminated,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadType {
     Kernel,
     User,
@@ -325,6 +325,8 @@ pub struct Thread {
     pub state: ThreadState,             // Current thread state
     pub kernel_entry_point: Option<fn()>,   // For kernel threads
     pub user_entry_point: Option<extern "C" fn() -> !>, // For user threads
+    pub kernel_stack_top: Option<u64>,  // For user threads - fixed SP to restore after syscalls
+    pub has_run_once: bool,             // Track if thread has been launched (for SP fix)
 }
 
 impl Thread {
@@ -338,6 +340,8 @@ impl Thread {
             state: ThreadState::Ready,
             kernel_entry_point: Some(entry_point),
             user_entry_point: None,
+            kernel_stack_top: None, // Kernel threads don't need this
+            has_run_once: false,
         }
     }
 
@@ -351,6 +355,8 @@ impl Thread {
             state: ThreadState::Ready,
             kernel_entry_point: None,
             user_entry_point: Some(entry_point),
+            kernel_stack_top: Some(kernel_stack_top), // Store for SP restoration
+            has_run_once: false, // First launch uses pre-created ExceptionContext
         }
     }
 }
@@ -430,6 +436,8 @@ impl ThreadContext {
             x19: 0, x20: 0, x21: 0, x22: 0, x23: 0, x24: 0,
             x25: 0, x26: 0, x27: 0, x28: 0, x29: user_stack_top, // User stack in x29
             x30: el0_syscall_entry_return as u64, // Point to assembly trampoline (higher-half kernel code)
+            // NOTE: For first launch, sp points to the pre-created ExceptionContext
+            // After first syscall/yield, scheduler resets sp to kernel_stack_top
             sp: exception_context_addr, // Point to the ExceptionContext we just created
         }
     }
@@ -507,8 +515,8 @@ static mut KERNEL_YIELD_CONTEXT: ThreadContext = ThreadContext {
 
 /// Yield CPU to another thread (cooperative scheduling)
 pub fn yield_now() {
-    // Get context switch info while holding the lock
-    let switch_info = {
+    // Get context switch info and thread IDs
+    let (switch_info, yielding_thread_id, resuming_thread_id) = {
         let mut sched = SCHEDULER.lock();
 
         // If we're not in a thread context (i.e., shell/kernel), set up kernel context
@@ -518,7 +526,13 @@ pub fn yield_now() {
             }
         }
 
-        sched.yield_now()
+        let current_id = sched.current_thread;
+        let switch_info = sched.yield_now();
+
+        // Find out which thread we're switching TO
+        let next_id = sched.current_thread;
+
+        (switch_info, current_id, next_id)
     }; // Lock is dropped here!
 
     // Now perform context switch outside the lock
@@ -536,6 +550,16 @@ pub fn yield_now() {
                 context_switch(actual_current_ptr, next_ptr);
             } else {
                 context_switch(actual_current_ptr, next_ptr);
+            }
+        }
+
+        // Mark user thread as having run once
+        if let Some(thread_id) = yielding_thread_id {
+            let mut sched = SCHEDULER.lock();
+            if let Some(thread) = sched.threads.iter_mut().find(|t| t.id == thread_id) {
+                if thread.thread_type == ThreadType::User && !thread.has_run_once {
+                    thread.has_run_once = true;
+                }
             }
         }
     }

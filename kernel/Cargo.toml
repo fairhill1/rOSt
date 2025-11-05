@@ -17,4 +17,4 @@ spin = { version = "0.10", default-features = false, features = ["mutex", "spin_
 aarch64-cpu = "11.1"
 bitflags = { version = "2.10", default-features = false }
 csv-core = { version = "0.1", default-features = false }
-xmas-elf = { version = "0.10", default-features = false }
+goblin = { version = "0.10", default-features = false, features = ["elf32", "elf64", "endian_fd", "alloc"] }

@@ -28,11 +28,12 @@ pub static IPC_RECEIVER_ELF: &[u8] = include_bytes!(concat!(
     "/../target/aarch64-unknown-none/release/ipc_receiver"
 ));
 
-/// Embedded CSV viewer ELF binary
-pub static CSV_VIEWER_ELF: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../target/aarch64-unknown-none/release/csv_viewer"
-));
+/// Embedded CSV viewer ELF binary (temporarily disabled - needs allocator fix)
+pub static CSV_VIEWER_ELF: &[u8] = &[];
+// include_bytes!(concat!(
+//     env!("CARGO_MANIFEST_DIR"),
+//     "/../target/aarch64-unknown-none/release/csv_viewer"
+// ));
 
 /// Embedded window manager ELF binary
 pub static WINDOW_MANAGER_ELF: &[u8] = include_bytes!(concat!(

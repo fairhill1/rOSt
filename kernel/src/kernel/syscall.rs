@@ -1301,9 +1301,8 @@ fn sys_draw_rect(x: i32, y: i32, width: u32, height: u32, color: u32) -> i64 {
 // ============================================================================
 
 fn sys_yield() -> i64 {
-    // FIXED: Now that we use cooperative multitasking (no preemptive timer),
-    // we must actually yield here. The syscall has already saved user context
-    // in the ExceptionContext on the stack, so context switching is safe.
+    // For user threads: context switch will save the syscall return path
+    // When resumed, execution continues here and returns to ERET
     crate::kernel::thread::yield_now();
     0 // Success
 }

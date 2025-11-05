@@ -234,10 +234,16 @@ pub extern "C" fn _start() -> ! {
     print_debug("Terminal initialized successfully\r\n");
 
     // Main event loop - wait for input events from WM
+    print_debug("Terminal: Entering event loop\r\n");
+    let mut msg_buf = [0u8; 256];
     loop {
-        // TODO: Receive input events from WM
-        // TODO: Update console based on input
-        // TODO: Re-render and notify WM of updates
+        let result = recv_message(&mut msg_buf, 1000); // 1 second timeout
+        if result > 0 {
+            print_debug("Terminal: Received input event\r\n");
+            // TODO: Parse input event and update terminal
+        }
+
+        // Yield CPU to other processes
         yield_now();
     }
 }

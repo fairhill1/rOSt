@@ -186,6 +186,23 @@ extern "C" fn handle_el0_syscall_rust(ctx: *mut ExceptionContext) {
         // If we have a next thread, jump to it (never returns)
         if let Some(ctx) = next_context {
             crate::kernel::uart_write_string("[KERNEL] Jumping to next thread...\r\n");
+
+            // CRITICAL: Restore USER_TTBR0 before jumping to userspace thread
+            // restore_kernel_mmu_context() above set TTBR0 to UEFI's page table,
+            // but userspace threads need USER_TTBR0 to access their memory
+            // Kernel threads use TTBR1 (high-half), so this doesn't affect them
+            unsafe {
+                use aarch64_cpu::registers::*;
+                let user_ttbr0 = crate::kernel::memory::USER_TTBR0;
+                TTBR0_EL1.set(user_ttbr0);
+                core::arch::asm!(
+                    "dsb sy",
+                    "isb",
+                    options(nostack)
+                );
+            }
+            crate::kernel::uart_write_string("[MMU] Restored USER_TTBR0 before jumping to thread\r\n");
+
             unsafe {
                 crate::kernel::thread::jump_to_thread(ctx);
             }

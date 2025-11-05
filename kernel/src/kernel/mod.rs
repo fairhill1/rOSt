@@ -374,114 +374,28 @@ fn kernel_gui_thread() {
     let fb_info = unsafe { GPU_FRAMEBUFFER_INFO.unwrap() };
     uart_write_string("[GUI-THREAD] Got FB info\r\n");
 
-    let mut needs_full_render = true;
-    let mut last_minute = drivers::rtc::get_datetime().minute;
-    let mut last_event_was_click = false; // Track if last event was a button press
-
-    uart_write_string("[GUI-THREAD] Starting main loop\r\n");
+    uart_write_string("[GUI-THREAD] Starting main loop - microkernel input forwarder\r\n");
     loop {
-        // PHASE 3: Check for WM responses from previous iteration
-        // This must happen BEFORE polling new input to handle the async pipeline:
-        // Loop N: send input → WM scheduled → Loop N+1: receive response
+        // MICROKERNEL: Kernel only polls hardware and forwards to userspace WM
+        // No kernel-side window management, routing, or rendering
+
+        // FIRST: Check for WM responses from previous input events
         unsafe {
             let wm_pid = WINDOW_MANAGER_PID.load(Ordering::Acquire);
-
             if wm_pid > 0 {
-                // Check for all pending responses (non-blocking)
+                // Drain all pending WM responses (non-blocking)
                 loop {
                     let mut response_buf = [0u8; 256];
                     let result = kernel_recv_message(&mut response_buf);
 
-                    if result > 0 {
-                        // Parse WMToKernel response
-                        let msg_type = response_buf[0];
-
-                        match msg_type {
-                            0 => { // RouteInput
-                                let window_id = usize::from_le_bytes([
-                                    response_buf[1], response_buf[2], response_buf[3], response_buf[4],
-                                    response_buf[5], response_buf[6], response_buf[7], response_buf[8]
-                                ]);
-
-                                let event_type = u32::from_le_bytes([response_buf[9], response_buf[10], response_buf[11], response_buf[12]]);
-
-                                // Reconstruct the input event from the response
-                                let kernel_event = match event_type {
-                                    1 => drivers::input_events::InputEvent::KeyPressed {
-                                        key: response_buf[13],
-                                        modifiers: response_buf[14]
-                                    },
-                                    2 => drivers::input_events::InputEvent::KeyReleased {
-                                        key: response_buf[13],
-                                        modifiers: response_buf[14]
-                                    },
-                                    3 => drivers::input_events::InputEvent::MouseMove {
-                                        x_delta: response_buf[17] as i8,
-                                        y_delta: response_buf[18] as i8
-                                    },
-                                    4 => drivers::input_events::InputEvent::MouseButton {
-                                        button: response_buf[15],
-                                        pressed: response_buf[16] != 0
-                                    },
-                                    5 => drivers::input_events::InputEvent::MouseWheel {
-                                        delta: response_buf[19] as i8
-                                    },
-                                    _ => continue, // Unknown event type
-                                };
-
-                                // Route the input event to the specified window
-                                route_input_to_window(window_id, kernel_event);
-                                needs_full_render = true;
-                            }
-                            1 => { // RequestFocus
-                                let window_id = usize::from_le_bytes([
-                                    response_buf[1], response_buf[2], response_buf[3], response_buf[4],
-                                    response_buf[5], response_buf[6], response_buf[7], response_buf[8]
-                                ]);
-
-                                // Update focused window
-                                crate::gui::window_manager::focus_window_by_id(window_id);
-                                needs_full_render = true;
-                            }
-                            2 => { // RequestClose
-                                let window_id = usize::from_le_bytes([
-                                    response_buf[1], response_buf[2], response_buf[3], response_buf[4],
-                                    response_buf[5], response_buf[6], response_buf[7], response_buf[8]
-                                ]);
-
-                                // Close the specified window
-                                crate::gui::window_manager::close_window_by_id(window_id);
-                                needs_full_render = true;
-                            }
-                            3 => { // NoAction
-                                // DISABLED: Old kernel window creation
-                                // The userspace WM now handles spawning apps via spawn_elf()
-                                // Leaving this enabled causes double-creation (kernel + userspace)
-                                /*
-                                if last_event_was_click {
-                                    let (cursor_x, cursor_y) = crate::gui::framebuffer::get_cursor_pos();
-                                    if let Some(menu_idx) = crate::gui::window_manager::get_hovered_menu_button(cursor_x, cursor_y) {
-                                        crate::gui::window_manager::open_window_by_menu_index(menu_idx);
-                                        needs_full_render = true;
-                                    }
-                                }
-                                */
-                            }
-                            _ => {}
-                        }
-                    } else {
+                    if result <= 0 {
                         break; // No more messages
                     }
+
+                    // WM responded! Currently WM only sends NoAction (it spawns apps itself)
+                    // In future, WM might request kernel services here
                 }
             }
-        }
-
-        // Check if minute has changed - redraw clock every minute
-        let current_minute = drivers::rtc::get_datetime().minute;
-
-        if current_minute != last_minute {
-            last_minute = current_minute;
-            needs_full_render = true;
         }
 
         // Poll VirtIO input devices for real trackpad/keyboard input
@@ -499,15 +413,12 @@ fn kernel_gui_thread() {
                     // Convert kernel InputEvent to librost InputEvent format
                     let (event_type, key, modifiers, button, pressed, x_delta, y_delta, wheel_delta) = match kernel_event {
                         drivers::input_events::InputEvent::KeyPressed { key, modifiers } => {
-                            last_event_was_click = false;
                             (1u32, key, modifiers, 0u8, 0u8, 0i8, 0i8, 0i8)
                         }
                         drivers::input_events::InputEvent::KeyReleased { key, modifiers } => {
-                            last_event_was_click = false;
                             (2u32, key, modifiers, 0u8, 0u8, 0i8, 0i8, 0i8)
                         }
                         drivers::input_events::InputEvent::MouseMove { x_delta, y_delta } => {
-                            last_event_was_click = false;
                             // Update cursor position
                             let new_x = (CURSOR_X as i32 + x_delta as i32).max(0).min(SCREEN_WIDTH as i32 - 1);
                             let new_y = (CURSOR_Y as i32 + y_delta as i32).max(0).min(SCREEN_HEIGHT as i32 - 1);
@@ -523,11 +434,9 @@ fn kernel_gui_thread() {
                             (3u32, 0u8, 0u8, 0u8, 0u8, x_delta, y_delta, 0i8)
                         }
                         drivers::input_events::InputEvent::MouseButton { button, pressed } => {
-                            last_event_was_click = pressed; // Only true for button press, not release
                             (4u32, 0u8, 0u8, button, if pressed { 1 } else { 0 }, 0i8, 0i8, 0i8)
                         }
                         drivers::input_events::InputEvent::MouseWheel { delta } => {
-                            last_event_was_click = false;
                             (5u32, 0u8, 0u8, 0u8, 0u8, 0i8, 0i8, delta)
                         }
                     };
@@ -569,98 +478,12 @@ fn kernel_gui_thread() {
         }
 
         // Poll network stack (process packets, timers, etc.)
+        // This is kernel-level because smoltcp runs in kernel space
         unsafe {
             if let Some(ref mut stack) = NETWORK_STACK {
                 stack.poll();
             }
         }
-
-        // Poll browser async HTTP state machines
-        if crate::gui::widgets::browser::poll_all_browsers() {
-            needs_full_render = true;
-        }
-
-        // Phase 2: Input events are now forwarded to WM via IPC (above)
-        // The old direct input processing is disabled
-        // The WM will handle input routing and send responses back if needed
-        let needs_cursor_redraw = false; // Cursor updates happen in IPC forwarding above
-
-        // Update snake games and only render if any game changed state
-        if !crate::gui::window_manager::get_all_snakes().is_empty() {
-            if crate::apps::snake::update_all_games() {
-                needs_full_render = true;
-            }
-        }
-
-        // DISABLED: Kernel rendering is now done by userspace WM
-        // The kernel GUI thread only polls input and forwards to WM via IPC
-        // Rendering here would overwrite the WM's output
-        /*
-        if fb_info.base_address != 0 {
-            if needs_full_render {
-                // Full redraw to back buffer - clear, render windows, console, cursor
-                crate::gui::framebuffer::clear_screen(0xFF1A1A1A);
-
-                crate::gui::window_manager::render();
-
-                // Render all terminals INSIDE their windows
-                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_terminals() {
-                    crate::gui::widgets::console::render_at(instance_id, cx, cy, cw, ch);
-                }
-
-                // Render all editors INSIDE their windows
-                for (instance_id, cx, cy, _cw, ch) in crate::gui::window_manager::get_all_editors() {
-                    crate::gui::widgets::editor::render_at(instance_id, cx, cy, ch);
-                }
-
-                // Render all file explorers INSIDE their windows
-                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_file_explorers() {
-                    crate::gui::widgets::file_explorer::render_at(instance_id, cx, cy, cw, ch);
-                }
-
-                // Render all snake games INSIDE their windows (already updated above)
-                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_snakes() {
-                    if let Some(game) = crate::apps::snake::get_snake_game(instance_id) {
-                        let fb = crate::gui::framebuffer::get_back_buffer();
-                        let (screen_width, _) = crate::gui::framebuffer::get_screen_dimensions();
-
-                        // Center the game in the window
-                        let game_width = game.width() as i32;
-                        let game_height = game.height() as i32;
-                        let centered_x = cx + ((cw as i32 - game_width) / 2).max(0);
-                        let centered_y = cy + ((ch as i32 - game_height) / 2).max(0);
-
-                        game.render(fb, screen_width as usize, ch as usize, centered_x as usize, centered_y as usize);
-                    }
-                }
-
-                // Render all browser windows INSIDE their windows
-                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_browsers() {
-                    crate::gui::widgets::browser::render_at(instance_id, cx as usize, cy as usize, cw as usize, ch as usize);
-                }
-
-                // Render all image viewer windows INSIDE their windows
-                for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_image_viewers() {
-                    crate::gui::widgets::image_viewer::render_at(instance_id, cx, cy, cw, ch);
-                }
-
-                // Swap buffers - copy back buffer to screen in one fast operation
-                crate::gui::framebuffer::swap_buffers();
-
-                // Flush to VirtIO GPU display
-                unsafe {
-                    if let Some(ref mut gpu) = GPU_DRIVER {
-                        let _ = gpu.flush_display();
-                    }
-                }
-
-                needs_full_render = false;
-            } else if needs_cursor_redraw {
-                // Hardware cursor is now handled by VirtIO GPU
-                // No need to redraw software cursor or flush for cursor-only updates
-            }
-        }
-        */
 
         // Small delay to prevent CPU overload
         for _ in 0..10000 {
@@ -806,66 +629,6 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     } else {
         uart_write_string("VirtIO-GPU device not found\r\n");
     }
-    
-    // OLD VirtIO code (disabled for now)
-    /*if let Some(mut virtio_gpu) = virtio_gpu::VirtioGpuDriver::new() {
-        uart_write_string("VirtIO-GPU PCI device found! Checking PCI configuration...\r\n");
-        
-        // Debug: print PCI device info before initialization
-        uart_write_string("PCI Device - Vendor: 0x1AF4, Device: 0x1050\r\n");
-        uart_write_string("Initializing with safety checks...\r\n");
-        
-        // Try initialization with comprehensive error handling
-        match virtio_gpu.initialize() {
-            Ok(()) => {
-                uart_write_string("VirtIO-GPU initialized successfully! Getting framebuffer...\r\n");
-                let (fb_addr, width, height, stride) = virtio_gpu.get_framebuffer_info();
-                if fb_addr != 0 && fb_addr >= 0x10000000 && fb_addr < 0x80000000 {
-                    uart_write_string("Got valid framebuffer! Setting up graphics...\r\n");
-                    uart_write_string("Framebuffer address: 0x");
-                    // Simple hex output
-                    let mut addr = fb_addr;
-                    for _ in 0..16 {
-                        let digit = (addr >> 60) & 0xF;
-                        let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                        unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                        addr <<= 4;
-                    }
-                    uart_write_string("\r\n");
-                    
-                    gpu_framebuffer_info = Some(framebuffer::FramebufferInfo {
-                        base_address: fb_addr,
-                        size: (height * stride) as usize,
-                        width,
-                        height,
-                        pixels_per_scanline: stride / 4,
-                        pixel_format: framebuffer::PixelFormat::Rgb,
-                    });
-                } else {
-                    uart_write_string("ERROR: Got invalid framebuffer address: 0x");
-                    let mut addr = fb_addr;
-                    for _ in 0..16 {
-                        let digit = (addr >> 60) & 0xF;
-                        let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-                        unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, ch); }
-                        addr <<= 4;
-                    }
-                    uart_write_string("\r\n");
-                    uart_write_string("Will continue without graphics\r\n");
-                }
-            }
-            Err(err_msg) => {
-                uart_write_string("ERROR: VirtIO-GPU initialization failed: ");
-                uart_write_string(err_msg);
-                uart_write_string("\r\n");
-                uart_write_string("Will continue without graphics\r\n");
-            }
-        }
-    } else {
-        uart_write_string("VirtIO-GPU PCI device not found - will run without graphics\r\n");
-        uart_write_string("This is expected if QEMU is not configured with virtio-gpu\r\n");
-    }
-    */ // End of commented VirtIO code
 
     // Use VirtIO-GPU framebuffer if available, otherwise fallback
     let fb_info = gpu_framebuffer_info.as_ref().unwrap_or(&boot_info.framebuffer);
@@ -879,17 +642,6 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     if fb_info.base_address != 0 {
         uart_write_string("Graphics framebuffer is active - userspace WM will take over!\r\n");
-
-        // ===== MICROKERNEL MIGRATION: Kernel GUI disabled, all GUI runs in userspace =====
-        // The userspace window manager (PID 1) handles all GUI rendering at EL0
-
-        // OLD KERNEL GUI - DISABLED during microkernel migration:
-        // crate::gui::widgets::console::init();
-        // crate::gui::window_manager::init();
-        // crate::gui::widgets::editor::init();
-        // crate::gui::widgets::file_explorer::init();
-        // crate::gui::widgets::browser::init();
-        // crate::apps::snake::init();
 
         // Initialize RTC (hardware driver - OK to keep in kernel)
         drivers::rtc::init();
@@ -1381,33 +1133,6 @@ pub extern "C" fn kernel_init_high_half() -> ! {
     uart_write_string("\r\n");
 
     uart_write_string("Kernel ready! Open a terminal window from the menu.\r\n");
-
-    // ===== EL0 USER MODE TEST =====
-    // Test EL1→EL0 transition and syscalls
-    // WARNING: This will replace the GUI with a simple syscall test program
-    // COMMENTED OUT: Let system continue to GUI shell instead
-    // uart_write_string("\n\n=== TESTING EL0 USER MODE ===\r\n");
-    // interrupts::start_user_process(userspace_test::user_test_program);
-    // (never returns)
-
-    // ===== IPC TEST: Spawn sender and receiver at kernel init =====
-    // DISABLED: IPC tests work but shouldn't auto-spawn on every boot
-    // To test IPC manually, uncomment this section and rebuild
-    /*
-    uart_write_string("\n=== SPAWNING IPC TEST PROGRAMS ===\r\n");
-    uart_write_string("Spawning IPC sender...\r\n");
-    let sender_elf = embedded_apps::IPC_SENDER_ELF;
-    let sender_pid = elf_loader::load_elf_and_spawn(sender_elf);
-    uart_write_string(&alloc::format!("✓ IPC sender spawned as PID {}\r\n", sender_pid));
-
-    uart_write_string("Spawning IPC receiver...\r\n");
-    let receiver_elf = embedded_apps::IPC_RECEIVER_ELF;
-    let receiver_pid = elf_loader::load_elf_and_spawn(receiver_elf);
-    uart_write_string(&alloc::format!("✓ IPC receiver spawned as PID {}\r\n", receiver_pid));
-
-    uart_write_string("Both IPC test programs will run via timer preemption...\r\n");
-    uart_write_string("===================================\r\n\r\n");
-    */
 
     // ===== SPAWN ELF LOADER THREAD FIRST =====
     // CRITICAL: Load ELF files with ONLY this thread running to avoid allocator contention
