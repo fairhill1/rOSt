@@ -4,7 +4,7 @@ members = [
     "kernel",
     "librost",
     "image_codecs",
-    "userspace/shell",
+    "userspace/terminal",
     "userspace/image_viewer",
     "userspace/ipc_sender",
     "userspace/ipc_receiver",

@@ -178,32 +178,33 @@ enum AppToWM {
 
 ## Migration Steps
 
-### Phase 1: Syscalls (1-2 hours)
-- [ ] Add `sys_spawn_elf(path)` syscall
+### Phase 1: Syscalls (1-2 hours) ✅ COMPLETED
+- [x] Add `sys_spawn_elf(path)` syscall
   - Parse path, load ELF, spawn process
   - Return PID to caller
-- [ ] Add `sys_kill(pid)` syscall
+- [x] Add `sys_kill(pid)` syscall
   - Terminate process, clean up resources
-- [ ] Add `sys_fb_flush(x, y, w, h)` syscall
+- [x] Add `sys_fb_flush(x, y, w, h)` syscall
   - Currently fb_flush() has no parameters
   - Add dirty region tracking
 
-### Phase 2: WM Ownership (2-3 hours)
-- [ ] Move window list to userspace WM
-  - Port `WindowState` struct to userspace
-  - Port tiling layout logic
-  - Port menu bar logic
-- [ ] Update WM to handle `CreateWindow` IPC from apps
+### Phase 2: WM Ownership (2-3 hours) 🚧 IN PROGRESS (80% complete)
+- [x] Move window list to userspace WM
+  - Port `WindowState` struct to userspace (already existed)
+  - Port tiling layout logic (1/2/3/4 window configs)
+  - Port menu bar logic (rendering with hover)
+- [x] Update WM to handle `CreateWindow` IPC from apps (already implemented)
 - [ ] Update WM to composite app buffers to FB
-- [ ] Update WM to spawn apps via `sys_spawn_elf`
+- [~] Update WM to spawn apps via `sys_spawn_elf` (menu click detection done, spawn call TODO)
 
-### Phase 3: Convert Terminal (3-4 hours)
-- [ ] Create `userspace/terminal/` crate
-- [ ] Port console widget code
+### Phase 3: Convert Terminal (3-4 hours) 🚧 IN PROGRESS (BLOCKED: boot crash)
+- [x] Create `userspace/terminal/` crate
+- [x] Port console widget code
 - [ ] Port shell logic
-- [ ] Implement shared memory rendering
+- [~] Implement shared memory rendering (initialized, not rendering yet)
 - [ ] Implement `AppToWM` IPC protocol
 - [ ] Test end-to-end: spawn, input, render, close
+- **BLOCKER:** Terminal loading causes kernel crash with ELR=0x2020202020202020 (stack corruption)
 
 ### Phase 4: Convert Other Apps (6-8 hours)
 - [ ] Convert Editor to `userspace/editor/`

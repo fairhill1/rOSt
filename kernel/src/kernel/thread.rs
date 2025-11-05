@@ -225,7 +225,7 @@ impl Process {
     }
 }
 
-const STACK_SIZE: usize = 256 * 1024; // 256KB per thread (increased for syscall nesting)
+const STACK_SIZE: usize = 512 * 1024; // 512KB per thread (increased for deep GUI call stacks)
 const USER_STACK_SIZE: usize = 128 * 1024; // 128KB for user stacks
 const MAX_USER_PROCESSES: usize = 8; // Maximum 8 user processes
 

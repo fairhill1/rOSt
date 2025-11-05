@@ -39,3 +39,9 @@ pub static WINDOW_MANAGER_ELF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../target/aarch64-unknown-none/release/window_manager"
 ));
+
+/// Embedded terminal ELF binary
+pub static TERMINAL_ELF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../target/aarch64-unknown-none/release/terminal"
+));

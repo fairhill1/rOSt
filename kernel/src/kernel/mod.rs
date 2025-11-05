@@ -370,12 +370,15 @@ fn kernel_gui_thread() {
     }
 
     // Get framebuffer info from global
+    uart_write_string("[GUI-THREAD] Getting framebuffer info...\r\n");
     let fb_info = unsafe { GPU_FRAMEBUFFER_INFO.unwrap() };
+    uart_write_string("[GUI-THREAD] Got FB info\r\n");
 
     let mut needs_full_render = true;
     let mut last_minute = drivers::rtc::get_datetime().minute;
     let mut last_event_was_click = false; // Track if last event was a button press
 
+    uart_write_string("[GUI-THREAD] Starting main loop\r\n");
     loop {
         // PHASE 3: Check for WM responses from previous iteration
         // This must happen BEFORE polling new input to handle the async pipeline:
@@ -1425,18 +1428,20 @@ pub extern "C" fn kernel_init_high_half() -> ! {
         }
         uart_write_string("[ELF-LOADER] Allocator warmed up\r\n");
 
-        // Load IPC sender
-        uart_write_string("[ELF-LOADER] Loading IPC sender...\r\n");
-        let _warmup_pid = elf_loader::load_elf_and_spawn(embedded_apps::IPC_SENDER_ELF);
-        uart_write_string("[ELF-LOADER] IPC sender loaded\r\n");
+        // MINIMAL TEST: Load ONLY terminal to isolate the issue
+        uart_write_string("[ELF-LOADER] Loading terminal (minimal test)...\r\n");
+        let terminal_pid = elf_loader::load_elf_and_spawn(embedded_apps::TERMINAL_ELF);
+        uart_write_string("[ELF-LOADER] Terminal loaded with PID: ");
+        if terminal_pid < 10 {
+            unsafe {
+                core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + terminal_pid as u8);
+            }
+        }
+        uart_write_string("\r\n");
 
-        // Load window manager
-        uart_write_string("[ELF-LOADER] Loading window manager...\r\n");
-        let wm_pid = elf_loader::load_elf_and_spawn(embedded_apps::WINDOW_MANAGER_ELF);
-        uart_write_string("[ELF-LOADER] Window manager loaded\r\n");
-
-        // Store PID with Release ordering so GUI thread sees it with Acquire
-        WINDOW_MANAGER_PID.store(wm_pid, Ordering::Release);
+        // Skip other apps for now
+        WINDOW_MANAGER_PID.store(0, Ordering::Release); // No WM
+        uart_write_string("[ELF-LOADER] Skipped IPC sender and WM for minimal test\r\n");
 
         // NOW spawn the GUI thread after ELF loading completes
         let _gui_thread_id = {
