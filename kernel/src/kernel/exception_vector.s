@@ -38,10 +38,6 @@ current_el_spx_serror:
 // Lower EL using AArch64 (offset 0x400) - USER MODE SYSCALLS
 .balign 128
 lower_el_aarch64_sync:
-    // DEBUG: Print 'S' to show we got EL0 sync exception
-    mov x10, #0x09000000
-    mov x11, #'S'
-    strb w11, [x10]
     b handle_el0_syscall_entry
 .balign 128
 lower_el_aarch64_irq:
@@ -70,25 +66,9 @@ lower_el_aarch32_serror:
 // EL0 syscall entry point - saves all registers, calls Rust handler, restores, returns
 .balign 16
 handle_el0_syscall_entry:
-    // DEBUG: Print 'K' to show we entered handler
-    mov x10, #0x09000000
-    mov x11, #'K'
-    strb w11, [x10]
-
     // Save all general-purpose registers to stack
     sub sp, sp, #272           // 34 registers * 8 bytes = 272 bytes
-
-    // DEBUG: Print 'L' after sub sp
-    mov x10, #0x09000000
-    mov x11, #'L'
-    strb w11, [x10]
-
     stp x0, x1, [sp, #16 * 0]
-
-    // DEBUG: Print 'M' after first stp
-    mov x10, #0x09000000
-    mov x11, #'M'
-    strb w11, [x10]
     stp x2, x3, [sp, #16 * 1]
     stp x4, x5, [sp, #16 * 2]
     stp x6, x7, [sp, #16 * 3]
@@ -114,11 +94,6 @@ handle_el0_syscall_entry:
     bic x1, x1, #(1 << 7)      // Clear bit 7 (IRQ mask)
     stp x0, x1, [sp, #16 * 16]
 
-    // DEBUG: Print 'N' before calling Rust
-    mov x10, #0x09000000
-    mov x11, #'N'
-    strb w11, [x10]
-
     // DON'T switch TTBR0 here! The OS architect is correct:
     // - Kernel runs from TTBR1 (high-half 0xFFFF...)
     // - User memory accessible through TTBR0 (stays as USER_TTBR0)
@@ -129,11 +104,6 @@ handle_el0_syscall_entry:
     // Pass pointer to saved context as first argument
     mov x0, sp
     bl handle_el0_syscall_rust
-
-    // DEBUG: Print 'O' after Rust handler returns
-    mov x10, #0x09000000
-    mov x11, #'O'
-    strb w11, [x10]
 
     // No need to switch TTBR0 back - it never changed!
     // TTBR0 stays as USER_TTBR0 throughout syscall handling
@@ -272,7 +242,67 @@ handle_exception_entry:
     strb w11, [x10]
     mov x11, #'X'
     strb w11, [x10]
-    b .  // Infinite loop for now
+
+    // Print ESR_EL1 to understand what exception this is
+    mrs x0, esr_el1
+    mov x11, #' '
+    strb w11, [x10]
+    mov x11, #'E'
+    strb w11, [x10]
+    mov x11, #'S'
+    strb w11, [x10]
+    mov x11, #'R'
+    strb w11, [x10]
+    mov x11, #':'
+    strb w11, [x10]
+
+    // Print ESR in hex (8 digits)
+    mov x12, #8
+1:  ror x0, x0, #60
+    and x11, x0, #0xF
+    cmp x11, #10
+    blt 2f
+    add x11, x11, #0x37  // 'A' - 10
+    b 3f
+2:  add x11, x11, #0x30  // '0'
+3:  strb w11, [x10]
+    sub x12, x12, #1
+    cbnz x12, 1b
+
+    mov x11, #'\r'
+    strb w11, [x10]
+    mov x11, #'\n'
+    strb w11, [x10]
+
+    // Print ELR_EL1 (exception return address)
+    mrs x0, elr_el1
+    mov x11, #'E'
+    strb w11, [x10]
+    mov x11, #'L'
+    strb w11, [x10]
+    mov x11, #'R'
+    strb w11, [x10]
+    mov x11, #':'
+    strb w11, [x10]
+
+    mov x12, #16
+4:  ror x0, x0, #60
+    and x11, x0, #0xF
+    cmp x11, #10
+    blt 5f
+    add x11, x11, #0x37
+    b 6f
+5:  add x11, x11, #0x30
+6:  strb w11, [x10]
+    sub x12, x12, #1
+    cbnz x12, 4b
+
+    mov x11, #'\r'
+    strb w11, [x10]
+    mov x11, #'\n'
+    strb w11, [x10]
+
+    b .  // Infinite loop for debugging
 
 // IRQ handler entry - handles timer interrupts from both EL1 and EL0
 .balign 16

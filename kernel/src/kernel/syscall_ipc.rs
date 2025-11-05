@@ -10,27 +10,37 @@ pub fn sys_shm_create(size: usize) -> i64 {
     crate::kernel::uart_write_string("[SYSCALL] shm_create(size=");
     crate::kernel::uart_write_string(")\r\n");
 
+    crate::kernel::uart_write_string("[SHM] Step 1: Check size\r\n");
     if size == 0 || size > 16 * 1024 * 1024 {  // Max 16MB
         return SyscallError::InvalidArgument.as_i64();
     }
 
+    crate::kernel::uart_write_string("[SHM] Step 2: Get current process\r\n");
     // Get current process
     let process_id = match get_current_process() {
         Some(pid) => pid,
         None => return SyscallError::InvalidArgument.as_i64(),
     };
 
+    crate::kernel::uart_write_string("[SHM] Step 3: Allocate memory\r\n");
     // Allocate physical memory for shared region
     let memory = vec![0u8; size].into_boxed_slice();
+    crate::kernel::uart_write_string("[SHM] Step 4: Memory allocated!\r\n");
+
+    crate::kernel::uart_write_string("[SHM] Step 5: Get pointer\r\n");
     let physical_addr = memory.as_ptr() as u64;
 
+    crate::kernel::uart_write_string("[SHM] Step 6: Leak memory\r\n");
     // Leak the memory (it will be managed by the shared memory system)
     alloc::boxed::Box::leak(memory);
 
+    crate::kernel::uart_write_string("[SHM] Step 7: Call with_process_mut\r\n");
     // Allocate shared memory region in process table
     let shm_id = crate::kernel::thread::with_process_mut(process_id, |process| {
+        crate::kernel::uart_write_string("[SHM] Step 8: Inside closure\r\n");
         process.shm_table.alloc(size, physical_addr)
     });
+    crate::kernel::uart_write_string("[SHM] Step 9: with_process_mut returned\r\n");
 
     match shm_id {
         Some(Some(id)) => {
@@ -118,14 +128,7 @@ pub fn sys_shm_unmap(shm_id: i32) -> i64 {
 /// Send a message to another process
 /// Returns: 0 on success, negative error code on failure
 pub fn sys_send_message(dest_pid: u32, data: *const u8, len: usize) -> i64 {
-    crate::kernel::uart_write_string("[SYSCALL] send_message(dest_pid=");
-    if dest_pid < 10 {
-        unsafe {
-            core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + dest_pid as u8);
-        }
-    }
-    crate::kernel::uart_write_string(", len=");
-    crate::kernel::uart_write_string(")\r\n");
+    // CRITICAL: No debug output in hot path - WM sends many messages per second
 
     if data.is_null() || len == 0 || len > MAX_MESSAGE_SIZE {
         return SyscallError::InvalidArgument.as_i64();
@@ -153,28 +156,17 @@ pub fn sys_send_message(dest_pid: u32, data: *const u8, len: usize) -> i64 {
     });
 
     match result {
-        Some(true) => {
-            crate::kernel::uart_write_string("[SYSCALL] send_message() -> success\r\n");
-            0
-        }
-        Some(false) => {
-            crate::kernel::uart_write_string("[SYSCALL] send_message() -> queue full\r\n");
-            SyscallError::OutOfMemory.as_i64()
-        }
-        None => {
-            crate::kernel::uart_write_string("[SYSCALL] send_message() -> process not found\r\n");
-            SyscallError::InvalidArgument.as_i64()
-        }
+        Some(true) => 0,
+        Some(false) => SyscallError::OutOfMemory.as_i64(), // Queue full
+        None => SyscallError::InvalidArgument.as_i64(), // Process not found
     }
 }
 
 /// Receive a message from message queue
 /// Returns: number of bytes received on success, 0 if no message, negative on error
-pub fn sys_recv_message(buf: *mut u8, len: usize, timeout_ms: u32) -> i64 {
-    crate::kernel::uart_write_string("[SYSCALL] recv_message(len=");
-    crate::kernel::uart_write_string(", timeout=");
-    crate::kernel::uart_write_string(")\r\n");
-
+/// NOTE: timeout_ms parameter is IGNORED - syscalls must be non-blocking
+/// Userspace should implement retry loops if needed
+pub fn sys_recv_message(buf: *mut u8, len: usize, _timeout_ms: u32) -> i64 {
     if buf.is_null() || len == 0 {
         return SyscallError::InvalidArgument.as_i64();
     }
@@ -185,55 +177,23 @@ pub fn sys_recv_message(buf: *mut u8, len: usize, timeout_ms: u32) -> i64 {
         None => return SyscallError::InvalidArgument.as_i64(),
     };
 
-    // Try to receive message (with simple polling if timeout > 0)
-    let start_time = crate::kernel::get_time_ms();
-    let mut loop_count = 0;
-    loop {
-        loop_count += 1;
-        if loop_count <= 3 || loop_count % 100 == 0 {
-            crate::kernel::uart_write_string(&alloc::format!("[SYSCALL] recv_message loop #{}, start={}, now={}\r\n",
-                loop_count, start_time, crate::kernel::get_time_ms()));
+    // Try to receive message (non-blocking)
+    let msg = crate::kernel::thread::with_process_mut(process_id, |process| {
+        process.message_queue.pop()
+    });
+
+    if let Some(Some(msg)) = msg {
+        // Copy message to user buffer
+        let copy_len = core::cmp::min(msg.data_len as usize, len);
+        unsafe {
+            core::ptr::copy_nonoverlapping(msg.data.as_ptr(), buf, copy_len);
         }
 
-        let msg = crate::kernel::thread::with_process_mut(process_id, |process| {
-            process.message_queue.pop()
-        });
-
-        if let Some(Some(msg)) = msg {
-            // Copy message to user buffer
-            let copy_len = core::cmp::min(msg.data_len as usize, len);
-            unsafe {
-                core::ptr::copy_nonoverlapping(msg.data.as_ptr(), buf, copy_len);
-            }
-
-            crate::kernel::uart_write_string("[SYSCALL] recv_message() -> ");
-            if copy_len < 10 {
-                unsafe {
-                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + copy_len as u8);
-                }
-            }
-            crate::kernel::uart_write_string(" bytes\r\n");
-
-            return copy_len as i64;
-        }
-
-        // Check timeout
-        if timeout_ms == 0 {
-            // Non-blocking: return immediately if no message
-            return 0;
-        }
-
-        let elapsed = crate::kernel::get_time_ms() - start_time;
-        if elapsed >= timeout_ms as u64 {
-            // Timeout reached
-            crate::kernel::uart_write_string("[SYSCALL] recv_message() -> timeout\r\n");
-            return 0;
-        }
-
-        // CRITICAL: Yield to other threads instead of busy-waiting
-        // This allows other processes to run while we wait for a message
-        crate::kernel::thread::yield_now();
+        return copy_len as i64;
     }
+
+    // No message available
+    0
 }
 
 /// Helper: Get current process ID

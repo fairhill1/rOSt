@@ -364,12 +364,21 @@ pub extern "C" fn _start() -> ! {
 
     // Main event loop - receive input from kernel via IPC
     loop {
-        let mut buf = [0u8; 256];
+        // CRITICAL: Drain ALL pending messages before processing
+        // This prevents queue overflow when kernel sends many mouse move events
+        let mut messages_processed = 0;
+        let mut need_redraw = false;
 
-        // Poll for messages with timeout
-        let result = recv_message(&mut buf, 10); // 10ms timeout
+        loop {
+            let mut buf = [0u8; 256];
+            let result = recv_message(&mut buf, 0); // Non-blocking
 
-        if result >= 0 {
+            if result <= 0 {
+                break; // No more messages
+            }
+
+            messages_processed += 1;
+
             // Parse message
             if let Some(msg) = KernelToWM::from_bytes(&buf) {
                 match msg {
@@ -380,34 +389,45 @@ pub extern "C" fn _start() -> ! {
                         // Send response back to kernel
                         let response_buf = response.to_bytes();
                         let kernel_pid = 0; // Kernel GUI thread is PID 0 (first process)
-                        send_message(kernel_pid, &response_buf);
+                        let result = send_message(kernel_pid, &response_buf);
 
-                        // Redraw chrome if needed (e.g., focus changed)
-                        // For Phase 1, we'll redraw on every input (inefficient but simple)
-                        redraw_chrome();
-                        fb_flush();
+                        // If queue is full, stop processing and yield to let kernel drain
+                        if result < 0 {
+                            break; // Exit inner loop, will yield at outer loop
+                        }
+
+                        need_redraw = true;
                     }
                     KernelToWM::CreateWindow { id, x, y, width, height, title, title_len } => {
                         handle_create_window(id, x, y, width, height, title, title_len);
-                        redraw_chrome();
-                        fb_flush();
+                        need_redraw = true;
                     }
                     KernelToWM::CloseWindow { id } => {
                         handle_close_window(id);
-                        redraw_chrome();
-                        fb_flush();
+                        need_redraw = true;
                     }
                     KernelToWM::SetFocus { id } => {
                         handle_set_focus(id);
-                        redraw_chrome();
-                        fb_flush();
+                        need_redraw = true;
                     }
                 }
             }
+
+            // Limit batch processing to prevent starvation
+            if messages_processed >= 100 {
+                break;
+            }
         }
 
-        // Timer preemption (every 10ms) will handle thread switching automatically
-        // Just wait for messages - the timer interrupt will preempt us to run other threads
+        // Redraw once after processing all messages
+        if need_redraw {
+            redraw_chrome();
+            fb_flush();
+        }
+
+        // CRITICAL: Yield to other threads since we use cooperative multitasking
+        // Without this, WM monopolizes CPU and GUI thread never runs
+        yield_now();
     }
 }
 

@@ -17,36 +17,40 @@ use alloc::boxed::Box;
 ///
 /// Returns process ID on success, 0 on failure
 pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
-    // Disable interrupts during ELF loading (critical section)
-    // Timer interrupts during parsing/allocation can cause context switches in invalid states
-    // TEMPORARILY DISABLED TO DEBUG HANG
-    // unsafe {
-    //     core::arch::asm!("msr daifset, #2"); // Mask IRQ
-    // }
-
+    // NOTE: RLSF allocator handles interrupt masking internally
+    // DO NOT disable interrupts here - causes deadlock if GUI thread holds allocator mutex
     crate::kernel::uart_write_string("[ELF] Starting ELF load...\r\n");
+    crate::kernel::uart_write_string("[ELF] ELF data size: ");
+    crate::kernel::uart_write_string(if elf_data.len() < 100000 { "OK\r\n" } else { "LARGE\r\n" });
 
-    // Debug: Check ELF data before parsing
-    crate::kernel::uart_write_string(&alloc::format!(
-        "[ELF] ELF data size: {} bytes\r\n", elf_data.len()
-    ));
-    if elf_data.len() >= 4 {
-        crate::kernel::uart_write_string(&alloc::format!(
-            "[ELF] First 4 bytes (magic): {:02x} {:02x} {:02x} {:02x}\r\n",
-            elf_data[0], elf_data[1], elf_data[2], elf_data[3]
-        ));
+    // Check ELF magic bytes
+    if elf_data.len() < 4 {
+        crate::kernel::uart_write_string("[ELF] Error: Data too small\r\n");
+        return 0;
     }
 
-    // Parse ELF file
+    crate::kernel::uart_write_string("[ELF] Magic bytes: ");
+    for i in 0..4 {
+        let byte = elf_data[i];
+        let hex_chars = b"0123456789ABCDEF";
+        unsafe {
+            core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(byte >> 4) as usize]);
+            core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(byte & 0xF) as usize]);
+            core::ptr::write_volatile(0x09000000 as *mut u8, b' ');
+        }
+    }
+    crate::kernel::uart_write_string("\r\n");
+
     crate::kernel::uart_write_string("[ELF] About to call ElfFile::new()...\r\n");
+
+    // Parse ELF file - NO allocations before this!
     let elf = match ElfFile::new(elf_data) {
         Ok(e) => {
             crate::kernel::uart_write_string("[ELF] ELF parsed successfully\r\n");
             e
         }
-        Err(e) => {
-            crate::kernel::uart_write_string(&alloc::format!("[ELF] Error: Failed to parse ELF file: {:?}\r\n", e));
-            // unsafe { core::arch::asm!("msr daifclr, #2"); } // Re-enable interrupts
+        Err(_e) => {
+            crate::kernel::uart_write_string("[ELF] Error: Failed to parse ELF file\r\n");
             return 0;
         }
     };
@@ -54,44 +58,28 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
     // Verify it's an AArch64 executable
     if elf.header.pt2.machine().as_machine() != xmas_elf::header::Machine::AArch64 {
         crate::kernel::uart_write_string("[ELF] Error: Not an AArch64 binary\r\n");
-        // unsafe { core::arch::asm!("msr daifclr, #2"); } // Re-enable interrupts
         return 0;
     }
 
     // Get entry point
     let entry_point = elf.header.pt2.entry_point();
-    crate::kernel::uart_write_string(&alloc::format!(
-        "[ELF] Entry point: {:#x}\r\n", entry_point
-    ));
+    crate::kernel::uart_write_string("[ELF] Got entry point\r\n");
 
     // Load program segments into memory
     let (loaded_memory, base_vaddr) = match load_program_segments(&elf, elf_data) {
         Ok(result) => result,
-        Err(e) => {
-            crate::kernel::uart_write_string(&alloc::format!("[ELF] Error loading segments: {}\r\n", e));
-            // unsafe { core::arch::asm!("msr daifclr, #2"); } // Re-enable interrupts
+        Err(_e) => {
+            crate::kernel::uart_write_string("[ELF] Error loading segments\r\n");
             return 0;
         }
     };
 
     let loaded_base = loaded_memory.as_ptr() as u64;
-    crate::kernel::uart_write_string(&alloc::format!(
-        "[ELF] Loaded {} bytes at {:#x} (ELF base vaddr was {:#x})\r\n",
-        loaded_memory.len(),
-        loaded_base,
-        base_vaddr
-    ));
+    crate::kernel::uart_write_string("[ELF] Loaded program into memory\r\n");
 
     // Calculate entry point offset from the ELF base virtual address
-    // Entry point (0x40080000) - base_vaddr (0x40080000) = offset (0x0)
-    // Then add to where we actually loaded it in memory
     let entry_offset = entry_point - base_vaddr;
     let actual_entry = loaded_base + entry_offset;
-
-    crate::kernel::uart_write_string(&alloc::format!(
-        "[ELF] Entry calculation: {:#x} = loaded_base {:#x} + (entry {:#x} - base_vaddr {:#x})\r\n",
-        actual_entry, loaded_base, entry_point, base_vaddr
-    ));
 
     let entry_fn: extern "C" fn() -> ! = unsafe {
         core::mem::transmute(actual_entry as usize)
@@ -100,20 +88,12 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
     // Spawn through scheduler
     let process_id = crate::kernel::scheduler::SCHEDULER.lock().spawn_user_process(entry_fn);
 
-    crate::kernel::uart_write_string(&alloc::format!(
-        "[ELF] Spawned process {}\r\n", process_id
-    ));
+    crate::kernel::uart_write_string("[ELF] Spawned process\r\n");
 
     // CRITICAL: We leak the memory here on purpose!
     // The process needs this memory to stay alive
     // In a real OS, this would be managed by the process manager
     Box::leak(loaded_memory);
-
-    // Re-enable interrupts before returning
-    // TEMP DISABLED FOR DEBUG
-    // unsafe {
-    //     core::arch::asm!("msr daifclr, #2"); // Unmask IRQ
-    // }
 
     process_id
 }
@@ -142,13 +122,12 @@ fn load_program_segments(elf: &ElfFile, elf_data: &[u8]) -> Result<(Box<[u8]>, u
     }
 
     let total_size = (max_addr - min_addr) as usize;
-    crate::kernel::uart_write_string(&alloc::format!(
-        "[ELF] Total program size: {} bytes (vaddr {:#x} to {:#x})\r\n",
-        total_size, min_addr, max_addr
-    ));
+    crate::kernel::uart_write_string("[ELF] Allocating program memory\r\n");
 
     // Allocate memory for the program
     let mut program_memory = alloc::vec![0u8; total_size].into_boxed_slice();
+
+    crate::kernel::uart_write_string("[ELF] Copying LOAD segments\r\n");
 
     // Copy each LOAD segment
     for program_header in elf.program_iter() {
@@ -157,11 +136,6 @@ fn load_program_segments(elf: &ElfFile, elf_data: &[u8]) -> Result<(Box<[u8]>, u
             let memsz = program_header.mem_size() as usize;
             let filesz = program_header.file_size() as usize;
             let offset = program_header.offset() as usize;
-
-            crate::kernel::uart_write_string(&alloc::format!(
-                "[ELF] Loading segment: vaddr={:#x}, memsz={:#x}, filesz={:#x}, offset={:#x}\r\n",
-                vaddr, memsz, filesz, offset
-            ));
 
             // Calculate offset in our allocated buffer
             let buffer_offset = (vaddr - min_addr) as usize;
@@ -184,11 +158,6 @@ fn load_program_segments(elf: &ElfFile, elf_data: &[u8]) -> Result<(Box<[u8]>, u
             if memsz > filesz {
                 program_memory[buffer_offset + filesz..buffer_offset + memsz].fill(0);
             }
-
-            crate::kernel::uart_write_string(&alloc::format!(
-                "[ELF]   → Loaded {} bytes at buffer offset {:#x}\r\n",
-                filesz, buffer_offset
-            ));
         }
     }
 

@@ -225,7 +225,7 @@ impl Process {
     }
 }
 
-const STACK_SIZE: usize = 64 * 1024; // 64KB per thread
+const STACK_SIZE: usize = 256 * 1024; // 256KB per thread (increased for syscall nesting)
 const USER_STACK_SIZE: usize = 128 * 1024; // 128KB for user stacks
 const MAX_USER_PROCESSES: usize = 8; // Maximum 8 user processes
 
@@ -659,16 +659,14 @@ pub fn with_process_mut<F, R>(id: usize, f: F) -> Option<R>
 where
     F: FnOnce(&mut Process) -> R,
 {
-    crate::kernel::uart_write_string(&alloc::format!("[PROCESS] with_process_mut({}) attempting lock...\r\n", id));
+    // CRITICAL: No heap allocations in syscall path!
     let mut guard = PROCESS_MANAGER.lock();
-    crate::kernel::uart_write_string(&alloc::format!("[PROCESS] with_process_mut({}) lock acquired!\r\n", id));
 
     let result = guard
         .as_mut()
         .and_then(|pm| pm.get_process_mut(id))
         .map(f);
 
-    crate::kernel::uart_write_string(&alloc::format!("[PROCESS] with_process_mut({}) releasing lock\r\n", id));
     result
 }
 

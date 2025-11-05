@@ -15,6 +15,11 @@ static mut FONT_SIZE: f32 = 18.0; // Default font size (18px for better readabil
 static mut FONT_LOAD_ATTEMPTED: bool = false; // Track if we've tried loading
 static mut FONT_PREFERENCE: FontMode = FontMode::Auto; // User's font preference
 
+/// Check if TrueType font is loaded
+pub fn is_font_loaded() -> bool {
+    unsafe { FONT.is_some() }
+}
+
 /// Try to lazy-load the font from filesystem on first use
 fn try_load_font() {
     unsafe {
@@ -23,6 +28,12 @@ fn try_load_font() {
         }
         FONT_LOAD_ATTEMPTED = true;
 
+        // DISABLED: Font loading from GUI thread causes filesystem re-mount which crashes
+        // TODO: Either load font during boot OR use a global filesystem instance with proper locking
+        crate::kernel::uart_write_string("[FONT] Font loading disabled (would re-mount filesystem and crash)\r\n");
+        return;
+
+        #[allow(unreachable_code)]
         crate::kernel::uart_write_string("[FONT] Attempting to load i24.ttf from filesystem...\r\n");
 
         // Access global block devices and mount filesystem directly

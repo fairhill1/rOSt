@@ -86,6 +86,18 @@ pub fn getpid() -> u32 {
     }
 }
 
+/// Yield CPU to another thread (cooperative multitasking)
+pub fn yield_now() {
+    unsafe {
+        syscall(
+            33, // SyscallNumber::Yield
+            0,
+            0,
+            0
+        );
+    }
+}
+
 // ============================================================================
 // FILE I/O SYSCALLS
 // ============================================================================

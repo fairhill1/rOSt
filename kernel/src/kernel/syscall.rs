@@ -1278,9 +1278,9 @@ fn sys_draw_rect(x: i32, y: i32, width: u32, height: u32, color: u32) -> i64 {
 // ============================================================================
 
 fn sys_yield() -> i64 {
-    // For userspace threads, just return from the syscall
-    // The preemptive timer interrupt will handle thread switching
-    // (Calling thread::yield_now() here doesn't work because we're in syscall context
-    //  and the user's registers are on the exception stack, not in the TCB)
+    // FIXED: Now that we use cooperative multitasking (no preemptive timer),
+    // we must actually yield here. The syscall has already saved user context
+    // in the ExceptionContext on the stack, so context switching is safe.
+    crate::kernel::thread::yield_now();
     0 // Success
 }

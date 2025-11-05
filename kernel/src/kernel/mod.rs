@@ -52,7 +52,9 @@ static mut SCREEN_WIDTH: u32 = 0;
 static mut SCREEN_HEIGHT: u32 = 0;
 
 // Window manager PID (for IPC communication)
-static mut WINDOW_MANAGER_PID: usize = 0;
+// CRITICAL: Must be atomic for cross-thread visibility
+use core::sync::atomic::{AtomicUsize, Ordering};
+static WINDOW_MANAGER_PID: AtomicUsize = AtomicUsize::new(0);
 
 // Boot info and framebuffer for kernel_init_high_half
 static mut BOOT_INFO: Option<&'static BootInfo> = None;
@@ -369,25 +371,54 @@ fn kernel_gui_thread() {
     uart_write_string("[GUI-THREAD] Interrupts enabled for this thread\r\n");
 
     // Get framebuffer info from global
+    uart_write_string("[GUI-THREAD] Getting framebuffer info...\r\n");
     let fb_info = unsafe { GPU_FRAMEBUFFER_INFO.unwrap() };
+    uart_write_string("[GUI-THREAD] Got framebuffer info\r\n");
 
     let mut needs_full_render = true;
+    uart_write_string("[GUI-THREAD] Getting RTC datetime...\r\n");
     let mut last_minute = drivers::rtc::get_datetime().minute;
+    uart_write_string("[GUI-THREAD] Got RTC datetime\r\n");
     let mut loop_count = 0;
 
     uart_write_string("[GUI-THREAD] Entering main loop\r\n");
 
     loop {
         loop_count += 1;
+
         if loop_count == 1 {
-            uart_write_string("[GUI-THREAD] Loop iteration 1 start\r\n");
+            uart_write_string("[GUI-THREAD] Starting GUI loop (WM already loaded)\r\n");
+        }
+
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] About to check WINDOW_MANAGER_PID...\r\n");
+
+            // DEBUG: Print address of WINDOW_MANAGER_PID
+            let addr = &WINDOW_MANAGER_PID as *const _ as usize;
+            uart_write_string("[GUI-THREAD] WINDOW_MANAGER_PID addr: 0x");
+            let hex_chars = b"0123456789ABCDEF";
+            for i in (0..16).rev() {
+                let digit = (addr >> (i * 4)) & 0xF;
+                unsafe {
+                    core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[digit]);
+                }
+            }
+            uart_write_string("\r\n");
+
+            uart_write_string("[GUI-THREAD] About to perform atomic load...\r\n");
         }
 
         // PHASE 3: Check for WM responses from previous iteration
         // This must happen BEFORE polling new input to handle the async pipeline:
         // Loop N: send input → WM scheduled → Loop N+1: receive response
         unsafe {
-            if WINDOW_MANAGER_PID > 0 {
+            let wm_pid = WINDOW_MANAGER_PID.load(Ordering::Acquire);
+
+            if loop_count == 1 {
+                uart_write_string("[GUI-THREAD] Atomic load succeeded\r\n");
+            }
+
+            if wm_pid > 0 {
                 // Check for all pending responses (non-blocking)
                 loop {
                     let mut response_buf = [0u8; 256];
@@ -466,33 +497,42 @@ fn kernel_gui_thread() {
             }
         }
 
-        // Check if minute has changed - redraw clock every minute
         if loop_count == 1 {
-            uart_write_string("[GUI-THREAD] Checking RTC...\r\n");
+            uart_write_string("[GUI-THREAD] About to check RTC time...\r\n");
         }
+
+        // Check if minute has changed - redraw clock every minute
         let current_minute = drivers::rtc::get_datetime().minute;
+
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] RTC check OK\r\n");
+        }
+
         if current_minute != last_minute {
             last_minute = current_minute;
             needs_full_render = true;
         }
 
-        // Poll VirtIO input devices for real trackpad/keyboard input
         if loop_count == 1 {
-            uart_write_string("[GUI-THREAD] Polling input...\r\n");
+            uart_write_string("[GUI-THREAD] About to poll VirtIO input...\r\n");
         }
+
+        // Poll VirtIO input devices for real trackpad/keyboard input
         drivers::virtio::input::poll_virtio_input();
+
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] VirtIO poll OK\r\n");
+        }
 
         // Forward input events to window manager via IPC
         // PHASE 2: IPC-based input routing
         unsafe {
-            if WINDOW_MANAGER_PID > 0 {
+            if WINDOW_MANAGER_PID.load(Ordering::Acquire) > 0 {
                 // Poll for input events and forward each one to WM
                 let mut event_count = 0;
                 while let Some(kernel_event) = drivers::input_events::get_input_event() {
                     event_count += 1;
-                    if event_count <= 3 {  // Limit debug spam
-                        uart_write_string(&alloc::format!("[GUI-THREAD] Got input event #{}\r\n", event_count));
-                    }
+                    // CRITICAL: No heap allocations in hot path (competes with ELF loading)
                     // Convert kernel InputEvent to librost InputEvent format
                     let (event_type, key, modifiers, button, pressed, x_delta, y_delta, wheel_delta) = match kernel_event {
                         drivers::input_events::InputEvent::KeyPressed { key, modifiers } => {
@@ -540,34 +580,41 @@ fn kernel_gui_thread() {
 
                     // Send to window manager (kernel-side IPC)
                     // Response will be processed at the start of next loop iteration
-                    kernel_send_message(WINDOW_MANAGER_PID as u32, &msg_buf);
+                    let result = kernel_send_message(WINDOW_MANAGER_PID.load(Ordering::Acquire) as u32, &msg_buf);
 
-                    if event_count <= 3 {
-                        uart_write_string(&alloc::format!("[GUI-THREAD] Sent event type {} to WM (async)\r\n", event_type));
+                    // If queue is full, stop sending and let WM catch up
+                    if result == -2 {
+                        break; // Queue full, skip remaining events this iteration
                     }
                 }
-                if event_count > 0 && event_count <= 3 {
-                    uart_write_string(&alloc::format!("[GUI-THREAD] Total events processed: {}\r\n", event_count));
-                }
+                // CRITICAL: No debug output here - format!() competes with ELF loader
             }
         }
 
-        // Poll network stack (process packets, timers, etc.)
         if loop_count == 1 {
-            uart_write_string("[GUI-THREAD] Polling network...\r\n");
+            uart_write_string("[GUI-THREAD] About to poll network stack...\r\n");
         }
+
+        // Poll network stack (process packets, timers, etc.)
         unsafe {
             if let Some(ref mut stack) = NETWORK_STACK {
                 stack.poll();
             }
         }
 
-        // Poll browser async HTTP state machines
         if loop_count == 1 {
-            uart_write_string("[GUI-THREAD] Polling browsers...\r\n");
+            uart_write_string("[GUI-THREAD] Network poll OK\r\n");
+            uart_write_string("[GUI-THREAD] About to poll browsers...\r\n");
         }
+
+        // Poll browser async HTTP state machines
         if crate::gui::widgets::browser::poll_all_browsers() {
             needs_full_render = true;
+        }
+
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] Browser poll OK\r\n");
+            uart_write_string("[GUI-THREAD] About to start rendering phase...\r\n");
         }
 
         // Phase 2: Input events are now forwarded to WM via IPC (above)
@@ -576,7 +623,7 @@ fn kernel_gui_thread() {
         let needs_cursor_redraw = false; // Cursor updates happen in IPC forwarding above
 
         if loop_count == 1 {
-            uart_write_string("[GUI-THREAD] Loop iteration 1 complete!\r\n");
+            uart_write_string("[GUI-THREAD] About to check snakes...\r\n");
         }
 
         // Update snake games and only render if any game changed state
@@ -586,12 +633,49 @@ fn kernel_gui_thread() {
             }
         }
 
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] Snakes check OK\r\n");
+            uart_write_string("[GUI-THREAD] Checking framebuffer address...\r\n");
+            // CRITICAL: No format!() - causes crashes in GUI thread
+            if fb_info.base_address != 0 {
+                uart_write_string("[GUI-THREAD] FB address is valid\r\n");
+            } else {
+                uart_write_string("[GUI-THREAD] FB address is NULL!\r\n");
+            }
+            if needs_full_render {
+                uart_write_string("[GUI-THREAD] needs_full_render = true\r\n");
+            } else {
+                uart_write_string("[GUI-THREAD] needs_full_render = false\r\n");
+            }
+        }
+
         // Render desktop with windows and cursor
         if fb_info.base_address != 0 {
-            if needs_full_render {
+            // CRITICAL: Skip rendering on first iteration to test if GUI thread can survive one loop
+            let should_render = needs_full_render && loop_count > 1;
+
+            if loop_count == 1 {
+                uart_write_string("[GUI-THREAD] Skipping render on first iteration (loop_count=1)\r\n");
+            }
+
+            if should_render {
+                if loop_count == 2 {
+                    uart_write_string("[GUI-THREAD] About to clear screen (loop_count=2)...\r\n");
+                }
+
                 // Full redraw to back buffer - clear, render windows, console, cursor
                 crate::gui::framebuffer::clear_screen(0xFF1A1A1A);
+
+                if loop_count == 2 {
+                    uart_write_string("[GUI-THREAD] Screen cleared\r\n");
+                    uart_write_string("[GUI-THREAD] About to render window manager...\r\n");
+                }
+
                 crate::gui::window_manager::render();
+
+                if loop_count == 2 {
+                    uart_write_string("[GUI-THREAD] Window manager rendered\r\n");
+                }
 
                 // Render all terminals INSIDE their windows
                 for (instance_id, cx, cy, cw, ch) in crate::gui::window_manager::get_all_terminals() {
@@ -656,8 +740,16 @@ fn kernel_gui_thread() {
             unsafe { core::arch::asm!("nop"); }
         }
 
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] ✓ First iteration complete! About to yield...\r\n");
+        }
+
         // Yield to scheduler so other threads can run
         thread::yield_now();
+
+        if loop_count == 1 {
+            uart_write_string("[GUI-THREAD] ✓ Yielded and returned! Starting iteration 2...\r\n");
+        }
     }
 }
 
@@ -1412,72 +1504,78 @@ pub extern "C" fn kernel_init_high_half() -> ! {
     uart_write_string("===================================\r\n\r\n");
     */
 
-    // ===== SPAWN KERNEL GUI THREAD =====
-    uart_write_string("\n=== SPAWNING KERNEL GUI THREAD ===\r\n");
-    let gui_thread_id = {
-        let mut sched = scheduler::SCHEDULER.lock();
-        sched.spawn(kernel_gui_thread)
-    };
-    uart_write_string(&alloc::format!("✓ Kernel GUI thread spawned as thread {}\r\n", gui_thread_id));
+    // ===== SPAWN ELF LOADER THREAD FIRST =====
+    // CRITICAL: Load ELF files with ONLY this thread running to avoid allocator contention
+    uart_write_string("\n=== SPAWNING ELF LOADER THREAD ===\r\n");
+    fn elf_loader_thread() {
+        uart_write_string("[ELF-THREAD] ELF loader thread starting...\r\n");
 
-    // CRITICAL: Enable interrupts BEFORE loading ELF binaries
-    // ELF parser/allocator may require interrupts to be enabled
-    uart_write_string("\nEnabling interrupts before ELF loading...\r\n");
+        // Warm up allocator first
+        uart_write_string("[ELF-THREAD] Warming up allocator...\r\n");
+        for i in 0..10 {
+            let _ = alloc::format!("init{}", i);
+        }
+        uart_write_string("[ELF-THREAD] ✓ Allocator warmed up\r\n\r\n");
+
+        // Load IPC sender
+        uart_write_string("[ELF-THREAD] Loading IPC sender...\r\n");
+        let warmup_pid = elf_loader::load_elf_and_spawn(embedded_apps::IPC_SENDER_ELF);
+        uart_write_string(&alloc::format!("[ELF-THREAD] ✓ IPC sender spawned as PID {}\r\n", warmup_pid));
+
+        // Load window manager
+        uart_write_string("[ELF-THREAD] Loading window manager...\r\n");
+        let wm_pid = elf_loader::load_elf_and_spawn(embedded_apps::WINDOW_MANAGER_ELF);
+        uart_write_string(&alloc::format!("[ELF-THREAD] ✓ Window manager spawned as PID {}\r\n", wm_pid));
+
+        // Store PID with Release ordering so GUI thread sees it with Acquire
+        WINDOW_MANAGER_PID.store(wm_pid, Ordering::Release);
+
+        uart_write_string("[ELF-THREAD] All userspace apps loaded!\r\n");
+        uart_write_string("[ELF-THREAD] Now spawning GUI thread...\r\n");
+
+        // NOW spawn the GUI thread after ELF loading completes
+        let gui_thread_id = {
+            let mut sched = scheduler::SCHEDULER.lock();
+            sched.spawn(kernel_gui_thread)
+        };
+        uart_write_string(&alloc::format!("[ELF-THREAD] ✓ GUI thread spawned as thread {}\r\n", gui_thread_id));
+
+        // This thread's job is done - yield forever
+        loop {
+            thread::yield_now();
+        }
+    }
+
+    let elf_loader_id = {
+        let mut sched = scheduler::SCHEDULER.lock();
+        sched.spawn(elf_loader_thread)
+    };
+    uart_write_string(&alloc::format!("✓ ELF loader thread spawned as thread {}\r\n", elf_loader_id));
+
+    // CRITICAL: Enable interrupts so scheduler can run
+    uart_write_string("\nEnabling interrupts for scheduler...\r\n");
     unsafe {
         core::arch::asm!("msr daifclr, #2"); // Clear IRQ mask bit
     }
-    uart_write_string("✓ Interrupts enabled for boot thread\r\n\r\n");
+    uart_write_string("✓ Interrupts enabled\r\n\r\n");
 
-    // ===== SPAWN USERSPACE WINDOW MANAGER =====
-    // WORKAROUND: First ELF load hangs. Load IPC sender first to complete xmas-elf initialization.
-    // IPC sender is a minimal binary that won't crash like CSV viewer does.
-    uart_write_string("=== SPAWNING USERSPACE APPLICATIONS ===\r\n");
-    uart_write_string("Loading IPC sender (warm-up for ELF parser)...\r\n");
-    let warmup_pid = elf_loader::load_elf_and_spawn(embedded_apps::IPC_SENDER_ELF);
-    uart_write_string(&alloc::format!("✓ IPC sender spawned as PID {} (warm-up complete)\r\n", warmup_pid));
-
-    uart_write_string("\nNow loading window manager...\r\n");
-    let wm_elf = embedded_apps::WINDOW_MANAGER_ELF;
-    let wm_pid = elf_loader::load_elf_and_spawn(wm_elf);
-    uart_write_string(&alloc::format!("✓ Window manager spawned as PID {}\r\n", wm_pid));
-
-    unsafe {
-        WINDOW_MANAGER_PID = wm_pid;
-    }
-
-    uart_write_string("Window manager will handle input routing via IPC...\r\n");
-    uart_write_string("===================================\r\n\r\n");
-
-    // Boot thread now idles - GUI thread and WM thread handle everything
+    // Boot thread now idles - scheduled threads handle everything
     uart_write_string("Boot complete, entering idle loop...\r\n");
-    uart_write_string("Scheduler will round-robin between:\r\n");
-    uart_write_string("  - Thread 1: Kernel GUI (EL1)\r\n");
-    uart_write_string("  - Thread 2: Window Manager (EL0)\r\n");
-    uart_write_string("  + Any user apps spawned later\r\n\r\n");
+    uart_write_string("ELF loader thread will load userspace apps, then spawn GUI thread\r\n\r\n");
 
-    // DEBUG: Check DAIF register to confirm interrupts are enabled
-    let daif: u64;
-    let timer_ctl: u64;
-    let timer_tval: u64;
-    unsafe {
-        core::arch::asm!("mrs {}, daif", out(reg) daif);
-        core::arch::asm!("mrs {}, cntp_ctl_el0", out(reg) timer_ctl);
-        core::arch::asm!("mrs {}, cntp_tval_el0", out(reg) timer_tval);
-    }
-    uart_write_string(&alloc::format!("[DEBUG] DAIF register = {:#x} (bit 7 should be 0 for IRQ enabled)\r\n", daif));
-    uart_write_string(&alloc::format!("[DEBUG] Timer CTL = {:#x}, TVAL = {} (should be counting down)\r\n", timer_ctl, timer_tval as i32));
-
-    // DEBUG: Check GIC CPU interface
-    let gicc_ctlr = unsafe { core::ptr::read_volatile(0x08010000 as *const u32) };
-    let gicc_pmr = unsafe { core::ptr::read_volatile(0x08010004 as *const u32) };
-    uart_write_string(&alloc::format!("[DEBUG] GIC CPU CTLR = {:#x}, PMR = {:#x}\r\n", gicc_ctlr, gicc_pmr));
-
+    // CRITICAL: No more heap allocations after this point!
+    // Boot thread is unscheduled - if timer fires during allocation, deadlock occurs
     uart_write_string("Interrupts enabled! Timer should now fire every 10ms.\r\n");
+    uart_write_string("Boot thread yielding to start scheduler...\r\n");
 
+    // CRITICAL: Yield once to kickstart the scheduler
+    thread::yield_now();
+
+    // Boot thread now permanently yields to scheduler
+    // Use WFI (wait for interrupt) to save power
     loop {
-        // Boot thread idles forever - all work done by scheduled threads
-        for _ in 0..100000 {
-            unsafe { core::arch::asm!("nop"); }
+        unsafe {
+            core::arch::asm!("wfi"); // Wait for interrupt, then immediately yield
         }
         thread::yield_now();
     }

@@ -50,7 +50,8 @@ impl Scheduler {
             self.threads.push(thread);
             self.ready_queue.push_back(thread_id);
 
-            crate::kernel::uart_write_string(&alloc::format!("Spawned kernel thread {} for process {}\r\n", thread_id, process_id));
+            // CRITICAL: No heap allocations during ELF loading (interrupts disabled)
+            crate::kernel::uart_write_string("[SCHEDULER] Spawned kernel thread\r\n");
             thread_id
         } else {
             crate::kernel::uart_write_string("[SCHEDULER] Failed to get process for kernel thread\r\n");
@@ -70,14 +71,10 @@ impl Scheduler {
         if let Some((kernel_stack_top, user_stack_opt)) = crate::kernel::thread::get_process_stack_info(process_id) {
             let user_stack_top = user_stack_opt.unwrap_or(0);
 
-            crate::kernel::uart_write_string(&alloc::format!("DEBUG: User stack top = 0x{:016x}\r\n", user_stack_top));
+            // CRITICAL: No heap allocations during ELF loading (interrupts disabled)
 
             // Create the thread with both kernel and user stacks (no duplicate initialization!)
             let thread = Box::new(Thread::new_user(thread_id, process_id, entry_point, kernel_stack_top, user_stack_top));
-
-            // Debug: get LR and SP before moving the thread
-            let debug_lr = thread.context.x30;
-            let debug_sp = thread.context.x29;
 
             // Link process and thread using safe function
             set_process_main_thread(process_id, thread_id);
@@ -85,13 +82,11 @@ impl Scheduler {
             self.threads.push(thread);
             self.ready_queue.push_back(thread_id);
 
-            crate::kernel::uart_write_string(&alloc::format!("Spawned user process {} as thread {}\r\n", process_id, thread_id));
-            crate::kernel::uart_write_string(&alloc::format!("DEBUG: Thread {} LR (x30) = 0x{:x}\r\n", thread_id, debug_lr));
-            crate::kernel::uart_write_string(&alloc::format!("DEBUG: Thread {} SP (x29) = 0x{:016x}\r\n", thread_id, debug_sp));
+            crate::kernel::uart_write_string("[SCHEDULER] Spawned user process\r\n");
 
             // Note: User process created but not automatically started
             // This avoids the recursive scheduling issue that was causing hangs
-            crate::kernel::uart_write_string("DEBUG: User process ready, will run on next scheduler cycle\r\n");
+            crate::kernel::uart_write_string("[SCHEDULER] User process ready, will run on next scheduler cycle\r\n");
 
             process_id
         } else {
@@ -112,29 +107,18 @@ impl Scheduler {
 
     /// Yield CPU to another thread (cooperative)
     pub fn yield_now(&mut self) -> Option<(*mut crate::kernel::thread::ThreadContext, *const crate::kernel::thread::ThreadContext, bool)> {
-        crate::kernel::uart_write_string("[SCHED] yield_now() entered\r\n");
+        // CRITICAL: No debug output in hot path - causes excessive noise
 
         if let Some(current_id) = self.current_thread {
-            crate::kernel::uart_write_string("[SCHED] current_thread is Some\r\n");
             // Mark current thread as ready and add to back of queue
             if let Some(thread) = self.threads.iter_mut().find(|t| t.id == current_id) {
-                crate::kernel::uart_write_string("[SCHED] Found current thread\r\n");
                 if thread.state == ThreadState::Running {
-                    crate::kernel::uart_write_string("[SCHED] Thread is Running, marking as Ready\r\n");
                     thread.state = ThreadState::Ready;
                     self.ready_queue.push_back(current_id);
-                    crate::kernel::uart_write_string("[SCHED] Thread re-queued\r\n");
-                } else {
-                    crate::kernel::uart_write_string("[SCHED] Thread NOT Running, skipping re-queue\r\n");
                 }
-            } else {
-                crate::kernel::uart_write_string("[SCHED] WARNING: Current thread not found in thread list!\r\n");
             }
-        } else {
-            crate::kernel::uart_write_string("[SCHED] current_thread is None\r\n");
         }
 
-        crate::kernel::uart_write_string("[SCHED] About to call schedule()...\r\n");
         // Schedule next thread and return pointers for context switch
         self.schedule()
     }
@@ -147,9 +131,7 @@ impl Scheduler {
             // Mark current thread as terminated (don't add back to ready queue)
             if let Some(thread) = self.threads.iter_mut().find(|t| t.id == current_id) {
                 thread.state = ThreadState::Terminated;
-                crate::kernel::uart_write_string(&alloc::format!(
-                    "[SCHEDULER] Thread {} terminated\r\n", current_id
-                ));
+                // NOTE: No heap allocations in scheduler path!
             }
             self.current_thread = None;
         }
@@ -173,10 +155,6 @@ impl Scheduler {
         let next_thread = self.threads.iter_mut().find(|t| t.id == next_id)?;
         next_thread.state = ThreadState::Running;
         self.current_thread = Some(next_id);
-
-        crate::kernel::uart_write_string(&alloc::format!(
-            "[SCHEDULER] Switching to thread {} (without saving current)\r\n", next_id
-        ));
 
         // Return pointer to next thread's context (no old context to save)
         Some(&next_thread.context as *const _)
@@ -262,9 +240,6 @@ impl Scheduler {
         let next_ptr = &next_thread.context as *const _;
 
         self.current_thread = Some(next_id);
-
-        // Debug: Print thread switch info
-        crate::kernel::uart_write_string(&alloc::format!("DEBUG: Switching to thread {} (LR=0x{:x})\r\n", next_id, next_thread.context.x30));
 
         // Return pointers for context switch (to be done outside lock)
         let is_first_switch = current_ptr.is_none();

@@ -4,7 +4,9 @@
 
 extern crate alloc;
 use core::panic::PanicInfo;
-use linked_list_allocator::LockedHeap;
+use core::alloc::{GlobalAlloc, Layout};
+use core::mem::MaybeUninit;
+use core::ptr::NonNull;
 
 mod kernel;
 mod system;
@@ -14,8 +16,71 @@ mod raw_uefi;
 
 use raw_uefi::*;
 
+/// RLSF (TLSF) allocator - O(1) guaranteed time, interrupt-safe with IRQ masking
+/// FLLEN=25, SLLEN=16 increased to support larger allocations for xmas-elf
+/// Maximum block size: 2^25 = 32MB
+type RlsfAllocator = rlsf::Tlsf<'static, u32, u32, 25, 16>;
+
+struct GlobalRlsf {
+    inner: spin::Mutex<RlsfAllocator>,
+}
+
+unsafe impl GlobalAlloc for GlobalRlsf {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Save current interrupt state and disable interrupts
+        let daif: u64;
+        core::arch::asm!("mrs {}, DAIF", out(reg) daif);
+        core::arch::asm!("msr daifset, #2");
+
+        let result = self.inner
+            .lock()
+            .allocate(layout);
+
+        let ptr = match result {
+            Some(ptr) => ptr.as_ptr(),
+            None => {
+                // Allocation failed - panic
+                loop {
+                    core::arch::asm!("wfe");
+                }
+            }
+        };
+
+        // Restore previous interrupt state (only re-enable if they were enabled before)
+        if daif & (1 << 7) == 0 {
+            core::arch::asm!("msr daifclr, #2");
+        }
+
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // Save current interrupt state and disable interrupts
+        let daif: u64;
+        core::arch::asm!("mrs {}, DAIF", out(reg) daif);
+        core::arch::asm!("msr daifset, #2");
+
+        if let Some(ptr) = NonNull::new(ptr) {
+            self.inner.lock().deallocate(ptr, layout.align());
+        }
+
+        // Restore previous interrupt state
+        if daif & (1 << 7) == 0 {
+            core::arch::asm!("msr daifclr, #2");
+        }
+    }
+}
+
+impl GlobalRlsf {
+    const fn new() -> Self {
+        GlobalRlsf {
+            inner: spin::Mutex::new(RlsfAllocator::new()),
+        }
+    }
+}
+
 #[global_allocator]
-static ALLOCATOR: LockedHeap = LockedHeap::empty();
+static ALLOCATOR: GlobalRlsf = GlobalRlsf::new();
 
 // UEFI entry point
 #[no_mangle]
@@ -31,15 +96,20 @@ pub extern "efiapi" fn efi_main(
         let bs = get_boot_services();
         let mut heap_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
         let heap_size = 1024 * 1024 * 32; // 32MB heap (for TTF fonts + PNG decoding)
-        
+
         let status = (bs.allocate_pool)(
             1, // EfiLoaderData
             heap_size,
             &mut heap_ptr,
         );
-        
+
         if status == EFI_SUCCESS {
-            ALLOCATOR.lock().init(heap_ptr as *mut u8, heap_size);
+            // Convert heap to MaybeUninit slice for RLSF
+            let heap_slice = core::slice::from_raw_parts_mut(
+                heap_ptr as *mut MaybeUninit<u8>,
+                heap_size
+            );
+            ALLOCATOR.inner.lock().insert_free_block(heap_slice);
         }
     }
     

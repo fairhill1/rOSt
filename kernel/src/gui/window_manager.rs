@@ -352,6 +352,11 @@ impl WindowManager {
             }
         }
 
+        // CRITICAL: Skip text rendering if font is not loaded (prevents crash)
+        if !crate::gui::font::is_font_loaded() {
+            return;
+        }
+
         // Calculate vertically centered Y position for menu bar text
         let text_height = framebuffer::get_char_height();
         let centered_text_y = MENU_START_Y + (MENU_ITEM_HEIGHT - text_height) / 2;

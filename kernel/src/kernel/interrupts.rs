@@ -67,14 +67,7 @@ pub fn init_exception_vectors() {
 /// Handles interrupts from both EL1 and EL0
 #[no_mangle]
 extern "C" fn handle_irq_rust() {
-    // DEBUG: Print that we received an IRQ
-    static mut IRQ_COUNT: u64 = 0;
-    unsafe {
-        IRQ_COUNT += 1;
-        if IRQ_COUNT <= 10 {
-            crate::kernel::uart_write_string(&alloc::format!("[IRQ] IRQ #{} received\r\n", IRQ_COUNT));
-        }
-    }
+    // NOTE: No heap allocations allowed in IRQ handler!
 
     // Handle IRQ interrupts
     // Read from GIC to determine interrupt source
@@ -104,15 +97,6 @@ extern "C" fn handle_irq_rust() {
 extern "C" fn handle_el0_syscall_rust(ctx: *mut ExceptionContext) {
     // NOTE: We keep TTBR0 on kernel tables even at EL0
     // MMU still enforces USER permissions on pages, so EL0 can't access kernel memory
-
-    // DEBUG: Print that we entered syscall handler
-    static mut SYSCALL_ENTRY_COUNT: u64 = 0;
-    unsafe {
-        SYSCALL_ENTRY_COUNT += 1;
-        if SYSCALL_ENTRY_COUNT <= 10 {
-            crate::kernel::uart_write_string(&alloc::format!("[SYSCALL] Entry #{}\r\n", SYSCALL_ENTRY_COUNT));
-        }
-    }
 
     // CRITICAL: ARM64 automatically disables IRQ interrupts when taking a synchronous exception (SVC).
     // We must re-enable interrupts here to allow timer interrupts to fire during syscall execution,
@@ -209,18 +193,6 @@ extern "C" fn handle_el0_syscall_rust(ctx: *mut ExceptionContext) {
 
     // Write result back to X0 (will be restored on return)
     ctx.x0 = result as u64;
-
-    // DEBUG: Print SPSR value to verify interrupts are enabled
-    static mut SYSCALL_RETURN_COUNT: u64 = 0;
-    unsafe {
-        SYSCALL_RETURN_COUNT += 1;
-        if SYSCALL_RETURN_COUNT <= 5 {
-            crate::kernel::uart_write_string(&alloc::format!(
-                "[SYSCALL] Returning to EL0, SPSR=0x{:x} (bit7={})\r\n",
-                ctx.spsr_el1, (ctx.spsr_el1 >> 7) & 1
-            ));
-        }
-    }
 
     // NOTE: We keep TTBR0 on kernel tables even when returning to EL0
     // MMU still enforces USER permissions on pages
@@ -431,34 +403,17 @@ fn handle_timer_interrupt() {
         CNTP_TVAL_EL0.set(freq / 100); // 10ms intervals
         CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET);
 
-        // Preemptive multitasking - preempt every tick (10ms time slices)
-        static mut TICK_COUNT: u64 = 0;
-        const PREEMPT_TICKS: u64 = 1; // Preempt every 10ms
+        // CRITICAL FIX: Do NOT context switch inside interrupt handler!
+        // Context switching inside an IRQ handler corrupts the exception return path:
+        // 1. IRQ saves registers on thread A's stack
+        // 2. We context switch to thread B
+        // 3. IRQ returns (ERET) but we're on thread B's stack with thread A's saved context
+        // 4. System crashes/hangs
+        //
+        // PROPER SOLUTION: Just acknowledge the timer, don't preempt
+        // Threads yield cooperatively or we need a proper scheduler trampoline
 
-        TICK_COUNT += 1;
-        if TICK_COUNT >= PREEMPT_TICKS {
-            TICK_COUNT = 0;
-
-            // DEBUG: Log timer preemption
-            static mut PREEMPT_COUNT: u64 = 0;
-            PREEMPT_COUNT += 1;
-            if PREEMPT_COUNT <= 5 {
-                crate::kernel::uart_write_string(&alloc::format!("[TIMER] Preemption #{}\r\n", PREEMPT_COUNT));
-            }
-
-            // Preempt current thread - get context switch info while holding lock
-            let switch_info = {
-                crate::kernel::scheduler::SCHEDULER.lock().preempt()
-            }; // Lock dropped here!
-
-            // Perform context switch outside the lock
-            if let Some((current_ptr, next_ptr, is_first)) = switch_info {
-                if is_first {
-                    crate::kernel::thread::jump_to_thread(next_ptr);
-                } else {
-                    crate::kernel::thread::context_switch(current_ptr, next_ptr);
-                }
-            }
-        }
+        // For now, timer just keeps system alive for WFI (wait for interrupt)
+        // Threads must yield cooperatively using thread::yield_now()
     }
 }
