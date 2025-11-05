@@ -6,7 +6,14 @@ use librost::*;
 use librost::ipc_protocol::*;
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, AtomicU32, AtomicBool, Ordering};
+
+// TEMPORARY: Disable all debug output to avoid .rodata relocation issues
+// The ELF loader doesn't handle relocations yet, so string literals crash
+#[inline(always)]
+fn print_debug(_s: &str) {
+    // No-op
+}
 
 // Bump allocator for userspace
 const HEAP_SIZE: usize = 128 * 1024; // 128KB heap
@@ -65,14 +72,14 @@ const MENU_ITEM_PADDING_X: u32 = 16;
 const MENU_START_X: u32 = 8;
 const MENU_START_Y: u32 = 4;
 
-// Colors
-const TITLE_BAR_COLOR: u32 = 0xFF_2D_2D_30;
-const TITLE_BAR_FOCUSED_COLOR: u32 = 0xFF_00_7A_CC;
-const BORDER_COLOR: u32 = 0xFF_44_44_44;
-const TEXT_COLOR: u32 = 0xFF_CC_CC_CC;
-const MENU_BAR_COLOR: u32 = 0xFF_2B_2B_2B;
-const MENU_ITEM_COLOR: u32 = 0xFF_3D_3D_3D;
-const MENU_ITEM_HOVER_COLOR: u32 = 0xFF_5D_5D_5D;
+// Colors (original design restored)
+const TITLE_BAR_COLOR: u32 = 0xFF666666; // Gray when not focused
+const TITLE_BAR_FOCUSED_COLOR: u32 = 0xFF2D5C88; // Blue title bar
+const BORDER_COLOR: u32 = 0xFF1A1A1A; // Dark border
+const TEXT_COLOR: u32 = 0xFFFFFFFF; // White text
+const MENU_BAR_COLOR: u32 = 0xFF2B2B2B; // Dark gray menu bar
+const MENU_ITEM_COLOR: u32 = 0xFF3D3D3D; // Menu item background
+const MENU_ITEM_HOVER_COLOR: u32 = 0xFF5D5D5D; // Menu item hover (brighter)
 
 /// Window state tracked by WM
 #[derive(Clone, Copy)]
@@ -105,17 +112,121 @@ impl WindowState {
 }
 
 /// Menu item definition
+#[derive(Copy, Clone)]
 struct MenuItem {
-    label: &'static str,
+    label: [u8; 16],  // Fixed-size inline array (no pointers)
+    label_len: usize,
 }
 
-const MENU_ITEMS: &[MenuItem] = &[
-    MenuItem { label: "Terminal" },
-    MenuItem { label: "Editor" },
-    MenuItem { label: "Files" },
-    MenuItem { label: "Browser" },
-    MenuItem { label: "Snake" },
+static mut MENU_ITEMS: [MenuItem; 5] = [
+    MenuItem { label: [0; 16], label_len: 0 },
+    MenuItem { label: [0; 16], label_len: 0 },
+    MenuItem { label: [0; 16], label_len: 0 },
+    MenuItem { label: [0; 16], label_len: 0 },
+    MenuItem { label: [0; 16], label_len: 0 },
 ];
+
+// App names built at runtime (avoids .rodata)
+static mut APP_NAMES: [[u8; 16]; 5] = [[0; 16]; 5];
+static mut APP_NAME_LENS: [usize; 5] = [0; 5];
+
+/// Initialize menu items at runtime (avoids .rodata relocation issues)
+fn init_menu_items() {
+    unsafe {
+        // Terminal
+        MENU_ITEMS[0].label[0] = b'T';
+        MENU_ITEMS[0].label[1] = b'e';
+        MENU_ITEMS[0].label[2] = b'r';
+        MENU_ITEMS[0].label[3] = b'm';
+        MENU_ITEMS[0].label[4] = b'i';
+        MENU_ITEMS[0].label[5] = b'n';
+        MENU_ITEMS[0].label[6] = b'a';
+        MENU_ITEMS[0].label[7] = b'l';
+        MENU_ITEMS[0].label_len = 8;
+
+        // Editor
+        MENU_ITEMS[1].label[0] = b'E';
+        MENU_ITEMS[1].label[1] = b'd';
+        MENU_ITEMS[1].label[2] = b'i';
+        MENU_ITEMS[1].label[3] = b't';
+        MENU_ITEMS[1].label[4] = b'o';
+        MENU_ITEMS[1].label[5] = b'r';
+        MENU_ITEMS[1].label_len = 6;
+
+        // Files
+        MENU_ITEMS[2].label[0] = b'F';
+        MENU_ITEMS[2].label[1] = b'i';
+        MENU_ITEMS[2].label[2] = b'l';
+        MENU_ITEMS[2].label[3] = b'e';
+        MENU_ITEMS[2].label[4] = b's';
+        MENU_ITEMS[2].label_len = 5;
+
+        // Browser
+        MENU_ITEMS[3].label[0] = b'B';
+        MENU_ITEMS[3].label[1] = b'r';
+        MENU_ITEMS[3].label[2] = b'o';
+        MENU_ITEMS[3].label[3] = b'w';
+        MENU_ITEMS[3].label[4] = b's';
+        MENU_ITEMS[3].label[5] = b'e';
+        MENU_ITEMS[3].label[6] = b'r';
+        MENU_ITEMS[3].label_len = 7;
+
+        // Snake
+        MENU_ITEMS[4].label[0] = b'S';
+        MENU_ITEMS[4].label[1] = b'n';
+        MENU_ITEMS[4].label[2] = b'a';
+        MENU_ITEMS[4].label[3] = b'k';
+        MENU_ITEMS[4].label[4] = b'e';
+        MENU_ITEMS[4].label_len = 5;
+
+        // Initialize app names
+        // terminal
+        APP_NAMES[0][0] = b't';
+        APP_NAMES[0][1] = b'e';
+        APP_NAMES[0][2] = b'r';
+        APP_NAMES[0][3] = b'm';
+        APP_NAMES[0][4] = b'i';
+        APP_NAMES[0][5] = b'n';
+        APP_NAMES[0][6] = b'a';
+        APP_NAMES[0][7] = b'l';
+        APP_NAME_LENS[0] = 8;
+
+        // editor
+        APP_NAMES[1][0] = b'e';
+        APP_NAMES[1][1] = b'd';
+        APP_NAMES[1][2] = b'i';
+        APP_NAMES[1][3] = b't';
+        APP_NAMES[1][4] = b'o';
+        APP_NAMES[1][5] = b'r';
+        APP_NAME_LENS[1] = 6;
+
+        // files
+        APP_NAMES[2][0] = b'f';
+        APP_NAMES[2][1] = b'i';
+        APP_NAMES[2][2] = b'l';
+        APP_NAMES[2][3] = b'e';
+        APP_NAMES[2][4] = b's';
+        APP_NAME_LENS[2] = 5;
+
+        // browser
+        APP_NAMES[3][0] = b'b';
+        APP_NAMES[3][1] = b'r';
+        APP_NAMES[3][2] = b'o';
+        APP_NAMES[3][3] = b'w';
+        APP_NAMES[3][4] = b's';
+        APP_NAMES[3][5] = b'e';
+        APP_NAMES[3][6] = b'r';
+        APP_NAME_LENS[3] = 7;
+
+        // snake
+        APP_NAMES[4][0] = b's';
+        APP_NAMES[4][1] = b'n';
+        APP_NAMES[4][2] = b'a';
+        APP_NAMES[4][3] = b'k';
+        APP_NAMES[4][4] = b'e';
+        APP_NAME_LENS[4] = 5;
+    }
+}
 
 /// Global window manager state
 static mut WINDOWS: [WindowState; MAX_WINDOWS] = [WindowState::new(); MAX_WINDOWS];
@@ -123,8 +234,9 @@ static WINDOW_COUNT: AtomicUsize = AtomicUsize::new(0);
 static MOUSE_X: AtomicUsize = AtomicUsize::new(0);
 static MOUSE_Y: AtomicUsize = AtomicUsize::new(0);
 static mut FB_PTR: *mut u32 = core::ptr::null_mut();
-static mut FB_WIDTH: u32 = 0;
-static mut FB_HEIGHT: u32 = 0;
+static FB_WIDTH: AtomicU32 = AtomicU32::new(0);
+static FB_HEIGHT: AtomicU32 = AtomicU32::new(0);
+static WM_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Find window at given coordinates
 fn find_window_at(x: i32, y: i32) -> Option<usize> {
@@ -168,8 +280,8 @@ fn check_menu_click(mouse_x: i32, mouse_y: i32) -> Option<usize> {
     }
 
     let mut current_x = MENU_START_X;
-    for (idx, item) in MENU_ITEMS.iter().enumerate() {
-        let item_width = calculate_menu_item_width(item.label);
+    for (idx, item) in unsafe { MENU_ITEMS.iter() }.enumerate() {
+        let item_width = calculate_menu_item_width(item.label_len);
         let item_y = MENU_START_Y;
 
         if mouse_x >= current_x as i32 &&
@@ -198,9 +310,36 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
         // Check if click is on menu bar first
         if let Some(menu_idx) = check_menu_click(mouse_x, mouse_y) {
             // Menu item clicked! Spawn corresponding app
-            // TODO: Actually spawn app via sys_spawn_elf
-            // For now, just return NoAction
-            let _ = menu_idx;
+            let window_count = WINDOW_COUNT.load(Ordering::SeqCst);
+            if window_count >= MAX_WINDOWS {
+                // Max windows reached, ignore click
+                return WMToKernel::NoAction;
+            }
+
+            // Spawn the app (map menu label to app name)
+            print_debug("WM: Menu click, idx = ");
+            // TODO: print menu_idx
+
+            // Get app name from runtime-built array (avoids .rodata)
+            if menu_idx >= 5 {
+                print_debug("WM: Invalid menu_idx\r\n");
+                return WMToKernel::NoAction;
+            }
+
+            print_debug("WM: About to call spawn_elf\r\n");
+
+            // Build app name string from runtime array
+            let app_name_bytes = unsafe { &APP_NAMES[menu_idx][..APP_NAME_LENS[menu_idx]] };
+            let app_name = core::str::from_utf8(app_name_bytes).unwrap_or("");
+
+            let pid = spawn_elf(app_name);
+
+            if pid > 0 {
+                // Successfully spawned, app will create its own window via IPC
+                print_debug("WM: Spawned app, PID = ");
+                // TODO: Track PID → window mapping when app creates window
+            }
+
             return WMToKernel::NoAction;
         }
         if let Some(window_id) = find_window_at(mouse_x, mouse_y) {
@@ -255,8 +394,8 @@ fn draw_rect(x: i32, y: i32, width: u32, height: u32, color: u32) {
             return;
         }
 
-        let fb_width = FB_WIDTH as i32;
-        let fb_height = FB_HEIGHT as i32;
+        let fb_width = FB_WIDTH.load(Ordering::SeqCst) as i32;
+        let fb_height = FB_HEIGHT.load(Ordering::SeqCst) as i32;
 
         // Clip to screen bounds
         if x >= fb_width || y >= fb_height || x + width as i32 <= 0 || y + height as i32 <= 0 {
@@ -277,17 +416,63 @@ fn draw_rect(x: i32, y: i32, width: u32, height: u32, color: u32) {
     }
 }
 
-/// Draw text (simplified - just use first 8 chars of title)
-fn draw_text(x: i32, y: i32, text: &[u8], _color: u32) {
-    // For Phase 2, we'll just show window IDs or first few chars
-    // Proper text rendering will come later when we expose fontdue via syscalls
-    let _ = (x, y, text);
-    // TODO: Implement proper text rendering
+/// Draw a single character using bitmap font from librost
+/// Uses volatile writes to framebuffer (required in release mode)
+fn draw_char(x: i32, y: i32, ch: u8, color: u32) {
+    let fb_width = FB_WIDTH.load(Ordering::SeqCst) as i32;
+    let fb_height = FB_HEIGHT.load(Ordering::SeqCst) as i32;
+
+    // Get font data from librost shared library
+    let char_data = if (ch as usize) < librost::graphics::FONT_8X8.len() {
+        librost::graphics::FONT_8X8[ch as usize]
+    } else {
+        librost::graphics::FONT_8X8[0]
+    };
+
+    // Render with volatile writes (prevents compiler optimization)
+    unsafe {
+        if FB_PTR.is_null() {
+            return;
+        }
+
+        // Scale 2x - each pixel in 8x8 font becomes 2x2 block
+        for (row, &byte) in char_data.iter().enumerate() {
+            for col in 0..8 {
+                if (byte & (0x80 >> col)) != 0 {
+                    // Draw 2x2 block for each font pixel
+                    for dy in 0..2 {
+                        for dx in 0..2 {
+                            let px = x + (col * 2 + dx) as i32;
+                            let py = y + (row * 2 + dy) as i32;
+                            if px >= 0 && px < fb_width && py >= 0 && py < fb_height {
+                                let fb_w = fb_width as usize;
+                                let fb_idx = (py as usize * fb_w) + px as usize;
+                                // CRITICAL: Use volatile write to prevent optimization
+                                FB_PTR.add(fb_idx).write_volatile(color);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Draw text string using bitmap font with volatile framebuffer writes
+fn draw_text(x: i32, y: i32, text: &[u8], color: u32) {
+    let mut cur_x = x;
+    for &ch in text {
+        if ch == b'\n' {
+            return;
+        }
+        draw_char(cur_x, y, ch, color);
+        cur_x += 16; // 16px wide when scaled 2x
+    }
 }
 
 /// Calculate menu item width (16px per char for bitmap font)
-fn calculate_menu_item_width(label: &str) -> u32 {
-    let text_width = (label.len() * 16) as u32;
+fn calculate_menu_item_width(label_len: usize) -> u32 {
+    let text_width = (label_len * 16) as u32;
     text_width + MENU_ITEM_PADDING_X * 2
 }
 
@@ -299,7 +484,7 @@ fn draw_menu_bar() {
         }
 
         // Draw menu bar background
-        draw_rect(0, 0, FB_WIDTH, MENU_BAR_HEIGHT, MENU_BAR_COLOR);
+        draw_rect(0, 0, FB_WIDTH.load(Ordering::SeqCst), MENU_BAR_HEIGHT, MENU_BAR_COLOR);
 
         // Draw menu items
         let cursor_x = MOUSE_X.load(Ordering::SeqCst) as i32;
@@ -308,7 +493,7 @@ fn draw_menu_bar() {
 
         let mut current_x = MENU_START_X;
         for (idx, item) in MENU_ITEMS.iter().enumerate() {
-            let item_width = calculate_menu_item_width(item.label);
+            let item_width = calculate_menu_item_width(item.label_len);
             let item_y = MENU_START_Y;
 
             // Check if hovered
@@ -330,8 +515,10 @@ fn draw_menu_bar() {
             // Draw menu item background
             draw_rect(current_x as i32, item_y as i32, item_width, MENU_ITEM_HEIGHT, item_color);
 
-            // Draw text (simplified for now - TODO: proper bitmap font rendering)
-            // For now, we just draw the colored button
+            // Draw text centered in button (16px tall font, 24px tall button -> 4px vertical padding)
+            let text_x = (current_x + MENU_ITEM_PADDING_X) as i32;
+            let text_y = (item_y + (MENU_ITEM_HEIGHT - 16) / 2) as i32;
+            draw_text(text_x, text_y, &item.label[..item.label_len], TEXT_COLOR);
 
             current_x += item_width + 8; // 8px spacing between items
         }
@@ -368,37 +555,105 @@ fn draw_window_chrome(window: &WindowState) {
 
 /// Redraw all window chrome and menu bar
 fn redraw_all() {
+    // Don't recalculate layout on every frame - only when windows change
+    // Layout is calculated in handle_create_window() and handle_close_window()
+
+    // Clear screen with dark background
+    let fb_width = FB_WIDTH.load(Ordering::SeqCst);
+    let fb_height = FB_HEIGHT.load(Ordering::SeqCst);
+    unsafe {
+        let total_pixels = (fb_width * fb_height) as usize;
+        for i in 0..total_pixels {
+            FB_PTR.add(i).write_volatile(0xFF_1A_1A_1A); // Dark gray background
+        }
+    }
+
     // Draw menu bar first
+    draw_rect(0, 0, fb_width, MENU_BAR_HEIGHT, MENU_BAR_COLOR);
     draw_menu_bar();
 
-    // Then draw all window chrome
+    // Composite window content from shared memory, then draw chrome
     let count = WINDOW_COUNT.load(Ordering::SeqCst);
+
     for i in 0..count {
-        let window = unsafe { &WINDOWS[i] };
-        draw_window_chrome(window);
+        // Use volatile read to ensure we get fresh data from calculate_layout()
+        let window = unsafe { core::ptr::read_volatile(&WINDOWS[i]) };
+        if !window.visible {
+            continue;
+        }
+
+        // Composite window content from shared memory
+        let shm_id = window.id as i32; // Window ID is the shared memory ID
+        let shm_ptr = shm_map(shm_id);
+
+        if !shm_ptr.is_null() {
+            // Calculate content area (inside title bar and borders)
+            let content_x = window.x + BORDER_WIDTH as i32;
+            let content_y = window.y + TITLE_BAR_HEIGHT as i32;
+            let content_width = window.width.saturating_sub(BORDER_WIDTH * 2);
+            let content_height = window.height.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH);
+
+            // Copy pixels from shared memory to framebuffer
+            let src_buffer = unsafe {
+                core::slice::from_raw_parts(shm_ptr as *const u32, (content_width * content_height) as usize)
+            };
+
+            let fb_w = FB_WIDTH.load(Ordering::SeqCst) as usize;
+            let fb_h = FB_HEIGHT.load(Ordering::SeqCst) as usize;
+            unsafe {
+                for y in 0..content_height {
+                    for x in 0..content_width {
+                        let screen_x = (content_x + x as i32) as usize;
+                        let screen_y = (content_y + y as i32) as usize;
+                        let src_idx = (y * content_width + x) as usize;
+
+                        if screen_x < fb_w && screen_y < fb_h && src_idx < src_buffer.len() {
+                            let fb_idx = screen_y * fb_w + screen_x;
+                            FB_PTR.add(fb_idx).write_volatile(src_buffer[src_idx]);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Draw window chrome on top
+        draw_window_chrome(&window);
     }
 }
 
 /// Calculate tiling layout for all windows
 fn calculate_layout() {
+    // Don't calculate layout if WM not fully initialized
+    if !WM_INITIALIZED.load(Ordering::SeqCst) {
+        return;
+    }
+
     let count = WINDOW_COUNT.load(Ordering::SeqCst);
     if count == 0 {
         return;
     }
 
+    let screen_width = FB_WIDTH.load(Ordering::SeqCst);
+    let screen_height = FB_HEIGHT.load(Ordering::SeqCst);
+
     unsafe {
-        let screen_width = FB_WIDTH;
-        let screen_height = FB_HEIGHT;
         let available_y = MENU_BAR_HEIGHT as i32;
-        let available_height = screen_height - MENU_BAR_HEIGHT;
+        let available_height = screen_height.saturating_sub(MENU_BAR_HEIGHT);
 
         if count == 1 {
             // Single window: full screen below menu bar
-            WINDOWS[0].x = 0;
-            WINDOWS[0].y = available_y;
-            WINDOWS[0].width = screen_width;
-            WINDOWS[0].height = available_height;
-            WINDOWS[0].visible = true;
+            let window = WindowState {
+                id: WINDOWS[0].id,
+                x: 0,
+                y: available_y,
+                width: screen_width,
+                height: available_height,
+                title: WINDOWS[0].title,
+                title_len: WINDOWS[0].title_len,
+                focused: WINDOWS[0].focused,
+                visible: true,
+            };
+            core::ptr::write_volatile(&mut WINDOWS[0], window);
         } else if count == 2 {
             // Two windows: 50/50 horizontal split
             let half_width = screen_width / 2;
@@ -479,6 +734,9 @@ fn calculate_layout() {
 fn handle_create_window(id: usize, _x: i32, _y: i32, _width: u32, _height: u32, title: [u8; 64], title_len: usize) {
     let count = WINDOW_COUNT.load(Ordering::SeqCst);
 
+    print_debug("WM: handle_create_window called, count = ");
+    print_debug("WM: Creating window\r\n");
+
     // Check if window already exists
     for i in 0..count {
         let window = unsafe { &mut WINDOWS[i] };
@@ -487,6 +745,7 @@ fn handle_create_window(id: usize, _x: i32, _y: i32, _width: u32, _height: u32, 
             window.title = title;
             window.title_len = title_len;
             window.visible = true;
+            print_debug("WM: Updated existing window\r\n");
             return;
         }
     }
@@ -508,8 +767,11 @@ fn handle_create_window(id: usize, _x: i32, _y: i32, _width: u32, _height: u32, 
         }
         WINDOW_COUNT.store(count + 1, Ordering::SeqCst);
 
-        // Recalculate layout for all windows
+        print_debug("WM: Window added to array\r\n");
+
+        // Calculate layout immediately after adding window
         calculate_layout();
+        print_debug("WM: Layout calculated\r\n");
     }
 }
 
@@ -581,11 +843,23 @@ pub extern "C" fn _start() -> ! {
     // Initialize globals
     unsafe {
         FB_PTR = fb_ptr;
-        FB_WIDTH = fb_info.width;
-        FB_HEIGHT = fb_info.height;
     }
+    FB_WIDTH.store(fb_info.width, Ordering::SeqCst);
+    FB_HEIGHT.store(fb_info.height, Ordering::SeqCst);
+    WM_INITIALIZED.store(true, Ordering::SeqCst);
 
     print_debug("Framebuffer mapped\r\n");
+    print_debug("WM fully initialized\r\n");
+
+    // Initialize menu items (runtime init avoids .rodata relocation issues)
+    print_debug("Initializing menu items...\r\n");
+    init_menu_items();
+    print_debug("Menu items initialized\r\n");
+
+    // Draw initial UI (menu bar with text)
+    print_debug("Drawing initial UI...\r\n");
+    redraw_all();
+    print_debug("Initial UI drawn\r\n");
 
     // PHASE 2: WM receives input from kernel via IPC
     print_debug("Window manager ready - listening for IPC messages\r\n");
@@ -606,11 +880,13 @@ pub extern "C" fn _start() -> ! {
             }
 
             messages_processed += 1;
+            print_debug("WM: Received message, type = ");
 
             // Parse message
             if let Some(msg) = KernelToWM::from_bytes(&buf) {
                 match msg {
                     KernelToWM::InputEvent { sender_pid, mouse_x, mouse_y, event } => {
+                        print_debug("InputEvent\r\n");
                         // Handle input and determine routing
                         let response = handle_input(event, mouse_x, mouse_y);
 
@@ -626,6 +902,7 @@ pub extern "C" fn _start() -> ! {
                         need_redraw = true;
                     }
                     KernelToWM::CreateWindow { id, x, y, width, height, title, title_len } => {
+                        print_debug("CreateWindow\r\n");
                         handle_create_window(id, x, y, width, height, title, title_len);
                         need_redraw = true;
                     }
@@ -634,10 +911,13 @@ pub extern "C" fn _start() -> ! {
                         need_redraw = true;
                     }
                     KernelToWM::SetFocus { id } => {
+                        print_debug("SetFocus\r\n");
                         handle_set_focus(id);
                         need_redraw = true;
                     }
                 }
+            } else {
+                print_debug("Failed to parse message\r\n");
             }
 
             // Limit batch processing to prevent starvation
@@ -648,8 +928,11 @@ pub extern "C" fn _start() -> ! {
 
         // Redraw once after processing all messages
         if need_redraw {
+            print_debug("WM: Calling redraw_all()\r\n");
             redraw_all();
+            print_debug("WM: Calling fb_flush()\r\n");
             fb_flush();
+            print_debug("WM: Redraw complete\r\n");
         }
 
         // CRITICAL: Yield to other threads since we use cooperative multitasking

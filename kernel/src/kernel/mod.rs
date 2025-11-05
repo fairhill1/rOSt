@@ -454,15 +454,18 @@ fn kernel_gui_thread() {
                                 needs_full_render = true;
                             }
                             3 => { // NoAction
-                                // Only handle menu clicks if the event was a button press, not hover
+                                // DISABLED: Old kernel window creation
+                                // The userspace WM now handles spawning apps via spawn_elf()
+                                // Leaving this enabled causes double-creation (kernel + userspace)
+                                /*
                                 if last_event_was_click {
                                     let (cursor_x, cursor_y) = crate::gui::framebuffer::get_cursor_pos();
                                     if let Some(menu_idx) = crate::gui::window_manager::get_hovered_menu_button(cursor_x, cursor_y) {
-                                        // Menu button clicked! Open corresponding window
                                         crate::gui::window_manager::open_window_by_menu_index(menu_idx);
                                         needs_full_render = true;
                                     }
                                 }
+                                */
                             }
                             _ => {}
                         }
@@ -589,7 +592,10 @@ fn kernel_gui_thread() {
             }
         }
 
-        // Render desktop with windows and cursor
+        // DISABLED: Kernel rendering is now done by userspace WM
+        // The kernel GUI thread only polls input and forwards to WM via IPC
+        // Rendering here would overwrite the WM's output
+        /*
         if fb_info.base_address != 0 {
             if needs_full_render {
                 // Full redraw to back buffer - clear, render windows, console, cursor
@@ -654,6 +660,7 @@ fn kernel_gui_thread() {
                 // No need to redraw software cursor or flush for cursor-only updates
             }
         }
+        */
 
         // Small delay to prevent CPU overload
         for _ in 0..10000 {
@@ -871,36 +878,22 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     uart_write_string("This is a major milestone - the core OS is working!\r\n");
 
     if fb_info.base_address != 0 {
-        uart_write_string("Graphics framebuffer is active - initializing GUI desktop!\r\n");
+        uart_write_string("Graphics framebuffer is active - userspace WM will take over!\r\n");
 
-        // Initialize GUI console
-        crate::gui::widgets::console::init();
-        uart_write_string("GUI console initialized!\r\n");
+        // ===== MICROKERNEL MIGRATION: Kernel GUI disabled, all GUI runs in userspace =====
+        // The userspace window manager (PID 1) handles all GUI rendering at EL0
 
-        // Initialize window manager
-        crate::gui::window_manager::init();
-        uart_write_string("Window manager initialized!\r\n");
-        uart_write_string("Click menu bar to open windows\r\n");
+        // OLD KERNEL GUI - DISABLED during microkernel migration:
+        // crate::gui::widgets::console::init();
+        // crate::gui::window_manager::init();
+        // crate::gui::widgets::editor::init();
+        // crate::gui::widgets::file_explorer::init();
+        // crate::gui::widgets::browser::init();
+        // crate::apps::snake::init();
 
-        // Initialize RTC
+        // Initialize RTC (hardware driver - OK to keep in kernel)
         drivers::rtc::init();
         uart_write_string("RTC initialized!\r\n");
-
-        // Initialize text editor
-        crate::gui::widgets::editor::init();
-        uart_write_string("Text editor initialized!\r\n");
-
-        // Initialize file explorer
-        crate::gui::widgets::file_explorer::init();
-        uart_write_string("File explorer initialized!\r\n");
-
-        // Initialize web browser
-        crate::gui::widgets::browser::init();
-        uart_write_string("Web browser initialized!\r\n");
-
-        // Initialize snake game
-        crate::apps::snake::init();
-        uart_write_string("Snake game initialized!\r\n");
     } else {
         uart_write_string("No framebuffer available - running in text mode\r\n");
     }
@@ -1428,28 +1421,21 @@ pub extern "C" fn kernel_init_high_half() -> ! {
         }
         uart_write_string("[ELF-LOADER] Allocator warmed up\r\n");
 
-        // TEST: Load all 3 with diagnostics to see actual stack addresses when it crashes
-
-        uart_write_string("[ELF-LOADER] Loading IPC sender...\r\n");
-        let _sender_pid = elf_loader::load_elf_and_spawn(embedded_apps::IPC_SENDER_ELF);
-        uart_write_string("[ELF-LOADER] IPC sender loaded\r\n");
-
+        // Load ONLY the Window Manager - it will spawn apps on demand
         uart_write_string("[ELF-LOADER] Loading window manager...\r\n");
+        uart_write_string("[ELF-LOADER] About to call load_elf_and_spawn...\r\n");
         let wm_pid = elf_loader::load_elf_and_spawn(embedded_apps::WINDOW_MANAGER_ELF);
-        uart_write_string("[ELF-LOADER] WM loaded\r\n");
-        WINDOW_MANAGER_PID.store(wm_pid, Ordering::Release);
-
-        uart_write_string("[ELF-LOADER] Loading terminal...\r\n");
-        let terminal_pid = elf_loader::load_elf_and_spawn(embedded_apps::TERMINAL_ELF);
-        uart_write_string("[ELF-LOADER] Terminal loaded with PID: ");
-        if terminal_pid < 10 {
+        uart_write_string("[ELF-LOADER] load_elf_and_spawn returned\r\n");
+        uart_write_string("[ELF-LOADER] WM loaded with PID: ");
+        if wm_pid < 10 {
             unsafe {
-                core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + terminal_pid as u8);
+                core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + wm_pid as u8);
             }
         }
         uart_write_string("\r\n");
+        WINDOW_MANAGER_PID.store(wm_pid, Ordering::Release);
 
-        uart_write_string("[ELF-LOADER] Test: IPC sender + WM + Terminal (3 processes with diagnostics)\r\n");
+        uart_write_string("[ELF-LOADER] Microkernel boot: only WM loaded, apps spawn on-demand\r\n");
 
         // NOW spawn the GUI thread after ELF loading completes
         let _gui_thread_id = {

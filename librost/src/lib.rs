@@ -7,6 +7,7 @@
 
 pub mod runtime;
 pub mod ipc_protocol;
+pub mod graphics;
 
 // Re-export everything from runtime for convenience
 pub use runtime::*;

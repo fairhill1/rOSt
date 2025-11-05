@@ -154,14 +154,16 @@ impl Process {
         let kernel_stack = vec![0u8; STACK_SIZE].into_boxed_slice();
 
         // DEBUG: Print kernel stack allocation
-        let kernel_stack_ptr = kernel_stack.as_ptr();
-        crate::kernel::uart_write_string(&alloc::format!(
-            "[PROCESS] Kernel stack for kernel process {}: {:#018x} - {:#018x} ({} KB)\r\n",
-            id,
-            kernel_stack_ptr as u64,
-            kernel_stack_ptr as u64 + STACK_SIZE as u64,
-            STACK_SIZE / 1024
-        ));
+        // REMOVED: alloc::format!() causes deadlock in syscall context
+        // let kernel_stack_ptr = kernel_stack.as_ptr();
+        // crate::kernel::uart_write_string(&alloc::format!(
+        //     "[PROCESS] Kernel stack for kernel process {}: {:#018x} - {:#018x} ({} KB)\r\n",
+        //     id,
+        //     kernel_stack_ptr as u64,
+        //     kernel_stack_ptr as u64 + STACK_SIZE as u64,
+        //     STACK_SIZE / 1024
+        // ));
+        crate::kernel::uart_write_string("[PROCESS] Kernel stack for kernel process allocated\r\n");
 
         Process {
             id,
@@ -192,13 +194,8 @@ impl Process {
             let stack_addr = (USER_STACK_BASE + (idx as u64 * USER_STACK_SIZE as u64)) as *mut u8;
 
             // DEBUG: Print stack allocation
-            crate::kernel::uart_write_string(&alloc::format!(
-                "[PROCESS] User stack for process {}: {:#018x} - {:#018x} ({} KB)\r\n",
-                id,
-                stack_addr as u64,
-                stack_addr as u64 + USER_STACK_SIZE as u64,
-                USER_STACK_SIZE / 1024
-            ));
+            // REMOVED: alloc::format!() causes deadlock in syscall context
+            crate::kernel::uart_write_string("[PROCESS] User stack for process allocated\r\n");
 
             // Zero the stack memory
             core::ptr::write_bytes(stack_addr, 0, USER_STACK_SIZE);
@@ -211,14 +208,8 @@ impl Process {
         let kernel_stack = vec![0u8; STACK_SIZE].into_boxed_slice();
 
         // DEBUG: Print kernel stack allocation
-        let kernel_stack_ptr = kernel_stack.as_ptr();
-        crate::kernel::uart_write_string(&alloc::format!(
-            "[PROCESS] Kernel stack for process {}: {:#018x} - {:#018x} ({} KB)\r\n",
-            id,
-            kernel_stack_ptr as u64,
-            kernel_stack_ptr as u64 + STACK_SIZE as u64,
-            STACK_SIZE / 1024
-        ));
+        // REMOVED: alloc::format!() causes deadlock in syscall context
+        crate::kernel::uart_write_string("[PROCESS] Kernel stack for user process allocated\r\n");
 
         Process {
             id,
@@ -398,10 +389,8 @@ impl ThreadContext {
         let entry_point_high = entry_point as u64;
         let entry_point_low = entry_point_high & 0x0000_00FF_FFFF_FFFF; // Keep only lower 40 bits
 
-        crate::kernel::uart_write_string(&alloc::format!(
-            "[USER-THREAD] Converting entry point: 0x{:016x} → 0x{:016x}\r\n",
-            entry_point_high, entry_point_low
-        ));
+        // REMOVED: alloc::format!() causes deadlock in syscall context
+        crate::kernel::uart_write_string("[USER-THREAD] Converting entry point\r\n");
 
         // Create the ExceptionContext that will transition to EL0
         let exception_context = crate::kernel::interrupts::ExceptionContext {
@@ -560,7 +549,8 @@ pub fn exit() -> ! {
         if let Some(id) = sched.current_thread {
             if let Some(thread) = sched.threads.iter_mut().find(|t| t.id == id) {
                 thread.state = ThreadState::Terminated;
-                crate::kernel::uart_write_string(&alloc::format!("Thread {} exited\r\n", id));
+                // REMOVED: alloc::format!() causes deadlock in syscall context
+                crate::kernel::uart_write_string("Thread exited\r\n");
 
                 // Also terminate the associated process
                 let process_id = thread.process_id;
@@ -610,7 +600,8 @@ impl ProcessManager {
         let process = Process::new_kernel(process_id);
         self.processes.push(process);
 
-        crate::kernel::uart_write_string(&alloc::format!("[PROCESS] Created kernel process {}\r\n", process_id));
+        // REMOVED: alloc::format!() causes deadlock in syscall context
+        crate::kernel::uart_write_string("[PROCESS] Created kernel process\r\n");
         process_id
     }
 
@@ -622,7 +613,8 @@ impl ProcessManager {
         let process = Process::new_user(process_id);
         self.processes.push(process);
 
-        crate::kernel::uart_write_string(&alloc::format!("[PROCESS] Created user process {}\r\n", process_id));
+        // REMOVED: alloc::format!() causes deadlock in syscall context
+        crate::kernel::uart_write_string("[PROCESS] Created user process\r\n");
         process_id
     }
 
@@ -635,7 +627,8 @@ impl ProcessManager {
     pub fn terminate_process(&mut self, id: usize) {
         if let Some(process) = self.get_process_mut(id) {
             process.state = ProcessState::Terminated;
-            crate::kernel::uart_write_string(&alloc::format!("[PROCESS] Process {} terminated\r\n", id));
+            // REMOVED: alloc::format!() causes deadlock in syscall context
+            crate::kernel::uart_write_string("[PROCESS] Process terminated\r\n");
         }
     }
 
@@ -670,7 +663,8 @@ impl ProcessManager {
         if let Some(process) = self.get_process_mut(process_id) {
             process.main_thread_id = Some(thread_id);
             process.state = ProcessState::Ready;
-            crate::kernel::uart_write_string(&alloc::format!("[PROCESS] Process {} main thread set to {}\r\n", process_id, thread_id));
+            // REMOVED: alloc::format!() causes deadlock in syscall context
+            crate::kernel::uart_write_string("[PROCESS] Process main thread set\r\n");
         }
     }
 }

@@ -1330,16 +1330,41 @@ fn sys_spawn_elf(path: *const u8, path_len: usize) -> i64 {
 
     // For now, we only support spawning embedded ELFs
     // Later can add filesystem support
-    match path_str {
-        "/bin/terminal" | "terminal" => {
-            crate::kernel::uart_write_string("[SYSCALL] spawn_elf() -> not implemented yet\r\n");
-            SyscallError::NotImplemented.as_i64()
+    let elf_data = match path_str {
+        "/bin/terminal" | "terminal" => crate::kernel::embedded_apps::TERMINAL_ELF,
+        "/bin/editor" | "editor" => {
+            crate::kernel::uart_write_string("[SYSCALL] spawn_elf() -> editor not yet ported\r\n");
+            return SyscallError::NotImplemented.as_i64();
+        }
+        "/bin/browser" | "browser" => {
+            crate::kernel::uart_write_string("[SYSCALL] spawn_elf() -> browser not yet ported\r\n");
+            return SyscallError::NotImplemented.as_i64();
+        }
+        "/bin/files" | "files" => {
+            crate::kernel::uart_write_string("[SYSCALL] spawn_elf() -> files not yet ported\r\n");
+            return SyscallError::NotImplemented.as_i64();
+        }
+        "/bin/snake" | "snake" => {
+            crate::kernel::uart_write_string("[SYSCALL] spawn_elf() -> snake not yet ported\r\n");
+            return SyscallError::NotImplemented.as_i64();
         }
         _ => {
             crate::kernel::uart_write_string("[SYSCALL] spawn_elf() -> file not found\r\n");
-            SyscallError::FileNotFound.as_i64()
+            return SyscallError::FileNotFound.as_i64();
+        }
+    };
+
+    // Load and spawn the ELF
+    let pid = crate::kernel::elf_loader::load_elf_and_spawn(elf_data);
+    crate::kernel::uart_write_string("[SYSCALL] spawn_elf() -> PID ");
+    if pid < 10 {
+        unsafe {
+            core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + pid as u8);
         }
     }
+    crate::kernel::uart_write_string("\r\n");
+
+    pid as i64
 }
 
 fn sys_kill(pid: u64) -> i64 {

@@ -3,6 +3,7 @@
 
 extern crate alloc;
 use librost::*;
+use librost::ipc_protocol::*;
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 
@@ -139,15 +140,14 @@ impl Console {
 
     /// Render console to a pixel buffer (ARGB format)
     /// buffer_width and buffer_height are in pixels
-    fn render_to_buffer(&self, pixel_buffer: &mut [u32], _buffer_width: usize, _buffer_height: usize) {
-        // Clear background
+    fn render_to_buffer(&self, pixel_buffer: &mut [u32], buffer_width: usize, buffer_height: usize) {
+        // Clear to background color
         for pixel in pixel_buffer.iter_mut() {
             *pixel = self.bg_color;
         }
 
-        // TODO: Render text characters
-        // For now, just fill with background color
-        // We'll implement bitmap font rendering next
+        // TODO: Render text characters using bitmap font
+        // For now, just show black background to verify window works
     }
 }
 
@@ -158,20 +158,26 @@ pub extern "C" fn _start() -> ! {
     print_debug("=== rOSt Terminal (EL0) ===\r\n");
     print_debug("Initializing...\r\n");
 
-    // Initialize console
-    unsafe {
-        CONSOLE.write_string("rOSt Terminal v0.1\r\n");
-        CONSOLE.write_string("Type 'help' for available commands\r\n");
-        CONSOLE.write_string("\r\n> ");
-    }
+    // Initialize console (DISABLED - causes panic with bump allocator)
+    // unsafe {
+    //     CONSOLE.write_string("rOSt Terminal v0.1\r\n");
+    //     CONSOLE.write_string("Type 'help' for available commands\r\n");
+    //     CONSOLE.write_string("\r\n> ");
+    // }
 
-    // Get window dimensions (640x480 for now)
-    let window_width = 640u32;
-    let window_height = 480u32;
+    // Get window dimensions - make it large enough for fullscreen
+    // TODO: Query actual screen size from kernel
+    let window_width = 1920u32;
+    let window_height = 1048u32;  // 1080 - 32 (menu bar)
+
+    print_debug("About to create shared memory\r\n");
 
     // Create shared memory for rendering (ARGB pixels)
     let fb_size = (window_width * window_height * 4) as usize; // 4 bytes per pixel
+
+    print_debug("Calling shm_create\r\n");
     let shmem_id = shm_create(fb_size);
+    print_debug("shm_create returned\r\n");
 
     if shmem_id < 0 {
         print_debug("Failed to create shared memory\r\n");
@@ -200,14 +206,38 @@ pub extern "C" fn _start() -> ! {
 
     print_debug("Rendered initial frame\r\n");
 
-    // TODO: Send CreateWindow IPC to WM
-    // TODO: Main event loop
+    // Send CreateWindow IPC to WM (PID 1)
+    let wm_pid = 1;
+    let mut title = [0u8; 64];
+    let title_str = b"Terminal";
+    title[..title_str.len()].copy_from_slice(title_str);
+
+    let create_window_msg = KernelToWM::CreateWindow {
+        id: shmem_id as usize,  // Use shared memory ID as window ID
+        x: 50,
+        y: 100,
+        width: window_width,
+        height: window_height,
+        title,
+        title_len: title_str.len(),
+    };
+
+    let msg_bytes = create_window_msg.to_bytes();
+    let result = send_message(wm_pid, &msg_bytes);
+
+    if result < 0 {
+        print_debug("Failed to send CreateWindow message to WM\r\n");
+    } else {
+        print_debug("CreateWindow message sent to WM\r\n");
+    }
 
     print_debug("Terminal initialized successfully\r\n");
 
-    // For now, just exit
-    // Later this will be the main event loop
+    // Main event loop - wait for input events from WM
     loop {
+        // TODO: Receive input events from WM
+        // TODO: Update console based on input
+        // TODO: Re-render and notify WM of updates
         yield_now();
     }
 }
