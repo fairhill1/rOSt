@@ -138,6 +138,13 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
 
     // Handle mouse button clicks
     if event.event_type == 4 && event.pressed != 0 { // MouseButton pressed
+        print_debug("[WM] Mouse button pressed at ");
+        // Simple coordinate printing without format!()
+        print_debug("y=");
+        if mouse_y < 30 {
+            print_debug("MENU_BAR");
+        }
+        print_debug("\r\n");
         if let Some(window_id) = find_window_at(mouse_x, mouse_y) {
             // Find window index
             let count = WINDOW_COUNT.load(Ordering::SeqCst);
@@ -174,6 +181,7 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
         }
     }
 
+    print_debug("[WM] Returning NoAction\r\n");
     WMToKernel::NoAction
 }
 
@@ -382,14 +390,16 @@ pub extern "C" fn _start() -> ! {
             // Parse message
             if let Some(msg) = KernelToWM::from_bytes(&buf) {
                 match msg {
-                    KernelToWM::InputEvent { mouse_x, mouse_y, event } => {
+                    KernelToWM::InputEvent { sender_pid, mouse_x, mouse_y, event } => {
                         // Handle input and determine routing
                         let response = handle_input(event, mouse_x, mouse_y);
 
-                        // Send response back to kernel
+                        // Send response back to kernel using sender_pid from message
                         let response_buf = response.to_bytes();
-                        let kernel_pid = 0; // Kernel GUI thread is PID 0 (first process)
-                        let result = send_message(kernel_pid, &response_buf);
+                        let result = send_message(sender_pid, &response_buf);
+                        if result < 0 {
+                            print_debug("[WM] send_message FAILED!\r\n");
+                        }
 
                         // If queue is full, stop processing and yield to let kernel drain
                         if result < 0 {

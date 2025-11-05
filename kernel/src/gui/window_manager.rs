@@ -352,101 +352,47 @@ impl WindowManager {
             }
         }
 
-        // CRITICAL: Skip text rendering if font is not loaded (prevents crash)
-        if !crate::gui::font::is_font_loaded() {
-            return;
-        }
+        // Skip text-based prompts and status messages (require font rendering)
+        // TODO: Re-enable when bitmap font is stable
 
-        // Calculate vertically centered Y position for menu bar text
-        let text_height = framebuffer::get_char_height();
-        let centered_text_y = MENU_START_Y + (MENU_ITEM_HEIGHT - text_height) / 2;
+        // Draw menu items with backgrounds but no text
+        let (cursor_x, cursor_y) = framebuffer::get_cursor_pos();
+        let at_limit = self.windows.len() >= 4;
 
-        // Draw time in top right corner
-        let datetime = crate::kernel::drivers::rtc::get_datetime();
-        let time_str = datetime.format_time();
-        let time_width = framebuffer::measure_string(&time_str);
-        let time_x = self.screen_width.saturating_sub(time_width + 8); // 8px padding from right edge
-        framebuffer::draw_string(time_x, centered_text_y, &time_str, COLOR_TEXT);
+        let mut current_x = MENU_START_X;
+        for item in MENU_ITEMS.iter() {
+            // Fixed width since we can't measure text without font
+            let item_width = 100u32; // Approximate width for menu items
+            let item_y = MENU_START_Y;
 
-        // Check if we're in close confirmation mode
-        if crate::kernel::drivers::input_events::is_confirming_close() {
-            // Show close confirmation prompt
-            let prompt_text = "Close without saving? (y/n)";
-            framebuffer::draw_string(MENU_START_X, centered_text_y, prompt_text, COLOR_TEXT);
-        } else if crate::kernel::drivers::input_events::is_confirming_delete() {
-            // Show delete confirmation prompt
-            if let Some(filename) = crate::kernel::drivers::input_events::get_delete_confirm_filename() {
-                let prompt_text = alloc::format!("Delete '{}'? (y/n)", filename);
-                framebuffer::draw_string(MENU_START_X, centered_text_y, &prompt_text, COLOR_TEXT);
-            }
-        } else if crate::kernel::drivers::input_events::is_prompting_filename() {
-            // Show filename prompt instead of menu items
-            let is_rename = crate::kernel::drivers::input_events::is_renaming();
-            let prompt_label = if is_rename { "Rename to: " } else { "Enter filename: " };
+            // Check if cursor is hovering over this item
+            let is_hovering = cursor_x >= current_x as i32 &&
+                              cursor_x < (current_x + item_width) as i32 &&
+                              cursor_y >= item_y as i32 &&
+                              cursor_y < (item_y + MENU_ITEM_HEIGHT) as i32;
 
-            if let Some(filename) = crate::kernel::drivers::input_events::get_filename_prompt() {
-                let prompt_text = alloc::format!("{}{}_", prompt_label, filename);
-                framebuffer::draw_string(MENU_START_X, centered_text_y, &prompt_text, COLOR_TEXT);
+            // Choose background color based on hover state and limit
+            let bg_color = if at_limit {
+                0xFF2B2B2B // Darker gray when disabled
+            } else if is_hovering {
+                COLOR_MENU_ITEM_HOVER
             } else {
-                let prompt_text = alloc::format!("{}_", prompt_label);
-                framebuffer::draw_string(MENU_START_X, centered_text_y, &prompt_text, COLOR_TEXT);
-            }
-        } else if let Some(status_msg) = crate::kernel::drivers::input_events::get_menu_status() {
-            // Show status message instead of menu items
-            framebuffer::draw_string(MENU_START_X, centered_text_y, &status_msg, COLOR_TEXT);
-        } else {
-            // Get cursor position for hover detection
-            let (cursor_x, cursor_y) = framebuffer::get_cursor_pos();
+                COLOR_MENU_ITEM
+            };
 
-            // Check if at window limit (4 windows max)
-            let at_limit = self.windows.len() >= 4;
+            // Draw menu item border
+            self.draw_menu_rect(current_x, item_y, item_width, MENU_ITEM_HEIGHT, COLOR_MENU_ITEM_BORDER);
 
-            // Draw menu items with borders and backgrounds
-            let mut current_x = MENU_START_X;
-            for item in MENU_ITEMS.iter() {
-                let item_width = Self::calculate_menu_item_width(item.label);
-                let item_y = MENU_START_Y;
+            // Draw menu item background (inset by 1 pixel for border)
+            self.draw_menu_rect(current_x + 1, item_y + 1,
+                               item_width - 2, MENU_ITEM_HEIGHT - 2,
+                               bg_color);
 
-                // Check if cursor is hovering over this item
-                let is_hovering = cursor_x >= current_x as i32 &&
-                                  cursor_x < (current_x + item_width) as i32 &&
-                                  cursor_y >= item_y as i32 &&
-                                  cursor_y < (item_y + MENU_ITEM_HEIGHT) as i32;
+            // Skip text rendering for now
+            // TODO: Add bitmap font rendering here
 
-                // Choose background color based on hover state and limit
-                let bg_color = if at_limit {
-                    0xFF2B2B2B // Darker gray when disabled
-                } else if is_hovering {
-                    COLOR_MENU_ITEM_HOVER
-                } else {
-                    COLOR_MENU_ITEM
-                };
-
-                // Choose text color based on limit
-                let text_color = if at_limit {
-                    0xFF666666 // Dim gray text when disabled
-                } else {
-                    COLOR_TEXT
-                };
-
-                // Draw menu item border
-                self.draw_menu_rect(current_x, item_y, item_width, MENU_ITEM_HEIGHT, COLOR_MENU_ITEM_BORDER);
-
-                // Draw menu item background (inset by 1 pixel for border)
-                self.draw_menu_rect(current_x + 1, item_y + 1,
-                                   item_width - 2, MENU_ITEM_HEIGHT - 2,
-                                   bg_color);
-
-                // Draw menu item text (centered both horizontally and vertically)
-                let text_width = framebuffer::measure_string(item.label);
-                let text_height = framebuffer::get_char_height();
-                let text_x = current_x + (item_width - text_width) / 2;
-                let text_y = item_y + (MENU_ITEM_HEIGHT - text_height) / 2;
-                framebuffer::draw_string(text_x, text_y, item.label, text_color);
-
-                // Move to next position
-                current_x += item_width + MENU_ITEM_SPACING;
-            }
+            // Move to next position
+            current_x += item_width + MENU_ITEM_SPACING;
         }
     }
 
@@ -1387,4 +1333,47 @@ pub fn get_window_by_id(instance_id: usize) -> Option<(WindowContent, usize)> {
             None
         }
     }
+}
+
+/// Open a window based on menu item index
+pub fn open_window_by_menu_index(menu_idx: usize) {
+    if menu_idx >= MENU_ITEMS.len() {
+        return;
+    }
+
+    let window_type = MENU_ITEMS[menu_idx].window_type;
+
+    // Create appropriate window based on type
+    let (title, instance_id) = match window_type {
+        WindowContent::Terminal => {
+            let console_id = crate::gui::widgets::console::create_console();
+            crate::apps::shell::create_shell(console_id);
+            ("Terminal", console_id)
+        }
+        WindowContent::Editor => {
+            let editor_id = crate::gui::widgets::editor::create_editor();
+            ("Text Editor", editor_id)
+        }
+        WindowContent::FileExplorer => {
+            let explorer_id = crate::gui::widgets::file_explorer::create_file_explorer();
+            ("File Explorer", explorer_id)
+        }
+        WindowContent::Browser => {
+            let browser_id = crate::gui::widgets::browser::create_browser();
+            ("Browser", browser_id)
+        }
+        WindowContent::Snake => {
+            let game_id = crate::apps::snake::create_snake_game();
+            ("Snake", game_id)
+        }
+        WindowContent::AboutDialog => {
+            ("About rOSt", 0)
+        }
+        WindowContent::ImageViewer => {
+            return; // Can't open image viewer without a file
+        }
+    };
+
+    let window = Window::new(0, 0, 640, 480, title, window_type, instance_id);
+    add_window(window);
 }

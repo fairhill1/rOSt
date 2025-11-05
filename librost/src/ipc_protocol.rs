@@ -15,6 +15,7 @@ const MAX_TITLE_LEN: usize = 64;
 pub enum KernelToWM {
     /// Forward input event to WM for routing
     InputEvent {
+        sender_pid: u32,  // PID to send responses to
         mouse_x: i32,
         mouse_y: i32,
         event: InputEvent,
@@ -71,18 +72,19 @@ impl KernelToWM {
     pub fn to_bytes(&self) -> [u8; 256] {
         let mut buf = [0u8; 256];
         match self {
-            KernelToWM::InputEvent { mouse_x, mouse_y, event } => {
+            KernelToWM::InputEvent { sender_pid, mouse_x, mouse_y, event } => {
                 buf[0] = 0; // Message type
-                buf[1..5].copy_from_slice(&mouse_x.to_le_bytes());
-                buf[5..9].copy_from_slice(&mouse_y.to_le_bytes());
-                buf[9..13].copy_from_slice(&event.event_type.to_le_bytes());
-                buf[13] = event.key;
-                buf[14] = event.modifiers;
-                buf[15] = event.button;
-                buf[16] = event.pressed;
-                buf[17] = event.x_delta as u8;
-                buf[18] = event.y_delta as u8;
-                buf[19] = event.wheel_delta as u8;
+                buf[1..5].copy_from_slice(&sender_pid.to_le_bytes());
+                buf[5..9].copy_from_slice(&mouse_x.to_le_bytes());
+                buf[9..13].copy_from_slice(&mouse_y.to_le_bytes());
+                buf[13..17].copy_from_slice(&event.event_type.to_le_bytes());
+                buf[17] = event.key;
+                buf[18] = event.modifiers;
+                buf[19] = event.button;
+                buf[20] = event.pressed;
+                buf[21] = event.x_delta as u8;
+                buf[22] = event.y_delta as u8;
+                buf[23] = event.wheel_delta as u8;
             }
             KernelToWM::CreateWindow { id, x, y, width, height, title, title_len } => {
                 buf[0] = 1; // Message type
@@ -111,20 +113,21 @@ impl KernelToWM {
     pub fn from_bytes(buf: &[u8; 256]) -> Option<Self> {
         match buf[0] {
             0 => {
-                let mouse_x = i32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
-                let mouse_y = i32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]);
-                let event_type = u32::from_le_bytes([buf[9], buf[10], buf[11], buf[12]]);
+                let sender_pid = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
+                let mouse_x = i32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]);
+                let mouse_y = i32::from_le_bytes([buf[9], buf[10], buf[11], buf[12]]);
+                let event_type = u32::from_le_bytes([buf[13], buf[14], buf[15], buf[16]]);
                 let event = InputEvent {
                     event_type,
-                    key: buf[13],
-                    modifiers: buf[14],
-                    button: buf[15],
-                    pressed: buf[16],
-                    x_delta: buf[17] as i8,
-                    y_delta: buf[18] as i8,
-                    wheel_delta: buf[19] as i8,
+                    key: buf[17],
+                    modifiers: buf[18],
+                    button: buf[19],
+                    pressed: buf[20],
+                    x_delta: buf[21] as i8,
+                    y_delta: buf[22] as i8,
+                    wheel_delta: buf[23] as i8,
                 };
-                Some(KernelToWM::InputEvent { mouse_x, mouse_y, event })
+                Some(KernelToWM::InputEvent { sender_pid, mouse_x, mouse_y, event })
             }
             1 => {
                 let id = usize::from_le_bytes([buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]]);

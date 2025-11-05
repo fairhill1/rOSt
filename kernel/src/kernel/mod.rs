@@ -369,11 +369,29 @@ fn kernel_gui_thread() {
         core::arch::asm!("msr daifclr, #2"); // Clear IRQ mask
     }
 
+    // Debug: Print this thread's process ID
+    {
+        let scheduler = scheduler::SCHEDULER.lock();
+        if let Some(thread_id) = scheduler.current_thread {
+            if let Some(thread) = scheduler.threads.iter().find(|t| t.id == thread_id) {
+                uart_write_string("[GUI-THREAD] My process_id = ");
+                let pid = thread.process_id;
+                let hex_chars = b"0123456789ABCDEF";
+                unsafe {
+                    core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(pid >> 4) as usize]);
+                    core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(pid & 0xF) as usize]);
+                }
+                uart_write_string("\r\n");
+            }
+        }
+    }
+
     // Get framebuffer info from global
     let fb_info = unsafe { GPU_FRAMEBUFFER_INFO.unwrap() };
 
     let mut needs_full_render = true;
     let mut last_minute = drivers::rtc::get_datetime().minute;
+    let mut last_event_was_click = false; // Track if last event was a button press
 
     loop {
         // PHASE 3: Check for WM responses from previous iteration
@@ -450,7 +468,17 @@ fn kernel_gui_thread() {
                                 needs_full_render = true;
                             }
                             3 => { // NoAction
-                                // Nothing to do
+                                // Only handle menu clicks if the event was a button press, not hover
+                                if last_event_was_click {
+                                    uart_write_string("[KERNEL] NoAction for button press - checking menu\r\n");
+                                    let (cursor_x, cursor_y) = crate::gui::framebuffer::get_cursor_pos();
+                                    if let Some(menu_idx) = crate::gui::window_manager::get_hovered_menu_button(cursor_x, cursor_y) {
+                                        // Menu button clicked! Open corresponding window
+                                        uart_write_string("[MENU] Button clicked, opening window\r\n");
+                                        crate::gui::window_manager::open_window_by_menu_index(menu_idx);
+                                        needs_full_render = true;
+                                    }
+                                }
                             }
                             _ => {}
                         }
@@ -484,12 +512,15 @@ fn kernel_gui_thread() {
                     // Convert kernel InputEvent to librost InputEvent format
                     let (event_type, key, modifiers, button, pressed, x_delta, y_delta, wheel_delta) = match kernel_event {
                         drivers::input_events::InputEvent::KeyPressed { key, modifiers } => {
+                            last_event_was_click = false;
                             (1u32, key, modifiers, 0u8, 0u8, 0i8, 0i8, 0i8)
                         }
                         drivers::input_events::InputEvent::KeyReleased { key, modifiers } => {
+                            last_event_was_click = false;
                             (2u32, key, modifiers, 0u8, 0u8, 0i8, 0i8, 0i8)
                         }
                         drivers::input_events::InputEvent::MouseMove { x_delta, y_delta } => {
+                            last_event_was_click = false;
                             // Update cursor position
                             let new_x = (CURSOR_X as i32 + x_delta as i32).max(0).min(SCREEN_WIDTH as i32 - 1);
                             let new_y = (CURSOR_Y as i32 + y_delta as i32).max(0).min(SCREEN_HEIGHT as i32 - 1);
@@ -505,26 +536,37 @@ fn kernel_gui_thread() {
                             (3u32, 0u8, 0u8, 0u8, 0u8, x_delta, y_delta, 0i8)
                         }
                         drivers::input_events::InputEvent::MouseButton { button, pressed } => {
+                            last_event_was_click = pressed; // Only true for button press, not release
                             (4u32, 0u8, 0u8, button, if pressed { 1 } else { 0 }, 0i8, 0i8, 0i8)
                         }
                         drivers::input_events::InputEvent::MouseWheel { delta } => {
+                            last_event_was_click = false;
                             (5u32, 0u8, 0u8, 0u8, 0u8, 0i8, 0i8, delta)
                         }
+                    };
+
+                    // Get my PID to include in message
+                    let my_pid = {
+                        let sched = scheduler::SCHEDULER.lock();
+                        sched.current_thread.and_then(|tid| {
+                            sched.threads.iter().find(|t| t.id == tid).map(|t| t.process_id)
+                        }).unwrap_or(0)
                     };
 
                     // Create IPC message with current cursor position and event data
                     let mut msg_buf = [0u8; 256];
                     msg_buf[0] = 0; // KernelToWM::InputEvent type
-                    msg_buf[1..5].copy_from_slice(&(CURSOR_X as i32).to_le_bytes());
-                    msg_buf[5..9].copy_from_slice(&(CURSOR_Y as i32).to_le_bytes());
-                    msg_buf[9..13].copy_from_slice(&event_type.to_le_bytes());
-                    msg_buf[13] = key;
-                    msg_buf[14] = modifiers;
-                    msg_buf[15] = button;
-                    msg_buf[16] = pressed;
-                    msg_buf[17] = x_delta as u8;
-                    msg_buf[18] = y_delta as u8;
-                    msg_buf[19] = wheel_delta as u8;
+                    msg_buf[1..5].copy_from_slice(&(my_pid as u32).to_le_bytes());
+                    msg_buf[5..9].copy_from_slice(&(CURSOR_X as i32).to_le_bytes());
+                    msg_buf[9..13].copy_from_slice(&(CURSOR_Y as i32).to_le_bytes());
+                    msg_buf[13..17].copy_from_slice(&event_type.to_le_bytes());
+                    msg_buf[17] = key;
+                    msg_buf[18] = modifiers;
+                    msg_buf[19] = button;
+                    msg_buf[20] = pressed;
+                    msg_buf[21] = x_delta as u8;
+                    msg_buf[22] = y_delta as u8;
+                    msg_buf[23] = wheel_delta as u8;
 
                     // Send to window manager (kernel-side IPC)
                     // Response will be processed at the start of next loop iteration
