@@ -417,6 +417,41 @@ pub fn shm_map(shm_id: i32) -> *mut u8 {
     }
 }
 
+/// Map a shared memory region from a specific process
+/// Used by WM to access per-process shared memory with same IDs
+/// Returns: pointer to memory on success, null on failure
+pub fn shm_map_from_process(process_id: usize, shm_id: i32) -> *mut u8 {
+    let addr = unsafe {
+        syscall(
+            37, // SyscallNumber::ShmMapFromProcess
+            process_id as u64,
+            shm_id as u64,
+            0
+        )
+    };
+
+    if addr < 0 {
+        core::ptr::null_mut()
+    } else {
+        addr as *mut u8
+    }
+}
+
+/// Destroy a shared memory region and free its physical memory
+/// CRITICAL: Call this instead of shm_unmap when you're done with a region
+/// to prevent resource leaks. shm_unmap only unmaps, shm_destroy frees memory.
+/// Returns: 0 on success, negative error code on failure
+pub fn shm_destroy(shm_id: i32) -> i32 {
+    unsafe {
+        syscall(
+            38, // SyscallNumber::ShmDestroy
+            shm_id as u64,
+            0,
+            0
+        ) as i32
+    }
+}
+
 /// Unmap a shared memory region
 /// Returns: 0 on success, negative error code on failure
 pub fn shm_unmap(shm_id: i32) -> i32 {

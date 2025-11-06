@@ -165,59 +165,29 @@ pub extern "C" fn _start() -> ! {
     //     CONSOLE.write_string("\r\n> ");
     // }
 
-    // Get window dimensions - make it large enough for fullscreen
-    // TODO: Query actual screen size from kernel
-    let window_width = 1920u32;
-    let window_height = 1048u32;  // 1080 - 32 (menu bar)
+    // Don't create buffer at startup - wait for WM to tell us our dimensions
+    // This avoids creating a full-screen buffer that immediately gets resized
+    print_debug("About to send CreateWindow to WM\r\n");
 
-    print_debug("About to create shared memory\r\n");
-
-    // Create shared memory for rendering (ARGB pixels)
-    let fb_size = (window_width * window_height * 4) as usize; // 4 bytes per pixel
-
-    print_debug("Calling shm_create\r\n");
-    let shmem_id = shm_create(fb_size);
-    print_debug("shm_create returned\r\n");
-
-    if shmem_id < 0 {
-        print_debug("Failed to create shared memory\r\n");
-        exit(1);
-    }
-
-    print_debug("Created shared memory for framebuffer\r\n");
-
-    // Map shared memory
-    let shmem_ptr = shm_map(shmem_id as i32);
-    if shmem_ptr.is_null() {
-        print_debug("Failed to map shared memory\r\n");
-        exit(1);
-    }
-
-    let pixel_buffer = unsafe {
-        core::slice::from_raw_parts_mut(shmem_ptr as *mut u32, (window_width * window_height) as usize)
-    };
-
-    print_debug("Mapped shared memory\r\n");
-
-    // Render initial frame
-    unsafe {
-        CONSOLE.render_to_buffer(pixel_buffer, window_width as usize, window_height as usize);
-    }
-
-    print_debug("Rendered initial frame\r\n");
-
-    // Send CreateWindow IPC to WM (PID 1)
+    // Send CreateWindow IPC to WM (PID 1) with requested dimensions
+    // WM will send us WindowResized with actual assigned dimensions
     let wm_pid = 1;
     let mut title = [0u8; 64];
     let title_str = b"Terminal";
     title[..title_str.len()].copy_from_slice(title_str);
 
+    let my_pid = getpid() as usize;
+
+    // Request full screen size (WM will tile it appropriately)
+    let requested_width = 1920u32;
+    let requested_height = 1048u32;
+
     let create_window_msg = KernelToWM::CreateWindow {
-        id: shmem_id as usize,  // Use shared memory ID as window ID
-        x: 50,
-        y: 100,
-        width: window_width,
-        height: window_height,
+        id: my_pid,        // Window ID (globally unique)
+        x: 0,
+        y: 0,
+        width: requested_width,
+        height: requested_height,
         title,
         title_len: title_str.len(),
     };
@@ -227,20 +197,80 @@ pub extern "C" fn _start() -> ! {
 
     if result < 0 {
         print_debug("Failed to send CreateWindow message to WM\r\n");
-    } else {
-        print_debug("CreateWindow message sent to WM\r\n");
+        exit(1);
     }
 
-    print_debug("Terminal initialized successfully\r\n");
+    print_debug("CreateWindow message sent to WM\r\n");
+    print_debug("Waiting for WindowCreated message from WM\r\n");
 
-    // Main event loop - wait for input events from WM
+    // Wait for WM to send WindowCreated with buffer info
+    let mut pixel_buffer: &mut [u32] = &mut [];
+
+    // Main event loop - wait for WindowCreated, then handle events
     print_debug("Terminal: Entering event loop\r\n");
     let mut msg_buf = [0u8; 256];
     loop {
         let result = recv_message(&mut msg_buf, 1000); // 1 second timeout
         if result > 0 {
-            print_debug("Terminal: Received input event\r\n");
-            // TODO: Parse input event and update terminal
+            // Parse message from WM
+            if let Some(msg) = WMToKernel::from_bytes(&msg_buf) {
+                match msg {
+                    WMToKernel::WindowCreated { window_id, shm_id, width, height } => {
+                        if window_id == my_pid {
+                            print_debug("Terminal: Received WindowCreated\r\n");
+
+                            // Map the WM's shared memory buffer
+                            print_debug("Terminal: Mapping WM's buffer\r\n");
+                            let shmem_ptr = shm_map(shm_id);
+
+                            if shmem_ptr.is_null() {
+                                print_debug("Terminal: Failed to map WM's shared memory\r\n");
+                                exit(1);
+                            }
+
+                            print_debug("Terminal: Buffer mapped successfully\r\n");
+
+                            // Create slice from mapped buffer
+                            pixel_buffer = unsafe {
+                                core::slice::from_raw_parts_mut(
+                                    shmem_ptr as *mut u32,
+                                    (width * height) as usize
+                                )
+                            };
+
+                            // Render console to buffer
+                            unsafe {
+                                CONSOLE.render_to_buffer(
+                                    pixel_buffer,
+                                    width as usize,
+                                    height as usize
+                                );
+                            }
+
+                            print_debug("Terminal: Initial render complete\r\n");
+
+                            // Request WM to redraw (show our initial content)
+                            let redraw_msg = KernelToWM::RequestRedraw {
+                                id: my_pid,
+                            };
+                            let msg_bytes = redraw_msg.to_bytes();
+                            let result = send_message(wm_pid, &msg_bytes);
+                            if result < 0 {
+                                print_debug("Terminal: Failed to send RequestRedraw to WM\r\n");
+                            } else {
+                                print_debug("Terminal: RequestRedraw sent to WM\r\n");
+                            }
+                        }
+                    }
+                    WMToKernel::RouteInput { event, .. } => {
+                        print_debug("Terminal: Received input event\r\n");
+                        // TODO: Handle input events
+                    }
+                    _ => {
+                        // Ignore other messages
+                    }
+                }
+            }
         }
 
         // Yield CPU to other processes

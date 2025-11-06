@@ -21,9 +21,10 @@ pub enum KernelToWM {
         event: InputEvent,
     },
 
-    /// Notify WM about new window
+    /// Request WM to create a new window (terminal → WM)
+    /// WM will allocate buffer and respond with WindowCreated
     CreateWindow {
-        id: usize,
+        id: usize,              // Window ID (use PID for uniqueness)
         x: i32,
         y: i32,
         width: u32,
@@ -39,6 +40,12 @@ pub enum KernelToWM {
 
     /// Update window focus
     SetFocus {
+        id: usize,
+    },
+
+    /// Request WM to redraw window (terminal → WM)
+    /// Sent after terminal updates content in shared buffer
+    RequestRedraw {
         id: usize,
     },
 }
@@ -61,6 +68,15 @@ pub enum WMToKernel {
     /// Window manager requests window close
     RequestClose {
         window_id: usize,
+    },
+
+    /// WM confirms window creation and provides buffer (WM → terminal)
+    /// Terminal should map this shm_id to get access to framebuffer
+    WindowCreated {
+        window_id: usize,
+        shm_id: i32,          // WM-owned shared memory ID
+        width: u32,           // Actual assigned dimensions
+        height: u32,
     },
 
     /// No action needed
@@ -103,6 +119,10 @@ impl KernelToWM {
             }
             KernelToWM::SetFocus { id } => {
                 buf[0] = 3; // Message type
+                buf[1..9].copy_from_slice(&id.to_le_bytes());
+            }
+            KernelToWM::RequestRedraw { id } => {
+                buf[0] = 4; // Message type
                 buf[1..9].copy_from_slice(&id.to_le_bytes());
             }
         }
@@ -149,6 +169,10 @@ impl KernelToWM {
                 let id = usize::from_le_bytes([buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]]);
                 Some(KernelToWM::SetFocus { id })
             }
+            4 => {
+                let id = usize::from_le_bytes([buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]]);
+                Some(KernelToWM::RequestRedraw { id })
+            }
             _ => None,
         }
     }
@@ -179,8 +203,15 @@ impl WMToKernel {
                 buf[0] = 2; // Message type
                 buf[1..9].copy_from_slice(&window_id.to_le_bytes());
             }
-            WMToKernel::NoAction => {
+            WMToKernel::WindowCreated { window_id, shm_id, width, height } => {
                 buf[0] = 3; // Message type
+                buf[1..9].copy_from_slice(&window_id.to_le_bytes());
+                buf[9..13].copy_from_slice(&shm_id.to_le_bytes());
+                buf[13..17].copy_from_slice(&width.to_le_bytes());
+                buf[17..21].copy_from_slice(&height.to_le_bytes());
+            }
+            WMToKernel::NoAction => {
+                buf[0] = 4; // Message type
             }
         }
         buf
@@ -212,7 +243,14 @@ impl WMToKernel {
                 let window_id = usize::from_le_bytes([buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]]);
                 Some(WMToKernel::RequestClose { window_id })
             }
-            3 => Some(WMToKernel::NoAction),
+            3 => {
+                let window_id = usize::from_le_bytes([buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]]);
+                let shm_id = i32::from_le_bytes([buf[9], buf[10], buf[11], buf[12]]);
+                let width = u32::from_le_bytes([buf[13], buf[14], buf[15], buf[16]]);
+                let height = u32::from_le_bytes([buf[17], buf[18], buf[19], buf[20]]);
+                Some(WMToKernel::WindowCreated { window_id, shm_id, width, height })
+            }
+            4 => Some(WMToKernel::NoAction),
             _ => None,
         }
     }

@@ -131,6 +131,39 @@ impl SharedMemoryTable {
         }
         false
     }
+
+    /// Deallocate a shared memory region and free its physical memory
+    /// Returns: true if region was found and deallocated, false otherwise
+    pub fn dealloc(&mut self, id: i32) -> bool {
+        for slot in self.regions.iter_mut() {
+            if let Some(region) = slot {
+                if region.id == id {
+                    // Reconstruct the Vec to properly free the memory
+                    // Safety: This memory was originally allocated as Vec::into_boxed_slice() in sys_shm_create()
+                    let physical_addr = region.physical_addr;
+                    let size = region.size;
+
+                    // Remove from table first
+                    *slot = None;
+
+                    // Free the physical memory by reconstructing the Vec
+                    // The original allocation was: vec![0u8; size].into_boxed_slice()
+                    // We reconstruct the Vec with the same ptr, len, and capacity
+                    unsafe {
+                        let _ = alloc::vec::Vec::from_raw_parts(
+                            physical_addr as *mut u8,
+                            size,  // length
+                            size   // capacity (Vec allocates exact size)
+                        );
+                        // Vec is automatically dropped here, freeing the memory
+                    }
+
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 /// Process structure - owns all memory and threads
@@ -767,6 +800,33 @@ pub fn find_shared_memory(shm_id: i32) -> Option<u64> {
                 region.virtual_addr = Some(region.physical_addr);
                 return Some(region.physical_addr);
             }
+        }
+    }
+    None
+}
+
+/// Find a shared memory region by process ID and shm_id
+/// Used by WM to access specific process's shared memory
+pub fn find_shared_memory_by_process(process_id: usize, shm_id: i32) -> Option<u64> {
+    let mut pm_lock = PROCESS_MANAGER.lock();
+    if let Some(pm) = pm_lock.as_mut() {
+        for process in &mut pm.processes {
+            if process.id != process_id {
+                continue;
+            }
+
+            // Skip terminated processes (zombies)
+            if process.state == ProcessState::Terminated {
+                return None;
+            }
+
+            if let Some(region) = process.shm_table.get_mut(shm_id) {
+                // Found it! Mark as mapped and return physical address
+                region.virtual_addr = Some(region.physical_addr);
+                return Some(region.physical_addr);
+            }
+
+            return None;
         }
     }
     None

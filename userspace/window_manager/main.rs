@@ -58,6 +58,7 @@ static ALLOCATOR: BumpAllocator = BumpAllocator::new();
 
 // Window manager constants
 const MAX_WINDOWS: usize = 16;
+const MAX_TILED_WINDOWS: usize = 4;  // Layout algorithm only supports 4 windows
 const TITLE_BAR_HEIGHT: u32 = 30;
 const BORDER_WIDTH: u32 = 2;
 const CLOSE_BUTTON_SIZE: u32 = 18;
@@ -81,7 +82,8 @@ const MENU_ITEM_HOVER_COLOR: u32 = 0xFF5D5D5D; // Menu item hover (brighter)
 /// Window state tracked by WM
 #[derive(Clone, Copy)]
 struct WindowState {
-    id: usize,
+    id: usize,          // Window ID (PID)
+    shm_id: i32,        // Shared memory ID for framebuffer
     x: i32,
     y: i32,
     width: u32,
@@ -96,6 +98,7 @@ impl WindowState {
     const fn new() -> Self {
         Self {
             id: 0,
+            shm_id: 0,
             x: 0,
             y: 0,
             width: 0,
@@ -330,7 +333,7 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
             print_debug("MENU_HIT!");
             // Menu item clicked! Spawn corresponding app
             let window_count = WINDOW_COUNT.load(Ordering::SeqCst);
-            if window_count >= MAX_WINDOWS {
+            if window_count >= MAX_TILED_WINDOWS {
                 print_debug("MAX_WIN");
                 // Max windows reached, ignore click
                 return WMToKernel::NoAction;
@@ -572,7 +575,7 @@ fn draw_window_chrome(window: &WindowState) {
 
 /// Redraw all window chrome and menu bar
 fn redraw_all() {
-    print_debug("[WM] redraw_all: START\r\n");
+    // print_debug("[WM] redraw_all: START\r\n");
 
     // Don't recalculate layout on every frame - only when windows change
     // Layout is calculated in handle_create_window() and handle_close_window()
@@ -581,7 +584,7 @@ fn redraw_all() {
     let fb_width = FB_WIDTH.load(Ordering::SeqCst);
     let fb_height = FB_HEIGHT.load(Ordering::SeqCst);
 
-    print_debug("[WM] redraw_all: About to clear screen\r\n");
+    // print_debug("[WM] redraw_all: About to clear screen\r\n");
     unsafe {
         let total_pixels = (fb_width * fb_height) as usize;
         for i in 0..total_pixels {
@@ -595,43 +598,76 @@ fn redraw_all() {
             // }
         }
     }
-    print_debug("[WM] redraw_all: Screen cleared\r\n");
+    // print_debug("[WM] redraw_all: Screen cleared\r\n");
 
     // Draw menu bar first
     draw_rect(0, 0, fb_width, MENU_BAR_HEIGHT, MENU_BAR_COLOR);
     draw_menu_bar();
-    print_debug("[WM] redraw_all: Menu bar drawn\r\n");
+    // print_debug("[WM] redraw_all: Menu bar drawn\r\n");
 
     // Composite window content from shared memory, then draw chrome
     let count = WINDOW_COUNT.load(Ordering::SeqCst);
-    print_debug("[WM] redraw_all: About to composite windows\r\n");
+    if count == 0 {
+        print_debug("[WM] redraw_all: count=0\r\n");
+    } else if count == 1 {
+        print_debug("[WM] redraw_all: count=1\r\n");
+    } else if count == 2 {
+        print_debug("[WM] redraw_all: count=2\r\n");
+    } else if count == 3 {
+        print_debug("[WM] redraw_all: count=3\r\n");
+    } else {
+        print_debug("[WM] redraw_all: count>3\r\n");
+    }
 
     for i in 0..count {
-        print_debug("[WM] redraw_all: Compositing window\r\n");
-        let window = unsafe { core::ptr::read_volatile(&WINDOWS[i]) };
+        // print_debug("[WM] redraw_all: Compositing window\r\n");
+        let mut window = unsafe { core::ptr::read_volatile(&WINDOWS[i]) };
         if !window.visible {
-            print_debug("[WM] redraw_all: Window not visible, skipping\r\n");
+            // print_debug("[WM] redraw_all: Window not visible, skipping\r\n");
+            continue;
+        }
+
+        // Skip windows that don't have a buffer yet (waiting for first resize)
+        if window.shm_id == 0 {
+            // Draw window chrome only (no content)
+            draw_window_chrome(&window);
             continue;
         }
 
         // Composite window content from shared memory
-        let shm_id = window.id as i32; // Window ID is the shared memory ID
-        print_debug("[WM] redraw_all: Calling shm_map\r\n");
+        // WM owns all buffers, so just map with regular shm_map
+        let shm_id = window.shm_id;
+        print_debug("[WM] Mapping WM-owned buffer\r\n");
         let shm_ptr = shm_map(shm_id);
-        print_debug("[WM] redraw_all: shm_map returned\r\n");
+        if shm_ptr.is_null() {
+            print_debug("[WM] shm_ptr is NULL\r\n");
+        } else {
+            print_debug("[WM] shm_ptr OK\r\n");
+        }
+
+        // If shared memory mapping fails, hide window (process likely died)
+        if shm_ptr.is_null() {
+            print_debug("[WM] shm_map failed for window, hiding it (process died?)\r\n");
+            window.visible = false;
+            unsafe {
+                core::ptr::write_volatile(core::ptr::addr_of_mut!(WINDOWS[i]), window);
+            }
+            continue;
+        }
 
         if !shm_ptr.is_null() {
-            print_debug("[WM] redraw_all: Copying pixels\r\n");
             // Calculate content area (inside title bar and borders)
             let content_x = window.x + BORDER_WIDTH as i32;
             let content_y = window.y + TITLE_BAR_HEIGHT as i32;
             let content_width = window.width.saturating_sub(BORDER_WIDTH * 2);
             let content_height = window.height.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH);
 
+            print_debug("[WM] Creating slice\r\n");
             // Copy pixels from shared memory to framebuffer
             let src_buffer = unsafe {
                 core::slice::from_raw_parts(shm_ptr as *const u32, (content_width * content_height) as usize)
             };
+            print_debug("[WM] Slice created\r\n");
 
             let fb_w = FB_WIDTH.load(Ordering::SeqCst) as usize;
             let fb_h = FB_HEIGHT.load(Ordering::SeqCst) as usize;
@@ -662,15 +698,15 @@ fn redraw_all() {
                     }
                 }
             }
-            print_debug("[WM] redraw_all: Pixels copied\r\n");
+            // print_debug("[WM] redraw_all: Pixels copied\r\n");
         }
 
         // Draw window chrome on top
-        print_debug("[WM] redraw_all: Drawing chrome\r\n");
+        // print_debug("[WM] redraw_all: Drawing chrome\r\n");
         draw_window_chrome(&window);
-        print_debug("[WM] redraw_all: Chrome drawn\r\n");
+        // print_debug("[WM] redraw_all: Chrome drawn\r\n");
     }
-    print_debug("[WM] redraw_all: DONE\r\n");
+    // print_debug("[WM] redraw_all: DONE\r\n");
 }
 
 /// Calculate tiling layout for all windows
@@ -696,6 +732,7 @@ fn calculate_layout() {
             // Single window: full screen below menu bar
             let window = WindowState {
                 id: WINDOWS[0].id,
+                shm_id: WINDOWS[0].shm_id,
                 x: 0,
                 y: available_y,
                 width: screen_width,
@@ -710,74 +747,146 @@ fn calculate_layout() {
             // Two windows: 50/50 horizontal split
             let half_width = screen_width / 2;
 
-            WINDOWS[0].x = 0;
-            WINDOWS[0].y = available_y;
-            WINDOWS[0].width = half_width;
-            WINDOWS[0].height = available_height;
-            WINDOWS[0].visible = true;
+            let window0 = WindowState {
+                id: WINDOWS[0].id,
+                shm_id: WINDOWS[0].shm_id,
+                x: 0,
+                y: available_y,
+                width: half_width,
+                height: available_height,
+                title: WINDOWS[0].title,
+                title_len: WINDOWS[0].title_len,
+                focused: WINDOWS[0].focused,
+                visible: true,
+            };
+            core::ptr::write_volatile(&mut WINDOWS[0], window0);
 
-            WINDOWS[1].x = half_width as i32;
-            WINDOWS[1].y = available_y;
-            WINDOWS[1].width = half_width;
-            WINDOWS[1].height = available_height;
-            WINDOWS[1].visible = true;
+            let window1 = WindowState {
+                id: WINDOWS[1].id,
+                shm_id: WINDOWS[1].shm_id,
+                x: half_width as i32,
+                y: available_y,
+                width: half_width,
+                height: available_height,
+                title: WINDOWS[1].title,
+                title_len: WINDOWS[1].title_len,
+                focused: WINDOWS[1].focused,
+                visible: true,
+            };
+            core::ptr::write_volatile(&mut WINDOWS[1], window1);
         } else if count == 3 {
             // Three windows: 2 on left (split vertically), 1 on right
             let half_width = screen_width / 2;
             let half_height = available_height / 2;
 
             // Window 0: top-left
-            WINDOWS[0].x = 0;
-            WINDOWS[0].y = available_y;
-            WINDOWS[0].width = half_width;
-            WINDOWS[0].height = half_height;
-            WINDOWS[0].visible = true;
+            let window0 = WindowState {
+                id: WINDOWS[0].id,
+                shm_id: WINDOWS[0].shm_id,
+                x: 0,
+                y: available_y,
+                width: half_width,
+                height: half_height,
+                title: WINDOWS[0].title,
+                title_len: WINDOWS[0].title_len,
+                focused: WINDOWS[0].focused,
+                visible: true,
+            };
+            core::ptr::write_volatile(&mut WINDOWS[0], window0);
 
             // Window 1: full right side
-            WINDOWS[1].x = half_width as i32;
-            WINDOWS[1].y = available_y;
-            WINDOWS[1].width = half_width;
-            WINDOWS[1].height = available_height;
-            WINDOWS[1].visible = true;
+            let window1 = WindowState {
+                id: WINDOWS[1].id,
+                shm_id: WINDOWS[1].shm_id,
+                x: half_width as i32,
+                y: available_y,
+                width: half_width,
+                height: available_height,
+                title: WINDOWS[1].title,
+                title_len: WINDOWS[1].title_len,
+                focused: WINDOWS[1].focused,
+                visible: true,
+            };
+            core::ptr::write_volatile(&mut WINDOWS[1], window1);
 
             // Window 2: bottom-left
-            WINDOWS[2].x = 0;
-            WINDOWS[2].y = available_y + half_height as i32;
-            WINDOWS[2].width = half_width;
-            WINDOWS[2].height = half_height;
-            WINDOWS[2].visible = true;
+            let window2 = WindowState {
+                id: WINDOWS[2].id,
+                shm_id: WINDOWS[2].shm_id,
+                x: 0,
+                y: available_y + half_height as i32,
+                width: half_width,
+                height: half_height,
+                title: WINDOWS[2].title,
+                title_len: WINDOWS[2].title_len,
+                focused: WINDOWS[2].focused,
+                visible: true,
+            };
+            core::ptr::write_volatile(&mut WINDOWS[2], window2);
         } else if count >= 4 {
             // Four windows: 2x2 grid (max 4 windows)
             let half_width = screen_width / 2;
             let half_height = available_height / 2;
 
             // Top-left
-            WINDOWS[0].x = 0;
-            WINDOWS[0].y = available_y;
-            WINDOWS[0].width = half_width;
-            WINDOWS[0].height = half_height;
-            WINDOWS[0].visible = true;
+            let window0 = WindowState {
+                id: WINDOWS[0].id,
+                shm_id: WINDOWS[0].shm_id,
+                x: 0,
+                y: available_y,
+                width: half_width,
+                height: half_height,
+                title: WINDOWS[0].title,
+                title_len: WINDOWS[0].title_len,
+                focused: WINDOWS[0].focused,
+                visible: true,
+            };
+            core::ptr::write_volatile(&mut WINDOWS[0], window0);
 
             // Top-right
-            WINDOWS[1].x = half_width as i32;
-            WINDOWS[1].y = available_y;
-            WINDOWS[1].width = half_width;
-            WINDOWS[1].height = half_height;
-            WINDOWS[1].visible = true;
+            let window1 = WindowState {
+                id: WINDOWS[1].id,
+                shm_id: WINDOWS[1].shm_id,
+                x: half_width as i32,
+                y: available_y,
+                width: half_width,
+                height: half_height,
+                title: WINDOWS[1].title,
+                title_len: WINDOWS[1].title_len,
+                focused: WINDOWS[1].focused,
+                visible: true,
+            };
+            core::ptr::write_volatile(&mut WINDOWS[1], window1);
 
             // Bottom-left
-            WINDOWS[2].x = 0;
-            WINDOWS[2].y = available_y + half_height as i32;
-            WINDOWS[2].width = half_width;
-            WINDOWS[2].height = half_height;
-            WINDOWS[2].visible = true;
+            let window2 = WindowState {
+                id: WINDOWS[2].id,
+                shm_id: WINDOWS[2].shm_id,
+                x: 0,
+                y: available_y + half_height as i32,
+                width: half_width,
+                height: half_height,
+                title: WINDOWS[2].title,
+                title_len: WINDOWS[2].title_len,
+                focused: WINDOWS[2].focused,
+                visible: true,
+            };
+            core::ptr::write_volatile(&mut WINDOWS[2], window2);
 
             // Bottom-right
-            WINDOWS[3].x = half_width as i32;
-            WINDOWS[3].y = available_y + half_height as i32;
-            WINDOWS[3].width = half_width;
-            WINDOWS[3].height = half_height;
-            WINDOWS[3].visible = true;
+            let window3 = WindowState {
+                id: WINDOWS[3].id,
+                shm_id: WINDOWS[3].shm_id,
+                x: half_width as i32,
+                y: available_y + half_height as i32,
+                width: half_width,
+                height: half_height,
+                title: WINDOWS[3].title,
+                title_len: WINDOWS[3].title_len,
+                focused: WINDOWS[3].focused,
+                visible: true,
+            };
+            core::ptr::write_volatile(&mut WINDOWS[3], window3);
         }
     }
 }
@@ -786,27 +895,23 @@ fn calculate_layout() {
 fn handle_create_window(id: usize, _x: i32, _y: i32, _width: u32, _height: u32, title: [u8; 64], title_len: usize) {
     let count = WINDOW_COUNT.load(Ordering::SeqCst);
 
-    print_debug("WM: handle_create_window called, count = ");
-    print_debug("WM: Creating window\r\n");
+    print_debug("WM: handle_create_window called\r\n");
 
     // Check if window already exists
     for i in 0..count {
         let window = unsafe { &mut WINDOWS[i] };
         if window.id == id {
-            // Update existing window title
-            window.title = title;
-            window.title_len = title_len;
-            window.visible = true;
-            print_debug("WM: Updated existing window\r\n");
+            print_debug("WM: Window already exists, ignoring duplicate CreateWindow\r\n");
             return;
         }
     }
 
-    // Add new window (position/size will be set by calculate_layout)
+    // Add new window with placeholder (buffer will be allocated after layout calculation)
     if count < MAX_WINDOWS {
         unsafe {
             WINDOWS[count] = WindowState {
                 id,
+                shm_id: 0,  // Will be allocated after layout calculation
                 x: 0,
                 y: 0,
                 width: 0,
@@ -821,13 +926,52 @@ fn handle_create_window(id: usize, _x: i32, _y: i32, _width: u32, _height: u32, 
 
         print_debug("WM: Window added to array\r\n");
 
-        // Calculate layout immediately after adding window
+        // Calculate layout to get dimensions for this window
         calculate_layout();
         print_debug("WM: Layout calculated\r\n");
+
+        // Now allocate buffer with the calculated dimensions
+        let window = unsafe { &mut WINDOWS[count] };
+        let content_width = window.width.saturating_sub(BORDER_WIDTH * 2);
+        let content_height = window.height.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH);
+
+        if content_width > 0 && content_height > 0 {
+            let buffer_size = (content_width * content_height * 4) as usize;
+            print_debug("WM: Allocating buffer for window\r\n");
+            let shm_id = shm_create(buffer_size);
+
+            if shm_id < 0 {
+                print_debug("WM: Failed to allocate buffer, removing window\r\n");
+                WINDOW_COUNT.store(count, Ordering::SeqCst);
+                return;
+            }
+
+            window.shm_id = shm_id;
+            print_debug("WM: Buffer allocated, shm_id = ");
+            print_debug("\r\n");
+
+            // Send WindowCreated message to terminal with buffer info
+            let created_msg = WMToKernel::WindowCreated {
+                window_id: id,
+                shm_id,
+                width: content_width,
+                height: content_height,
+            };
+            let msg_buf = created_msg.to_bytes();
+            let result = send_message(id as u32, &msg_buf);
+
+            if result < 0 {
+                print_debug("WM: Failed to send WindowCreated to terminal\r\n");
+            } else {
+                print_debug("WM: WindowCreated message sent to terminal\r\n");
+            }
+        } else {
+            print_debug("WM: Invalid dimensions, not allocating buffer\r\n");
+        }
     }
 }
 
-/// Remove window
+/// Remove window and free its buffer
 fn handle_close_window(id: usize) {
     let mut count = WINDOW_COUNT.load(Ordering::SeqCst);
 
@@ -835,6 +979,13 @@ fn handle_close_window(id: usize) {
         let window = unsafe { &WINDOWS[i] };
         if window.id == id {
             let was_focused = window.focused;
+            let shm_id = window.shm_id;
+
+            // Free the buffer (WM allocated it, WM frees it)
+            if shm_id > 0 {
+                print_debug("WM: Destroying buffer for closed window\r\n");
+                shm_destroy(shm_id);
+            }
 
             // Shift remaining windows down
             for j in i..count-1 {
@@ -967,6 +1118,10 @@ pub extern "C" fn _start() -> ! {
                         handle_set_focus(id);
                         need_redraw = true;
                     }
+                    KernelToWM::RequestRedraw { id: _ } => {
+                        // Terminal updated its buffer content, trigger redraw
+                        need_redraw = true;
+                    }
                 }
             } else {
                 print_debug("Failed to parse message\r\n");
@@ -980,12 +1135,18 @@ pub extern "C" fn _start() -> ! {
 
         // Redraw once after processing all messages
         if need_redraw {
+            print_debug("[WM] need_redraw=true, calling redraw_all()\r\n");
             redraw_all();
+            print_debug("[WM] redraw_all() completed, flushing\r\n");
             fb_flush();
+            print_debug("[WM] fb_flush() completed\r\n");
+        } else {
+            print_debug("[WM] need_redraw=false, skipping redraw\r\n");
         }
 
-        // CRITICAL: Yield to other threads since we use cooperative multitasking
-        // Without this, WM monopolizes CPU and GUI thread never runs
+        // CRITICAL: ALWAYS yield, even if no redraw
+        // Without this, WM monopolizes CPU in tight loop when rendering fails
+        // (e.g., when terminal dies but window still in array)
         yield_now();
     }
 }

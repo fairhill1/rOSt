@@ -71,6 +71,10 @@ pub enum SyscallNumber {
 
     // Framebuffer operations (dirty regions)
     FbFlushRegion = 36,
+
+    // IPC operations (extended)
+    ShmMapFromProcess = 37,
+    ShmDestroy = 38,
 }
 
 impl SyscallNumber {
@@ -114,6 +118,8 @@ impl SyscallNumber {
             34 => Some(Self::SpawnElf),
             35 => Some(Self::Kill),
             36 => Some(Self::FbFlushRegion),
+            37 => Some(Self::ShmMapFromProcess),
+            38 => Some(Self::ShmDestroy),
             _ => None,
         }
     }
@@ -292,6 +298,8 @@ pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
         SyscallNumber::SpawnElf => sys_spawn_elf(args.arg0 as *const u8, args.arg1 as usize),
         SyscallNumber::Kill => sys_kill(args.arg0 as u64),
         SyscallNumber::FbFlushRegion => sys_fb_flush_region(args.arg0 as u32, args.arg1 as u32, args.arg2 as u32, args.arg3 as u32),
+        SyscallNumber::ShmMapFromProcess => sys_shm_map_from_process(args.arg0 as usize, args.arg1 as i32),
+        SyscallNumber::ShmDestroy => sys_shm_destroy(args.arg0 as i32),
         _ => SyscallError::NotImplemented.as_i64(),
     }
 }
@@ -1221,6 +1229,14 @@ fn sys_shm_create(size: usize) -> i64 {
 
 fn sys_shm_map(shm_id: i32) -> i64 {
     crate::kernel::syscall_ipc::sys_shm_map(shm_id)
+}
+
+fn sys_shm_map_from_process(process_id: usize, shm_id: i32) -> i64 {
+    crate::kernel::syscall_ipc::sys_shm_map_from_process(process_id, shm_id)
+}
+
+fn sys_shm_destroy(shm_id: i32) -> i64 {
+    crate::kernel::syscall_ipc::sys_shm_destroy(shm_id)
 }
 
 fn sys_shm_unmap(shm_id: i32) -> i64 {

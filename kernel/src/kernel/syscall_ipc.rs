@@ -89,6 +89,53 @@ pub fn sys_shm_map(shm_id: i32) -> i64 {
     }
 }
 
+/// Map a shared memory region from a specific process
+/// Used by WM to access per-process shared memory with same IDs
+/// Returns: physical address on success, negative error code on failure
+pub fn sys_shm_map_from_process(process_id: usize, shm_id: i32) -> i64 {
+    if let Some(physical_addr) = crate::kernel::thread::find_shared_memory_by_process(process_id, shm_id) {
+        physical_addr as i64
+    } else {
+        SyscallError::InvalidArgument.as_i64()
+    }
+}
+
+/// Destroy a shared memory region and free its physical memory
+/// This is critical to prevent resource leaks when resizing windows
+/// Returns: 0 on success, negative error code on failure
+pub fn sys_shm_destroy(shm_id: i32) -> i64 {
+    crate::kernel::uart_write_string("[SYSCALL] shm_destroy(id=");
+    if shm_id < 10 {
+        unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + shm_id as u8); }
+    }
+    crate::kernel::uart_write_string(")\r\n");
+
+    // Get current process
+    let process_id = match get_current_process() {
+        Some(pid) => pid,
+        None => {
+            crate::kernel::uart_write_string("[SYSCALL] shm_destroy() -> no current process\r\n");
+            return SyscallError::InvalidArgument.as_i64();
+        }
+    };
+
+    // Deallocate the shared memory region (frees physical memory)
+    let success = crate::kernel::thread::with_process_mut(process_id, |process| {
+        process.shm_table.dealloc(shm_id)
+    });
+
+    match success {
+        Some(true) => {
+            crate::kernel::uart_write_string("[SYSCALL] shm_destroy() -> SUCCESS\r\n");
+            0
+        }
+        _ => {
+            crate::kernel::uart_write_string("[SYSCALL] shm_destroy() -> FAILED (not found)\r\n");
+            SyscallError::InvalidArgument.as_i64()
+        }
+    }
+}
+
 /// Unmap a shared memory region
 /// Returns: 0 on success, negative error code on failure
 pub fn sys_shm_unmap(shm_id: i32) -> i64 {

@@ -127,14 +127,14 @@ impl Scheduler {
             self.threads.iter().any(|t| t.id == id && t.state != ThreadState::Terminated)
         });
 
-        // DEBUG: Print ready queue contents
-        crate::kernel::uart_write_string("[SCHEDULER] Ready queue before pick: [");
-        for (i, &id) in self.ready_queue.iter().enumerate() {
-            if i > 0 { crate::kernel::uart_write_string(", "); }
-            // Print the actual thread ID number
-            print_number(id);
-        }
-        crate::kernel::uart_write_string("]\r\n");
+        // DEBUG: Print ready queue contents (DISABLED - too spammy)
+        // crate::kernel::uart_write_string("[SCHEDULER] Ready queue before pick: [");
+        // for (i, &id) in self.ready_queue.iter().enumerate() {
+        //     if i > 0 { crate::kernel::uart_write_string(", "); }
+        //     // Print the actual thread ID number
+        //     print_number(id);
+        // }
+        // crate::kernel::uart_write_string("]\r\n");
 
         self.ready_queue.pop_front()
     }
