@@ -414,6 +414,12 @@ fn kernel_gui_thread() {
                                 response_buf[5], response_buf[6], response_buf[7], response_buf[8],
                             ]);
                             syscall::sys_kill(window_id as u64);
+
+                            // Notify WM to remove the window from its list
+                            let mut msg_buf = [0u8; 256];
+                            msg_buf[0] = 2; // KernelToWM::CloseWindow type
+                            msg_buf[1..9].copy_from_slice(&window_id.to_le_bytes());
+                            let _ = kernel_send_message(wm_pid as u32, &msg_buf);
                         }
                         _ => {} // NoAction or unknown
                     }

@@ -410,11 +410,25 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
         }
     }
 
-    // For keyboard events, route to focused window
+    // For keyboard events, check for ESC first, then route to focused window
+    if event.event_type == 1 { // KeyPressed
+        // Check for ESC key (key code 1)
+        if event.key == 1 {
+            // Find focused window and close it
+            let count = WINDOW_COUNT.load(Ordering::SeqCst);
+            for i in 0..count {
+                let window = unsafe { core::ptr::read_volatile(&WINDOWS[i]) };
+                if window.focused {
+                    return WMToKernel::RequestClose { window_id: window.id };
+                }
+            }
+        }
+    }
+
     if event.event_type == 1 || event.event_type == 2 { // KeyPressed or KeyReleased
         let count = WINDOW_COUNT.load(Ordering::SeqCst);
         for i in 0..count {
-            let window = unsafe { &WINDOWS[i] };
+            let window = unsafe { core::ptr::read_volatile(&WINDOWS[i]) };
             if window.focused {
                 return WMToKernel::RouteInput {
                     window_id: window.id,
@@ -975,11 +989,13 @@ fn handle_create_window(id: usize, _x: i32, _y: i32, _width: u32, _height: u32, 
 
 /// Remove window and free its buffer
 fn handle_close_window(id: usize) {
+    print_debug("WM:handle_close\r\n");
     let mut count = WINDOW_COUNT.load(Ordering::SeqCst);
 
     for i in 0..count {
-        let window = unsafe { &WINDOWS[i] };
+        let window = unsafe { core::ptr::read_volatile(&WINDOWS[i]) };
         if window.id == id {
+            print_debug("WM:FOUND_WIN\r\n");
             let was_focused = window.focused;
             let shm_id = window.shm_id;
 
@@ -992,7 +1008,8 @@ fn handle_close_window(id: usize) {
             // Shift remaining windows down
             for j in i..count-1 {
                 unsafe {
-                    WINDOWS[j] = WINDOWS[j + 1];
+                    let window = core::ptr::read_volatile(&WINDOWS[j + 1]);
+                    core::ptr::write_volatile(&mut WINDOWS[j], window);
                 }
             }
             count -= 1;
@@ -1001,7 +1018,9 @@ fn handle_close_window(id: usize) {
             // If we removed the focused window, focus the last window
             if was_focused && count > 0 {
                 unsafe {
-                    WINDOWS[count - 1].focused = true;
+                    let mut window = core::ptr::read_volatile(&WINDOWS[count - 1]);
+                    window.focused = true;
+                    core::ptr::write_volatile(&mut WINDOWS[count - 1], window);
                 }
             }
 
@@ -1124,15 +1143,13 @@ pub extern "C" fn _start() -> ! {
                         need_redraw.store(true, Ordering::SeqCst);
                     }
                     KernelToWM::CloseWindow { id } => {
+                        print_debug("WM:CLOSEWIN\r\n");
                         handle_close_window(id);
                         need_redraw.store(true, Ordering::SeqCst);
                     }
                     KernelToWM::SetFocus { id } => {
-                        print_debug("WM:GOT_SETFOCUS!");
                         handle_set_focus(id);
-                        print_debug("WM:FOCUS_UPDATED!");
                         need_redraw.store(true, Ordering::SeqCst);
-                        print_debug("WM:REDRAW_SET!");
                     }
                     KernelToWM::RequestRedraw { id: _ } => {
                         // Terminal updated its buffer content, trigger redraw
@@ -1151,10 +1168,8 @@ pub extern "C" fn _start() -> ! {
 
         // Redraw once after processing all messages
         if need_redraw.load(Ordering::SeqCst) {
-            print_debug("WM:REDRAWING!");
             redraw_all();
             fb_flush();
-            print_debug("WM:REDRAW_DONE!");
         }
 
         // CRITICAL: ALWAYS yield, even if no redraw

@@ -1391,9 +1391,13 @@ pub fn sys_kill(pid: u64) -> i64 {
     }
     crate::kernel::uart_write_string(") called\r\n");
 
-    // Check that we're not trying to kill kernel threads (PIDs 0-3 are reserved)
-    if pid < 4 {
-        crate::kernel::uart_write_string("[SYSCALL] kill() -> cannot kill kernel thread\r\n");
+    // Check that we're not trying to kill critical system processes
+    // PID 0: Kernel idle thread
+    // PID 1: Shell (kernel-mode, started first)
+    // PID 2: Window manager (userspace, but critical)
+    // PID 3+: Userspace apps (can be killed)
+    if pid < 3 {
+        crate::kernel::uart_write_string("[SYSCALL] kill() -> cannot kill kernel/critical process\r\n");
         return SyscallError::PermissionDenied.as_i64();
     }
 
