@@ -643,6 +643,8 @@ pub fn exit() -> ! {
 pub struct ProcessManager {
     processes: alloc::vec::Vec<Process>,
     next_process_id: usize,
+    free_stack_slots: [Option<usize>; MAX_USER_PROCESSES], // Fixed-size array to avoid allocations (prevents allocator deadlock!)
+    free_stack_count: usize, // Number of free slots
 }
 
 impl ProcessManager {
@@ -650,6 +652,61 @@ impl ProcessManager {
         ProcessManager {
             processes: alloc::vec::Vec::new(),
             next_process_id: 0,
+            free_stack_slots: [None; MAX_USER_PROCESSES],
+            free_stack_count: 0,
+        }
+    }
+
+    /// Clean up zombie processes to reclaim memory
+    /// Removes processes that have been terminated for "long enough"
+    /// CRITICAL: Only call this when NOT on a zombie's stack!
+    pub fn reap_zombies(&mut self) {
+        // Simple heuristic: keep only the last 10 processes, remove older zombies
+        // This prevents unbounded memory growth from zombie accumulation
+        let mut alive_count = 0;
+        let mut zombie_count = 0;
+
+        // Count alive and zombie processes
+        for process in &self.processes {
+            if process.state == ProcessState::Terminated {
+                zombie_count += 1;
+            } else {
+                alive_count += 1;
+            }
+        }
+
+        // If we have more than 10 zombies, remove the oldest ones
+        if zombie_count > 10 {
+            let to_remove = zombie_count - 10;
+            let mut removed = 0;
+
+            // Remove oldest zombies (lowest PIDs)
+            self.processes.retain(|p| {
+                if removed < to_remove && p.state == ProcessState::Terminated {
+                    unsafe {
+                        crate::kernel::uart_write_string("[REAPER] Removing zombie PID ");
+                        if p.id < 100 {
+                            if p.id >= 10 {
+                                core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + (p.id / 10) as u8);
+                            }
+                            core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + (p.id % 10) as u8);
+                        }
+                        crate::kernel::uart_write_string("\r\n");
+                    }
+                    removed += 1;
+                    false // Remove this process
+                } else {
+                    true // Keep this process
+                }
+            });
+
+            crate::kernel::uart_write_string("[REAPER] Reaped ");
+            unsafe {
+                if removed < 10 {
+                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + removed as u8);
+                }
+            }
+            crate::kernel::uart_write_string(" zombies\r\n");
         }
     }
 
@@ -668,41 +725,65 @@ impl ProcessManager {
 
     /// Create a new user process
     /// Reuses stack slots from terminated (zombie) processes when possible
+    /// PERFORMANCE: O(1) using fixed-size free list (no allocations to prevent allocator deadlock!)
     pub fn create_user_process(&mut self) -> usize {
+        // NOTE: Reaper removed - it was causing crashes by freeing processes that were still referenced
+        // TODO: Implement a safe reaper that runs from a background context (not during process creation)
+
         let process_id = self.next_process_id;
         self.next_process_id += 1;
 
-        // CRITICAL FIX: Search for zombie processes and reuse their stack slots
-        // This prevents stack slot exhaustion when processes are spawned and killed repeatedly
+        // CRITICAL FIX: Use fixed-size array instead of Vec to avoid allocations
+        // Prevents allocator deadlock when holding PROCESS_MANAGER lock
 
-        // First, try to find a zombie process and reuse its stack slot
-        for zombie in &self.processes {
-            if zombie.state == ProcessState::Terminated && zombie.stack_index.is_some() {
-                let idx = zombie.stack_index.unwrap();
+        // First, try to pop a free stack slot from the free list (O(1), no allocation!)
+        let stack_index = if self.free_stack_count > 0 {
+            // Find the first Some() slot
+            let mut found_idx = None;
+            for (i, slot) in self.free_stack_slots.iter_mut().enumerate() {
+                if slot.is_some() {
+                    found_idx = *slot;
+                    *slot = None;
+                    self.free_stack_count -= 1;
+                    break;
+                }
+            }
+
+            if let Some(idx) = found_idx {
                 unsafe {
                     crate::kernel::uart_write_string("[PROCESS] Reusing stack slot ");
                     if idx < 10 {
                         core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + idx as u8);
                     }
-                    crate::kernel::uart_write_string(" from zombie process\r\n");
+                    crate::kernel::uart_write_string(" from free list\r\n");
                 }
-                return self.create_user_process_with_stack_slot(process_id, idx);
+                idx
+            } else {
+                // Shouldn't happen (free_stack_count was > 0)
+                unsafe {
+                    let idx = NEXT_USER_STACK_INDEX;
+                    if idx >= MAX_USER_PROCESSES {
+                        panic!("Too many user processes! (All 8 slots in use, no free slots available)");
+                    }
+                    NEXT_USER_STACK_INDEX += 1;
+                    idx
+                }
             }
-        }
-
-        // No zombie slots available - allocate a new one
-        let stack_index = unsafe {
-            let idx = NEXT_USER_STACK_INDEX;
-            if idx >= MAX_USER_PROCESSES {
-                panic!("Too many user processes! (All 8 slots in use, no zombies to reclaim)");
+        } else {
+            // No free slots - allocate a new one
+            unsafe {
+                let idx = NEXT_USER_STACK_INDEX;
+                if idx >= MAX_USER_PROCESSES {
+                    panic!("Too many user processes! (All 8 slots in use, no free slots available)");
+                }
+                NEXT_USER_STACK_INDEX += 1;
+                crate::kernel::uart_write_string("[PROCESS] Allocating new stack slot ");
+                if idx < 10 {
+                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + idx as u8);
+                }
+                crate::kernel::uart_write_string("\r\n");
+                idx
             }
-            NEXT_USER_STACK_INDEX += 1;
-            crate::kernel::uart_write_string("[PROCESS] Allocating new stack slot ");
-            if idx < 10 {
-                core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + idx as u8);
-            }
-            crate::kernel::uart_write_string("\r\n");
-            idx
         };
 
         self.create_user_process_with_stack_slot(process_id, stack_index)
@@ -732,29 +813,55 @@ impl ProcessManager {
         }
     }
 
-    /// Mark a process as terminated and ready for cleanup
+    /// Mark a process as terminated and return its stack slot to the free list
     /// NOTE: We don't actually remove the process from the table here because
     /// the calling thread is still executing on the process's kernel stack!
-    /// The process will be cleaned up later by a background task or left as "zombie"
+    /// The process becomes a "zombie" but its stack slot is reclaimed for reuse.
     pub fn mark_process_terminated(&mut self, id: usize) {
         if let Some(process) = self.get_process_mut(id) {
             process.state = ProcessState::Terminated;
 
-            // Log termination
-            crate::kernel::uart_write_string("[PROCESS] Process ");
-            if id < 10 {
-                unsafe {
-                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + id as u8);
+            // Return stack slot to free list for reuse (O(1), no allocation!)
+            // CRITICAL: Use fixed-size array to avoid Vec::push() allocation (prevents allocator deadlock!)
+            if let Some(stack_idx) = process.stack_index {
+                // Find first None slot and store the freed stack index
+                for slot in self.free_stack_slots.iter_mut() {
+                    if slot.is_none() {
+                        *slot = Some(stack_idx);
+                        self.free_stack_count += 1;
+                        break;
+                    }
                 }
-            }
-            crate::kernel::uart_write_string(" marked as terminated (zombie)\r\n");
 
-            // TODO: Implement actual cleanup in a background reaper thread
-            // For now, the process becomes a "zombie" - marked terminated but not freed
+                // Log termination with stack slot info
+                unsafe {
+                    crate::kernel::uart_write_string("[PROCESS] Process ");
+                    if id < 10 {
+                        core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + id as u8);
+                    }
+                    crate::kernel::uart_write_string(" terminated, freed stack slot ");
+                    if stack_idx < 10 {
+                        core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + stack_idx as u8);
+                    }
+                    crate::kernel::uart_write_string("\r\n");
+                }
+            } else {
+                // Kernel process (no stack slot to free)
+                crate::kernel::uart_write_string("[PROCESS] Process ");
+                if id < 10 {
+                    unsafe {
+                        core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + id as u8);
+                    }
+                }
+                crate::kernel::uart_write_string(" marked as terminated\r\n");
+            }
+
+            // NOTE: Process becomes a "zombie" - marked terminated but not freed
             // This is safe because:
             // 1. The thread is marked Terminated so scheduler won't run it
             // 2. The process is marked Terminated so syscalls won't access it
             // 3. Memory is not freed (small leak but prevents use-after-free)
+            // 4. Stack slot IS reclaimed via free list (prevents exhaustion)
         }
     }
 
@@ -781,33 +888,58 @@ pub fn init_process_manager() {
 
 /// Create a user process and return its ID
 pub fn create_user_process() -> usize {
-    PROCESS_MANAGER.lock()
+    // CRITICAL: Disable interrupts to prevent deadlock
+    // Timer interrupts can fire while holding PROCESS_MANAGER lock,
+    // causing interrupt handler to try acquiring the same lock
+    let daif = crate::kernel::interrupts::disable_interrupts();
+
+    let result = PROCESS_MANAGER.lock()
         .as_mut()
         .map(|pm| pm.create_user_process())
-        .unwrap_or(0)
+        .unwrap_or(0);
+
+    crate::kernel::interrupts::restore_interrupts(daif);
+    result
 }
 
 /// Create a kernel process and return its ID
 pub fn create_kernel_process() -> usize {
-    PROCESS_MANAGER.lock()
+    // CRITICAL: Disable interrupts to prevent deadlock
+    let daif = crate::kernel::interrupts::disable_interrupts();
+
+    let result = PROCESS_MANAGER.lock()
         .as_mut()
         .map(|pm| pm.create_kernel_process())
-        .unwrap_or(0)
+        .unwrap_or(0);
+
+    crate::kernel::interrupts::restore_interrupts(daif);
+    result
 }
 
 /// Mark a process as terminated (becomes zombie until reaped)
 pub fn mark_process_terminated(id: usize) {
+    // CRITICAL: Disable interrupts to prevent deadlock
+    let daif = crate::kernel::interrupts::disable_interrupts();
+
     PROCESS_MANAGER.lock()
         .as_mut()
         .map(|pm| pm.mark_process_terminated(id));
+
+    crate::kernel::interrupts::restore_interrupts(daif);
 }
 
 /// Get process stack information (safe - returns owned data)
 pub fn get_process_stack_info(id: usize) -> Option<(u64, Option<u64>)> {
-    PROCESS_MANAGER.lock()
+    // CRITICAL: Disable interrupts to prevent deadlock
+    let daif = crate::kernel::interrupts::disable_interrupts();
+
+    let result = PROCESS_MANAGER.lock()
         .as_ref()
         .and_then(|pm| pm.processes.iter().find(|p| p.id == id))
-        .map(|p| (p.get_kernel_stack_top(), p.get_user_stack_top()))
+        .map(|p| (p.get_kernel_stack_top(), p.get_user_stack_top()));
+
+    crate::kernel::interrupts::restore_interrupts(daif);
+    result
 }
 
 /// Execute a closure with mutable access to a process (safe - no aliasing)
@@ -815,7 +947,10 @@ pub fn with_process_mut<F, R>(id: usize, f: F) -> Option<R>
 where
     F: FnOnce(&mut Process) -> R,
 {
+    // CRITICAL: Disable interrupts to prevent deadlock
     // CRITICAL: No heap allocations in syscall path!
+    let daif = crate::kernel::interrupts::disable_interrupts();
+
     let mut guard = PROCESS_MANAGER.lock();
 
     let result = guard
@@ -823,6 +958,9 @@ where
         .and_then(|pm| pm.get_process_mut(id))
         .map(f);
 
+    drop(guard); // Explicitly drop before restoring interrupts
+
+    crate::kernel::interrupts::restore_interrupts(daif);
     result
 }
 
@@ -830,8 +968,12 @@ where
 /// Returns the physical address if found, None otherwise
 /// NOTE: Skips terminated (zombie) processes to avoid reusing freed resources
 pub fn find_shared_memory(shm_id: i32) -> Option<u64> {
+    // CRITICAL: Disable interrupts to prevent deadlock
+    let daif = crate::kernel::interrupts::disable_interrupts();
+
     let mut pm_lock = PROCESS_MANAGER.lock();
-    if let Some(pm) = pm_lock.as_mut() {
+    let result = if let Some(pm) = pm_lock.as_mut() {
+        let mut found = None;
         for process in &mut pm.processes {
             // Skip terminated processes (zombies)
             if process.state == ProcessState::Terminated {
@@ -841,18 +983,29 @@ pub fn find_shared_memory(shm_id: i32) -> Option<u64> {
             if let Some(region) = process.shm_table.get_mut(shm_id) {
                 // Found it! Mark as mapped and return physical address
                 region.virtual_addr = Some(region.physical_addr);
-                return Some(region.physical_addr);
+                found = Some(region.physical_addr);
+                break;
             }
         }
-    }
-    None
+        found
+    } else {
+        None
+    };
+
+    drop(pm_lock);
+    crate::kernel::interrupts::restore_interrupts(daif);
+    result
 }
 
 /// Find a shared memory region by process ID and shm_id
 /// Used by WM to access specific process's shared memory
 pub fn find_shared_memory_by_process(process_id: usize, shm_id: i32) -> Option<u64> {
+    // CRITICAL: Disable interrupts to prevent deadlock
+    let daif = crate::kernel::interrupts::disable_interrupts();
+
     let mut pm_lock = PROCESS_MANAGER.lock();
-    if let Some(pm) = pm_lock.as_mut() {
+    let result = if let Some(pm) = pm_lock.as_mut() {
+        let mut found = None;
         for process in &mut pm.processes {
             if process.id != process_id {
                 continue;
@@ -860,31 +1013,46 @@ pub fn find_shared_memory_by_process(process_id: usize, shm_id: i32) -> Option<u
 
             // Skip terminated processes (zombies)
             if process.state == ProcessState::Terminated {
-                return None;
+                break;
             }
 
             if let Some(region) = process.shm_table.get_mut(shm_id) {
                 // Found it! Mark as mapped and return physical address
                 region.virtual_addr = Some(region.physical_addr);
-                return Some(region.physical_addr);
+                found = Some(region.physical_addr);
             }
-
-            return None;
+            break;
         }
-    }
-    None
+        found
+    } else {
+        None
+    };
+
+    drop(pm_lock);
+    crate::kernel::interrupts::restore_interrupts(daif);
+    result
 }
 
 /// Set the main thread for a process
 pub fn set_process_main_thread(process_id: usize, thread_id: usize) {
+    // CRITICAL: Disable interrupts to prevent deadlock
+    let daif = crate::kernel::interrupts::disable_interrupts();
+
     if let Some(pm) = PROCESS_MANAGER.lock().as_mut() {
         pm.set_process_main_thread(process_id, thread_id);
     }
+
+    crate::kernel::interrupts::restore_interrupts(daif);
 }
 
 /// Terminate a process
 pub fn terminate_process(id: usize) {
+    // CRITICAL: Disable interrupts to prevent deadlock
+    let daif = crate::kernel::interrupts::disable_interrupts();
+
     if let Some(pm) = PROCESS_MANAGER.lock().as_mut() {
         pm.terminate_process(id);
     }
+
+    crate::kernel::interrupts::restore_interrupts(daif);
 }

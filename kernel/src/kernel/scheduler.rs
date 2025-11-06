@@ -309,6 +309,22 @@ unsafe impl Sync for Scheduler {}
 // Global scheduler instance
 pub static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler::new());
 
+/// Acquire SCHEDULER lock with interrupts disabled to prevent deadlock
+/// CRITICAL: Timer interrupts must not fire while holding SCHEDULER lock
+#[inline]
+pub fn lock_scheduler() -> (spin::MutexGuard<'static, Scheduler>, u64) {
+    let daif = crate::kernel::interrupts::disable_interrupts();
+    let guard = SCHEDULER.lock();
+    (guard, daif)
+}
+
+/// Release SCHEDULER lock and restore interrupt state
+#[inline]
+pub fn unlock_scheduler(guard: spin::MutexGuard<'static, Scheduler>, daif: u64) {
+    drop(guard);
+    crate::kernel::interrupts::restore_interrupts(daif);
+}
+
 /// Run pending threads cooperatively (called from main loop)
 /// Gives ready threads a time slice and then returns to caller
 pub fn run_pending_threads() {

@@ -23,8 +23,15 @@ pub fn sys_shm_create(size: usize) -> i64 {
     };
 
     crate::kernel::uart_write_string("[SHM] Step 3: Allocate memory\r\n");
+    // CRITICAL: Disable interrupts during large allocation to prevent allocator deadlock
+    // The global allocator's spin::Mutex doesn't disable interrupts, so if a timer
+    // interrupt fires during allocation, it could deadlock on ALLOCATOR lock
+    let daif = crate::kernel::interrupts::disable_interrupts();
+
     // Allocate physical memory for shared region
     let memory = vec![0u8; size].into_boxed_slice();
+
+    crate::kernel::interrupts::restore_interrupts(daif);
     crate::kernel::uart_write_string("[SHM] Step 4: Memory allocated!\r\n");
 
     crate::kernel::uart_write_string("[SHM] Step 5: Get pointer\r\n");
@@ -226,10 +233,17 @@ pub fn sys_recv_message(buf: *mut u8, len: usize, _timeout_ms: u32) -> i64 {
 
 /// Helper: Get current process ID
 fn get_current_process() -> Option<usize> {
+    // CRITICAL: Disable interrupts to prevent deadlock
+    let daif = crate::kernel::interrupts::disable_interrupts();
+
     let scheduler = crate::kernel::scheduler::SCHEDULER.lock();
-    scheduler.current_thread.and_then(|thread_id| {
+    let result = scheduler.current_thread.and_then(|thread_id| {
         scheduler.threads.iter()
             .find(|t| t.id == thread_id)
             .map(|t| t.process_id)
-    })
+    });
+
+    drop(scheduler);
+    crate::kernel::interrupts::restore_interrupts(daif);
+    result
 }

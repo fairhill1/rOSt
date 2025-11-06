@@ -13,6 +13,29 @@ pub fn get_current_exception_level() -> u8 {
     ((current_el >> 2) & 0b11) as u8
 }
 
+/// Disable IRQ interrupts and return previous DAIF state
+/// CRITICAL: Must be called before acquiring locks that might be accessed from interrupt context
+#[inline]
+pub fn disable_interrupts() -> u64 {
+    let daif: u64;
+    unsafe {
+        // Read current DAIF (interrupt mask flags)
+        asm!("mrs {}, daif", out(reg) daif);
+        // Set IRQ mask bit (bit 7 = IRQ mask, bit 1 in daifset immediate)
+        asm!("msr daifset, #2");
+    }
+    daif
+}
+
+/// Restore interrupt state from saved DAIF value
+/// CRITICAL: Must be called after releasing locks to restore interrupt state
+#[inline]
+pub fn restore_interrupts(daif: u64) {
+    unsafe {
+        asm!("msr daif, {}", in(reg) daif);
+    }
+}
+
 // Embed the exception vector table directly using global_asm
 global_asm!(include_str!("exception_vector.s"));
 

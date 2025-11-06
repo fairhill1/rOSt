@@ -1,6 +1,7 @@
 # TODO (in no specific order)
 
 - fatfs
+- reaper thread
 - process manager
 - browser improvements
 	- css parsing
@@ -36,3 +37,4 @@
 - syscalls
 - elf loader
 - shared function open_file_by_type for all file types for both double click and enter
+- IPC

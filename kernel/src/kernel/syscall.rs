@@ -605,12 +605,19 @@ fn sys_print_debug(msg: *const u8, len: usize) -> i64 {
 
 /// Get the current process from the scheduler
 fn get_current_process() -> Option<usize> {
+    // CRITICAL: Disable interrupts to prevent deadlock
+    let daif = crate::kernel::interrupts::disable_interrupts();
+
     let scheduler = crate::kernel::scheduler::SCHEDULER.lock();
-    scheduler.current_thread.and_then(|thread_id| {
+    let result = scheduler.current_thread.and_then(|thread_id| {
         scheduler.threads.iter()
             .find(|t| t.id == thread_id)
             .map(|t| t.process_id)
-    })
+    });
+
+    drop(scheduler);
+    crate::kernel::interrupts::restore_interrupts(daif);
+    result
 }
 
 /// Safely read a C-style null-terminated string from user space
@@ -1401,8 +1408,10 @@ pub fn sys_kill(pid: u64) -> i64 {
         return SyscallError::PermissionDenied.as_i64();
     }
 
-    // Terminate the process
-    crate::kernel::thread::terminate_process(pid as usize);
+    // Terminate the process and free its stack slot
+    // CRITICAL: Use mark_process_terminated() not terminate_process()
+    // to ensure stack slot is returned to free list for reuse
+    crate::kernel::thread::mark_process_terminated(pid as usize);
 
     crate::kernel::uart_write_string("[SYSCALL] kill() -> success\r\n");
     0 // Success
