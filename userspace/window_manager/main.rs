@@ -75,6 +75,7 @@ const TITLE_BAR_COLOR: u32 = 0xFF666666; // Gray when not focused
 const TITLE_BAR_FOCUSED_COLOR: u32 = 0xFF2D5C88; // Blue title bar
 const BORDER_COLOR: u32 = 0xFF1A1A1A; // Dark border
 const TEXT_COLOR: u32 = 0xFFFFFFFF; // White text
+const CLOSE_BUTTON_COLOR: u32 = 0xFFCC3333; // Red close button
 const MENU_BAR_COLOR: u32 = 0xFF2B2B2B; // Dark gray menu bar
 const MENU_ITEM_COLOR: u32 = 0xFF3D3D3D; // Menu item background
 const MENU_ITEM_HOVER_COLOR: u32 = 0xFF5D5D5D; // Menu item hover (brighter)
@@ -598,6 +599,14 @@ fn draw_window_chrome(window: &WindowState) {
     // Title text (simplified for now)
     let title_text = &window.title[..window.title_len.min(64)];
     draw_text(window.x + 5, window.y + 7, title_text, TEXT_COLOR);
+
+    // Draw close button (red square with X, vertically centered in title bar)
+    let btn_x = window.x + window.width as i32 - CLOSE_BUTTON_SIZE as i32 - 4;
+    let btn_y = window.y + ((TITLE_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2) as i32;
+    draw_rect(btn_x, btn_y, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_COLOR);
+
+    // Draw X in close button (centered)
+    draw_text(btn_x + 6, btn_y + 4, b"X", TEXT_COLOR);
 
     // Borders
     // Left
