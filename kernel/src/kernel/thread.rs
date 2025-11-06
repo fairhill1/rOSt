@@ -178,6 +178,7 @@ pub struct Process {
     pub socket_descriptors: crate::kernel::syscall::SocketDescriptorTable, // Network sockets
     pub message_queue: MessageQueue,   // IPC message queue
     pub shm_table: SharedMemoryTable,  // Shared memory regions
+    pub stack_index: Option<usize>,    // Stack slot index for user processes (for reclamation)
 }
 
 impl Process {
@@ -209,26 +210,28 @@ impl Process {
             socket_descriptors: crate::kernel::syscall::SocketDescriptorTable::new(),
             message_queue: MessageQueue::new(),
             shm_table: SharedMemoryTable::new(),
+            stack_index: None, // Kernel processes don't use fixed stack slots
         }
     }
 
     /// Create a new user process
-    pub fn new_user(id: usize) -> Self {
+    /// NOTE: This is called from ProcessManager, which doesn't have access to the full process list.
+    /// Stack allocation must be done in create_user_process() where we have access to the list.
+    pub fn new_user_with_stack_index(id: usize, stack_index: usize) -> Self {
         // Allocate user stack at fixed low physical address (identity-mapped in user page tables)
         // This is critical because user stacks must be accessible with user page tables
         let user_stack = unsafe {
-            let idx = NEXT_USER_STACK_INDEX;
-            if idx >= MAX_USER_PROCESSES {
-                panic!("Too many user processes!");
-            }
-            NEXT_USER_STACK_INDEX += 1;
-
             // Calculate address for this process's stack
-            let stack_addr = (USER_STACK_BASE + (idx as u64 * USER_STACK_SIZE as u64)) as *mut u8;
+            let stack_addr = (USER_STACK_BASE + (stack_index as u64 * USER_STACK_SIZE as u64)) as *mut u8;
 
             // DEBUG: Print stack allocation
             // REMOVED: alloc::format!() causes deadlock in syscall context
-            crate::kernel::uart_write_string("[PROCESS] User stack for process allocated\r\n");
+            crate::kernel::uart_write_string("[PROCESS] User stack for process allocated at slot ");
+            // Print stack index (0-7)
+            if stack_index < 10 {
+                core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + stack_index as u8);
+            }
+            crate::kernel::uart_write_string("\r\n");
 
             // Zero the stack memory
             core::ptr::write_bytes(stack_addr, 0, USER_STACK_SIZE);
@@ -255,6 +258,7 @@ impl Process {
             socket_descriptors: crate::kernel::syscall::SocketDescriptorTable::new(),
             message_queue: MessageQueue::new(),
             shm_table: SharedMemoryTable::new(),
+            stack_index: Some(stack_index), // Track stack slot for reclamation
         }
     }
 
@@ -663,11 +667,50 @@ impl ProcessManager {
     }
 
     /// Create a new user process
+    /// Reuses stack slots from terminated (zombie) processes when possible
     pub fn create_user_process(&mut self) -> usize {
         let process_id = self.next_process_id;
         self.next_process_id += 1;
 
-        let process = Process::new_user(process_id);
+        // CRITICAL FIX: Search for zombie processes and reuse their stack slots
+        // This prevents stack slot exhaustion when processes are spawned and killed repeatedly
+
+        // First, try to find a zombie process and reuse its stack slot
+        for zombie in &self.processes {
+            if zombie.state == ProcessState::Terminated && zombie.stack_index.is_some() {
+                let idx = zombie.stack_index.unwrap();
+                unsafe {
+                    crate::kernel::uart_write_string("[PROCESS] Reusing stack slot ");
+                    if idx < 10 {
+                        core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + idx as u8);
+                    }
+                    crate::kernel::uart_write_string(" from zombie process\r\n");
+                }
+                return self.create_user_process_with_stack_slot(process_id, idx);
+            }
+        }
+
+        // No zombie slots available - allocate a new one
+        let stack_index = unsafe {
+            let idx = NEXT_USER_STACK_INDEX;
+            if idx >= MAX_USER_PROCESSES {
+                panic!("Too many user processes! (All 8 slots in use, no zombies to reclaim)");
+            }
+            NEXT_USER_STACK_INDEX += 1;
+            crate::kernel::uart_write_string("[PROCESS] Allocating new stack slot ");
+            if idx < 10 {
+                core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + idx as u8);
+            }
+            crate::kernel::uart_write_string("\r\n");
+            idx
+        };
+
+        self.create_user_process_with_stack_slot(process_id, stack_index)
+    }
+
+    /// Helper to create a user process with a specific stack slot
+    fn create_user_process_with_stack_slot(&mut self, process_id: usize, stack_index: usize) -> usize {
+        let process = Process::new_user_with_stack_index(process_id, stack_index);
         self.processes.push(process);
 
         // REMOVED: alloc::format!() causes deadlock in syscall context
