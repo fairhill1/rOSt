@@ -605,8 +605,12 @@ fn draw_window_chrome(window: &WindowState) {
     let btn_y = window.y + ((TITLE_BAR_HEIGHT - CLOSE_BUTTON_SIZE) / 2) as i32;
     draw_rect(btn_x, btn_y, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE, CLOSE_BUTTON_COLOR);
 
-    // Draw X in close button (centered)
-    draw_text(btn_x + 6, btn_y + 4, b"X", TEXT_COLOR);
+    // Draw X in close button (centered - font is 8x8 scaled 2x = 16x16, button is 18x18)
+    const CHAR_WIDTH: i32 = 16;
+    const CHAR_HEIGHT: i32 = 16;
+    let x_x = btn_x + ((CLOSE_BUTTON_SIZE as i32 - CHAR_WIDTH) / 2);
+    let x_y = btn_y + ((CLOSE_BUTTON_SIZE as i32 - CHAR_HEIGHT) / 2) + 1; // +1px for better visual centering
+    draw_text(x_x, x_y, b"X", TEXT_COLOR);
 
     // Borders
     // Left
