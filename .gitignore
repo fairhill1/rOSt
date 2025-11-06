@@ -8,6 +8,9 @@ Cargo.lock
 # Persistent disk images
 test_disk.img
 
+# Documentation (reference materials, not project docs)
+/docs/
+
 # IDE files
 .vscode/
 .idea/
