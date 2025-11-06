@@ -6,9 +6,14 @@ use librost::*;
 use librost::ipc_protocol::*;
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 // Bump allocator for userspace
 const HEAP_SIZE: usize = 256 * 1024; // 256KB heap (larger than WM since we store console buffer + command history)
+
+// Store colors as separate atomics to prevent compiler optimization issues
+static FG_COLOR: AtomicU32 = AtomicU32::new(0xFFFFFFFF); // White text
+static BG_COLOR: AtomicU32 = AtomicU32::new(0xFF000000); // Black background
 
 struct BumpAllocator {
     heap: UnsafeCell<[u8; HEAP_SIZE]>,
@@ -64,8 +69,6 @@ struct Console {
     buffer: [[u8; CONSOLE_WIDTH]; CONSOLE_HEIGHT],
     cursor_x: usize,
     cursor_y: usize,
-    fg_color: u32,
-    bg_color: u32,
 }
 
 impl Console {
@@ -74,8 +77,6 @@ impl Console {
             buffer: [[b' '; CONSOLE_WIDTH]; CONSOLE_HEIGHT],
             cursor_x: 0,
             cursor_y: 0,
-            fg_color: 0xFFFFFFFF, // White text
-            bg_color: 0xFF000000, // Black background
         }
     }
 
@@ -97,7 +98,9 @@ impl Console {
                 // Backspace
                 if self.cursor_x > 0 {
                     self.cursor_x -= 1;
-                    self.buffer[self.cursor_y][self.cursor_x] = b' ';
+                    unsafe {
+                        core::ptr::write_volatile(&mut self.buffer[self.cursor_y][self.cursor_x], b' ');
+                    }
                 }
             }
             _ => {
@@ -110,7 +113,10 @@ impl Console {
                         self.cursor_y = CONSOLE_HEIGHT - 1;
                     }
                 }
-                self.buffer[self.cursor_y][self.cursor_x] = ch;
+                // Use volatile write to prevent compiler optimization
+                unsafe {
+                    core::ptr::write_volatile(&mut self.buffer[self.cursor_y][self.cursor_x], ch);
+                }
                 self.cursor_x += 1;
             }
         }
@@ -141,13 +147,55 @@ impl Console {
     /// Render console to a pixel buffer (ARGB format)
     /// buffer_width and buffer_height are in pixels
     fn render_to_buffer(&self, pixel_buffer: &mut [u32], buffer_width: usize, buffer_height: usize) {
+        let bg_color = BG_COLOR.load(Ordering::SeqCst);
+        let fg_color = FG_COLOR.load(Ordering::SeqCst);
+
         // Clear to background color
         for pixel in pixel_buffer.iter_mut() {
-            *pixel = self.bg_color;
+            *pixel = bg_color;
         }
 
-        // TODO: Render text characters using bitmap font
-        // For now, just show black background to verify window works
+        // Draw console text using bitmap font
+        for y in 0..CONSOLE_HEIGHT {
+            let line_y = (y as i32) * LINE_HEIGHT as i32;
+
+            // Draw each character in this line
+            for x in 0..CONSOLE_WIDTH {
+                let ch = self.buffer[y][x];
+                if ch != b' ' {
+                    let char_x = (x as i32) * CHAR_WIDTH as i32;
+                    librost::graphics::draw_char(
+                        pixel_buffer,
+                        buffer_width,
+                        buffer_height,
+                        char_x,
+                        line_y,
+                        ch,
+                        fg_color
+                    );
+                }
+            }
+        }
+
+        // Draw cursor (solid block)
+        if self.cursor_x < CONSOLE_WIDTH && self.cursor_y < CONSOLE_HEIGHT {
+            let cursor_x = (self.cursor_x as i32) * CHAR_WIDTH as i32;
+            let cursor_y = (self.cursor_y as i32) * LINE_HEIGHT as i32;
+
+            // Draw a filled rectangle for the cursor
+            for dy in 0..CHAR_HEIGHT {
+                for dx in 0..CHAR_WIDTH {
+                    let px = cursor_x + dx as i32;
+                    let py = cursor_y + dy as i32;
+                    if px >= 0 && px < buffer_width as i32 && py >= 0 && py < buffer_height as i32 {
+                        let idx = (py as usize * buffer_width) + px as usize;
+                        if idx < pixel_buffer.len() {
+                            pixel_buffer[idx] = 0xFF00FF00; // Green cursor
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -158,12 +206,23 @@ pub extern "C" fn _start() -> ! {
     print_debug("=== rOSt Terminal (EL0) ===\r\n");
     print_debug("Initializing...\r\n");
 
-    // Initialize console (DISABLED - causes panic with bump allocator)
-    // unsafe {
-    //     CONSOLE.write_string("rOSt Terminal v0.1\r\n");
-    //     CONSOLE.write_string("Type 'help' for available commands\r\n");
-    //     CONSOLE.write_string("\r\n> ");
-    // }
+    // Explicitly initialize console state
+    unsafe {
+        // Clear buffer with volatile writes to ensure it actually happens
+        for y in 0..CONSOLE_HEIGHT {
+            for x in 0..CONSOLE_WIDTH {
+                core::ptr::write_volatile(&mut CONSOLE.buffer[y][x], b' ');
+            }
+        }
+
+        // Reset cursor to known position
+        CONSOLE.cursor_x = 0;
+        CONSOLE.cursor_y = 0;
+
+        CONSOLE.write_string("rOSt Terminal v0.1\n");
+        CONSOLE.write_string("Type commands or text here\n");
+        CONSOLE.write_string("\n> ");
+    }
 
     // Don't create buffer at startup - wait for WM to tell us our dimensions
     // This avoids creating a full-screen buffer that immediately gets resized
@@ -205,6 +264,8 @@ pub extern "C" fn _start() -> ! {
 
     // Wait for WM to send WindowCreated with buffer info
     let mut pixel_buffer: &mut [u32] = &mut [];
+    let mut buffer_width: usize = 0;
+    let mut buffer_height: usize = 0;
 
     // Main event loop - wait for WindowCreated, then handle events
     print_debug("Terminal: Entering event loop\r\n");
@@ -230,6 +291,10 @@ pub extern "C" fn _start() -> ! {
 
                             print_debug("Terminal: Buffer mapped successfully\r\n");
 
+                            // Store buffer dimensions
+                            buffer_width = width as usize;
+                            buffer_height = height as usize;
+
                             // Create slice from mapped buffer
                             pixel_buffer = unsafe {
                                 core::slice::from_raw_parts_mut(
@@ -242,8 +307,8 @@ pub extern "C" fn _start() -> ! {
                             unsafe {
                                 CONSOLE.render_to_buffer(
                                     pixel_buffer,
-                                    width as usize,
-                                    height as usize
+                                    buffer_width,
+                                    buffer_height
                                 );
                             }
 
@@ -263,8 +328,28 @@ pub extern "C" fn _start() -> ! {
                         }
                     }
                     WMToKernel::RouteInput { event, .. } => {
-                        print_debug("Terminal: Received input event\r\n");
-                        // TODO: Handle input events
+                        // Handle keyboard input
+                        if event.event_type == 1 { // KeyPressed
+                            let ch = event.key;
+
+                            unsafe {
+                                CONSOLE.write_char(ch);
+
+                                // Re-render to buffer
+                                CONSOLE.render_to_buffer(
+                                    pixel_buffer,
+                                    buffer_width,
+                                    buffer_height
+                                );
+                            }
+
+                            // Request WM to redraw
+                            let redraw_msg = KernelToWM::RequestRedraw {
+                                id: my_pid,
+                            };
+                            let msg_bytes = redraw_msg.to_bytes();
+                            send_message(wm_pid, &msg_bytes);
+                        }
                     }
                     _ => {
                         // Ignore other messages

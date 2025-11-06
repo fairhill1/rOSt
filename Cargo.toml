@@ -6,8 +6,6 @@ members = [
     "image_codecs",
     "userspace/terminal",
     "userspace/image_viewer",
-    "userspace/ipc_sender",
-    "userspace/ipc_receiver",
     "userspace/csv_viewer",
     "userspace/window_manager",
 ]
