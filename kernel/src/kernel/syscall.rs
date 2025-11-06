@@ -1382,7 +1382,7 @@ fn sys_spawn_elf(path: *const u8, path_len: usize) -> i64 {
     pid as i64
 }
 
-fn sys_kill(pid: u64) -> i64 {
+pub fn sys_kill(pid: u64) -> i64 {
     crate::kernel::uart_write_string("[SYSCALL] kill(pid=");
     if pid < 10 {
         unsafe {

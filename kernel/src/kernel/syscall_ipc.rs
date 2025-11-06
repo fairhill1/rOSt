@@ -60,31 +60,12 @@ pub fn sys_shm_create(size: usize) -> i64 {
 /// Map a shared memory region into process address space
 /// Returns: virtual address on success, negative error code on failure
 pub fn sys_shm_map(shm_id: i32) -> i64 {
-    crate::kernel::uart_write_string("[SYSCALL] shm_map(id=");
-    if shm_id < 10 {
-        unsafe {
-            core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + shm_id as u8);
-        }
-    }
-    crate::kernel::uart_write_string(")\r\n");
-
     // CRITICAL: Search ALL processes for the shared memory region
     // Shared memory is meant to be shared across processes!
     if let Some(physical_addr) = crate::kernel::thread::find_shared_memory(shm_id) {
-        crate::kernel::uart_write_string("[SYSCALL] shm_map() -> 0x");
-        // Print hex address
-        let hex_chars = b"0123456789ABCDEF";
-        for i in (0..16).rev() {
-            let digit = (physical_addr >> (i * 4)) & 0xF;
-            unsafe {
-                core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[digit as usize]);
-            }
-        }
-        crate::kernel::uart_write_string("\r\n");
         physical_addr as i64
     } else {
         // Not found in any process
-        crate::kernel::uart_write_string("[SYSCALL] shm_map() -> not found\r\n");
         SyscallError::InvalidArgument.as_i64()
     }
 }

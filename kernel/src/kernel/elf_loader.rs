@@ -216,9 +216,6 @@ fn apply_relocations(elf: &Elf, loaded_memory: &mut [u8], loaded_base: u64, elf_
     let load_offset = loaded_base.wrapping_sub(elf_base_vaddr);
 
     crate::kernel::uart_write_string("[RELOC] Processing relocations\r\n");
-    crate::kernel::uart_write_string("[RELOC] Load offset calculated\r\n");
-    crate::kernel::uart_write_string("[RELOC] ELF base vaddr checked\r\n");
-    crate::kernel::uart_write_string("[RELOC] Loaded base confirmed\r\n");
 
     // Count dynamic relocations
     crate::kernel::uart_write_string("[RELOC] Dynamic relocations (dynrelas): ");
@@ -234,7 +231,7 @@ fn apply_relocations(elf: &Elf, loaded_memory: &mut [u8], loaded_base: u64, elf_
 
     // Process dynamic relocations (.rela.dyn) - for dynamically linked binaries
     for reloc in &elf.dynrelas {
-        if apply_single_relocation(reloc.r_type, reloc.r_offset, reloc.r_addend.unwrap_or(0),
+        if apply_single_relocation(reloc.r_type, reloc.r_offset, reloc.r_addend.unwrap_or(0), 0,
                                    loaded_memory, load_offset, elf_base_vaddr) {
             total_relocs_applied += 1;
         }
@@ -247,9 +244,41 @@ fn apply_relocations(elf: &Elf, loaded_memory: &mut [u8], loaded_base: u64, elf_
         print_number(reloc_section.len());
         crate::kernel::uart_write_string(" entries\r\n");
 
+        let mut debug_count = 0;
         for reloc in reloc_section.iter() {
             let r_addend = reloc.r_addend.unwrap_or(0);
-            if apply_single_relocation(reloc.r_type, reloc.r_offset, r_addend,
+
+            // Look up symbol value using goblin's syms table
+            let symbol_value = if let Some(sym) = elf.syms.get(reloc.r_sym) {
+                // For section symbols, st_value is often 0 and we need to look up the section address
+                if sym.st_value == 0 && sym.st_shndx != 0 && sym.st_shndx < elf.section_headers.len() {
+                    // Section symbol - use section's sh_addr
+                    elf.section_headers[sym.st_shndx].sh_addr
+                } else {
+                    // Regular symbol - use st_value directly
+                    sym.st_value
+                }
+            } else {
+                0  // Unknown symbol, assume 0
+            };
+
+            // Debug first few relocations
+            if debug_count < 3 {
+                crate::kernel::uart_write_string("[RELOC DEBUG] offset=");
+                print_hex(reloc.r_offset);
+                crate::kernel::uart_write_string(" type=");
+                print_number(reloc.r_type as usize);
+                crate::kernel::uart_write_string(" sym=");
+                print_number(reloc.r_sym as usize);
+                crate::kernel::uart_write_string(" symval=");
+                print_hex(symbol_value);
+                crate::kernel::uart_write_string(" addend=");
+                print_hex(r_addend as u64);
+                crate::kernel::uart_write_string("\r\n");
+                debug_count += 1;
+            }
+
+            if apply_single_relocation(reloc.r_type, reloc.r_offset, r_addend, symbol_value,
                                        loaded_memory, load_offset, elf_base_vaddr) {
                 total_relocs_applied += 1;
             }
@@ -269,6 +298,7 @@ fn apply_single_relocation(
     r_type: u32,
     r_offset: u64,
     r_addend: i64,
+    symbol_value: u64,
     loaded_memory: &mut [u8],
     load_offset: u64,
     elf_base_vaddr: u64,
@@ -297,7 +327,7 @@ fn apply_single_relocation(
         R_AARCH64_ABS64 => {
             // S + A (symbol value + addend)
             // Absolute 64-bit address that needs adjustment for load offset
-            let value = load_offset.wrapping_add(r_addend as u64);
+            let value = symbol_value.wrapping_add(r_addend as u64).wrapping_add(load_offset);
 
             let bytes = value.to_le_bytes();
             loaded_memory[offset_in_buffer..offset_in_buffer + 8].copy_from_slice(&bytes);
@@ -307,12 +337,61 @@ fn apply_single_relocation(
             // These need symbol table lookup - skip for now
             false
         }
-        275 | 277 | 283 | 285 | 286 => {
-            // PC-relative instruction relocations (ADRP, ADD, LDR/STR)
-            // For statically-linked binaries, these are already correctly resolved by the linker
-            // The code is position-independent - PC-relative offsets don't need adjustment
-            // Skip these to avoid corrupting already-correct instructions
-            true  // Return true to count as "processed" but don't modify anything
+        275 => {
+            // R_AARCH64_ADR_PREL_PG_HI21 - ADRP instruction
+            // IMPORTANT: Linker may optimize ADRP to ADR or NOP if target is close
+            // Check if instruction is actually ADRP before patching
+
+            // Read current instruction
+            let insn_orig = u32::from_le_bytes([
+                loaded_memory[offset_in_buffer],
+                loaded_memory[offset_in_buffer + 1],
+                loaded_memory[offset_in_buffer + 2],
+                loaded_memory[offset_in_buffer + 3],
+            ]);
+
+            // ADRP instruction encoding: bits [31:24] must match x_x_10000 pattern
+            // Valid ADRP opcodes: 0x90, 0xB0, 0xD0, 0xF0 (bit 31 varies, bits [30:24] = x_010000)
+            let opcode = (insn_orig >> 24) & 0xFF;
+            let is_adrp = (opcode & 0x9F) == 0x90;
+
+            if !is_adrp {
+                // Not an ADRP - linker optimized it (probably ADR or NOP)
+                // Skip patching - instruction is already correct
+                return true;
+            }
+
+            // Calculate PC address (where instruction is actually loaded)
+            let loaded_base = load_offset.wrapping_add(elf_base_vaddr);
+            let pc = loaded_base.wrapping_add(r_offset.wrapping_sub(elf_base_vaddr));
+
+            // Calculate target address (S+A from ELF, adjusted for load offset)
+            let target = symbol_value.wrapping_add(r_addend as u64).wrapping_add(load_offset);
+
+            // Calculate page-aligned addresses (pages are 4KB = 0x1000)
+            let pc_page = pc & !0xFFF;
+            let target_page = target & !0xFFF;
+
+            // Calculate page difference (signed, in 4KB pages)
+            let page_diff = ((target_page as i64).wrapping_sub(pc_page as i64)) >> 12;
+
+            // ADRP encoding: 21-bit signed offset split across instruction
+            // immlo (2 bits) in bits [30:29], immhi (19 bits) in bits [23:5]
+            let page_offset = page_diff as u32;
+            let immlo = page_offset & 0x3;
+            let immhi = (page_offset >> 2) & 0x7FFFF;
+
+            // Clear old immediate bits [30:29] and [23:5], then set new values
+            let insn = (insn_orig & 0x9F00001F) | (immlo << 29) | (immhi << 5);
+
+            // Write patched instruction back
+            loaded_memory[offset_in_buffer..offset_in_buffer + 4].copy_from_slice(&insn.to_le_bytes());
+            true
+        }
+        277 | 283 | 285 | 286 => {
+            // ADD/LDR/STR relocations - these are absolute address low bits
+            // Skip for now - if ADRP works, these should work too
+            true
         }
         _ => {
             // Skip unknown types silently
@@ -340,6 +419,25 @@ fn print_number(mut n: usize) {
     while i > 0 {
         i -= 1;
         let ch = [buf[i]];
+        if let Ok(s) = core::str::from_utf8(&ch) {
+            crate::kernel::uart_write_string(s);
+        }
+    }
+}
+
+/// Print a hex number to UART without heap allocations
+fn print_hex(mut n: u64) {
+    crate::kernel::uart_write_string("0x");
+    let mut buf = [0u8; 16];
+    for i in 0..16 {
+        buf[15 - i] = match (n & 0xF) as u8 {
+            d @ 0..=9 => b'0' + d,
+            d => b'A' + (d - 10),
+        };
+        n >>= 4;
+    }
+    for &b in &buf {
+        let ch = [b];
         if let Ok(s) = core::str::from_utf8(&ch) {
             crate::kernel::uart_write_string(s);
         }

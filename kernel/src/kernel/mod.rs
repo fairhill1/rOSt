@@ -392,8 +392,31 @@ fn kernel_gui_thread() {
                         break; // No more messages
                     }
 
-                    // WM responded! Currently WM only sends NoAction (it spawns apps itself)
-                    // In future, WM might request kernel services here
+                    // Handle WM response
+                    match response_buf[0] {
+                        1 => {
+                            // RequestFocus - WM wants to change window focus
+                            let window_id = usize::from_le_bytes([
+                                response_buf[1], response_buf[2], response_buf[3], response_buf[4],
+                                response_buf[5], response_buf[6], response_buf[7], response_buf[8],
+                            ]);
+                            uart_write_string("[KERNEL] Got RequestFocus, sending SetFocus\r\n");
+                            // Send SetFocus message back to WM
+                            let mut msg_buf = [0u8; 256];
+                            msg_buf[0] = 3; // KernelToWM::SetFocus type
+                            msg_buf[1..9].copy_from_slice(&window_id.to_le_bytes());
+                            let _ = kernel_send_message(wm_pid as u32, &msg_buf);
+                        }
+                        2 => {
+                            // RequestClose - WM wants to kill a window
+                            let window_id = usize::from_le_bytes([
+                                response_buf[1], response_buf[2], response_buf[3], response_buf[4],
+                                response_buf[5], response_buf[6], response_buf[7], response_buf[8],
+                            ]);
+                            syscall::sys_kill(window_id as u64);
+                        }
+                        _ => {} // NoAction or unknown
+                    }
                 }
             }
         }

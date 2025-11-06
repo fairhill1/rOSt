@@ -361,31 +361,52 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
 
             return WMToKernel::NoAction;
         }
+
+        print_debug("CHECK_WINDOW...");
         if let Some(window_id) = find_window_at(click_x, click_y) {
+            print_debug("WINDOW_HIT!");
+            if window_id == 0 {
+                print_debug("WID=0!");
+            } else if window_id == 1 {
+                print_debug("WID=1!");
+            } else if window_id == 2 {
+                print_debug("WID=2!");
+            } else {
+                print_debug("WID=OTHER!");
+            }
+
             // Find window index
             let count = WINDOW_COUNT.load(Ordering::SeqCst);
+            print_debug("LOOP_START:");
             for i in 0..count {
                 let window = unsafe { &mut WINDOWS[i] };
+                print_debug("CHK_");
                 if window.id == window_id {
+                    print_debug("MATCH!");
+
                     // Check if click is on close button first
                     if is_in_close_button(window, click_x, click_y) {
+                        print_debug("CLOSE_BTN!");
                         // Request window close
                         return WMToKernel::RequestClose { window_id };
                     }
 
-                    // Check if click is in title bar (for focus/drag)
-                    if is_in_title_bar(window, click_x, click_y) {
-                        // Request focus change
+                    // If window is not focused, focus it first (consume the click)
+                    if !window.focused {
+                        print_debug("NOT_FOCUSED->FOCUS!");
                         return WMToKernel::RequestFocus { window_id };
                     }
 
-                    // Route input to window
+                    // Window is already focused, route input to it
+                    print_debug("ROUTE_INPUT!");
                     return WMToKernel::RouteInput {
                         window_id,
                         event,
                     };
                 }
             }
+        } else {
+            print_debug("NO_WINDOW_FOUND!");
         }
     }
 
@@ -607,17 +628,6 @@ fn redraw_all() {
 
     // Composite window content from shared memory, then draw chrome
     let count = WINDOW_COUNT.load(Ordering::SeqCst);
-    if count == 0 {
-        print_debug("[WM] redraw_all: count=0\r\n");
-    } else if count == 1 {
-        print_debug("[WM] redraw_all: count=1\r\n");
-    } else if count == 2 {
-        print_debug("[WM] redraw_all: count=2\r\n");
-    } else if count == 3 {
-        print_debug("[WM] redraw_all: count=3\r\n");
-    } else {
-        print_debug("[WM] redraw_all: count>3\r\n");
-    }
 
     for i in 0..count {
         // print_debug("[WM] redraw_all: Compositing window\r\n");
@@ -637,13 +647,7 @@ fn redraw_all() {
         // Composite window content from shared memory
         // WM owns all buffers, so just map with regular shm_map
         let shm_id = window.shm_id;
-        print_debug("[WM] Mapping WM-owned buffer\r\n");
         let shm_ptr = shm_map(shm_id);
-        if shm_ptr.is_null() {
-            print_debug("[WM] shm_ptr is NULL\r\n");
-        } else {
-            print_debug("[WM] shm_ptr OK\r\n");
-        }
 
         // If shared memory mapping fails, hide window (process likely died)
         if shm_ptr.is_null() {
@@ -662,12 +666,10 @@ fn redraw_all() {
             let content_width = window.width.saturating_sub(BORDER_WIDTH * 2);
             let content_height = window.height.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH);
 
-            print_debug("[WM] Creating slice\r\n");
             // Copy pixels from shared memory to framebuffer
             let src_buffer = unsafe {
                 core::slice::from_raw_parts(shm_ptr as *const u32, (content_width * content_height) as usize)
             };
-            print_debug("[WM] Slice created\r\n");
 
             let fb_w = FB_WIDTH.load(Ordering::SeqCst) as usize;
             let fb_h = FB_HEIGHT.load(Ordering::SeqCst) as usize;
@@ -1015,8 +1017,12 @@ fn handle_set_focus(id: usize) {
     let count = WINDOW_COUNT.load(Ordering::SeqCst);
 
     for i in 0..count {
-        let window = unsafe { &mut WINDOWS[i] };
+        // Use volatile read/write to prevent compiler optimization
+        let mut window = unsafe { core::ptr::read_volatile(&WINDOWS[i]) };
         window.focused = window.id == id;
+        unsafe {
+            core::ptr::write_volatile(&mut WINDOWS[i], window);
+        }
     }
 }
 
@@ -1072,7 +1078,11 @@ pub extern "C" fn _start() -> ! {
         // CRITICAL: Drain ALL pending messages before processing
         // This prevents queue overflow when kernel sends many mouse move events
         let mut messages_processed = 0;
-        let mut need_redraw = false;
+
+        // Use AtomicBool to prevent compiler optimization in release mode
+        // Without this, the compiler optimizes away the variable thinking it's never read
+        use core::sync::atomic::{AtomicBool, Ordering};
+        let need_redraw = AtomicBool::new(false);
 
         loop {
             let mut buf = [0u8; 256];
@@ -1102,25 +1112,31 @@ pub extern "C" fn _start() -> ! {
                             break; // Exit inner loop, will yield at outer loop
                         }
 
-                        need_redraw = true;
+                        // Only redraw for events that change visual state
+                        // Mouse moves don't need redraw - cursor position is tracked in atomics
+                        // and menu hover is calculated during render
+                        if event.event_type != 3 {  // 3 = MouseMove
+                            need_redraw.store(true, Ordering::SeqCst);
+                        }
                     }
                     KernelToWM::CreateWindow { id, x, y, width, height, title, title_len } => {
-                        print_debug("CreateWindow\r\n");
                         handle_create_window(id, x, y, width, height, title, title_len);
-                        need_redraw = true;
+                        need_redraw.store(true, Ordering::SeqCst);
                     }
                     KernelToWM::CloseWindow { id } => {
                         handle_close_window(id);
-                        need_redraw = true;
+                        need_redraw.store(true, Ordering::SeqCst);
                     }
                     KernelToWM::SetFocus { id } => {
-                        print_debug("SetFocus\r\n");
+                        print_debug("WM:GOT_SETFOCUS!");
                         handle_set_focus(id);
-                        need_redraw = true;
+                        print_debug("WM:FOCUS_UPDATED!");
+                        need_redraw.store(true, Ordering::SeqCst);
+                        print_debug("WM:REDRAW_SET!");
                     }
                     KernelToWM::RequestRedraw { id: _ } => {
                         // Terminal updated its buffer content, trigger redraw
-                        need_redraw = true;
+                        need_redraw.store(true, Ordering::SeqCst);
                     }
                 }
             } else {
@@ -1134,14 +1150,11 @@ pub extern "C" fn _start() -> ! {
         }
 
         // Redraw once after processing all messages
-        if need_redraw {
-            print_debug("[WM] need_redraw=true, calling redraw_all()\r\n");
+        if need_redraw.load(Ordering::SeqCst) {
+            print_debug("WM:REDRAWING!");
             redraw_all();
-            print_debug("[WM] redraw_all() completed, flushing\r\n");
             fb_flush();
-            print_debug("[WM] fb_flush() completed\r\n");
-        } else {
-            print_debug("[WM] need_redraw=false, skipping redraw\r\n");
+            print_debug("WM:REDRAW_DONE!");
         }
 
         // CRITICAL: ALWAYS yield, even if no redraw

@@ -1,0 +1,23 @@
+# LLDB script to debug the freeze
+gdb-remote localhost:1234
+
+# Show current registers
+register read
+
+# Show current instruction and next 20
+disassemble -c 20 -p
+
+# Show current thread
+thread info
+
+# Show all threads
+thread list
+
+# Instructions for manual inspection
+script print("\n=== DEBUGGING COMMANDS ===")
+script print("memory read -c 100 $sp      # Show stack")
+script print("register read pc            # Show program counter")
+script print("disassemble -n redraw_all   # Find redraw_all function")
+script print("c                           # Continue execution")
+script print("si                          # Step one instruction")
+script print("bt                          # Backtrace")

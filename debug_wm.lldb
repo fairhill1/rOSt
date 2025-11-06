@@ -1,0 +1,25 @@
+# LLDB script to debug window manager relocations
+gdb-remote localhost:1234
+
+# Wait for WM to load (it loads after boot)
+# You'll need to continue execution first, then Ctrl+C to break
+
+# Show where the WM was loaded
+script print("\n=== Find WM base address ===")
+script print("Look for '[ELF] Loaded' messages in serial output")
+script print("The address shown is where WM memory starts")
+
+# After you find the base address from serial output, use these commands:
+# x/100x BASE_ADDRESS                    # Show first 100 bytes of WM
+# x/s BASE_ADDRESS+OFFSET                # Show string at offset
+# disassemble -s BASE_ADDRESS -c 20      # Disassemble WM code
+
+# To find MENU_ITEMS array:
+# 1. Check serial output for WM load address (e.g., 0x7a68bb48)
+# 2. Look at .rodata section in ELF:
+#    llvm-objdump -D target/aarch64-unknown-none/release/window_manager | grep -A 20 MENU_ITEMS
+
+script print("\n=== MANUAL STEPS ===")
+script print("1. In serial output, find: '[ELF] Loaded N bytes at 0xADDRESS'")
+script print("2. x/100x ADDRESS       # Inspect loaded memory")
+script print("3. Compare with ELF file to see if relocations are correct")
