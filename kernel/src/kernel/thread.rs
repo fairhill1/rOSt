@@ -171,7 +171,7 @@ pub struct Process {
     pub id: usize,
     pub state: ProcessState,
     pub process_type: ProcessType,
-    pub user_stack: Option<Box<[u8]>>, // User stack for EL0 processes
+    pub user_stack_addr: Option<u64>, // FIXED address for user stack (at USER_STACK_BASE + slot * size)
     pub kernel_stack: Box<[u8]>,      // Kernel stack for syscalls
     pub main_thread_id: Option<usize>, // Reference to main thread by ID
     pub file_descriptors: crate::kernel::filedesc::FileDescriptorTable, // Open files
@@ -203,7 +203,7 @@ impl Process {
             id,
             state: ProcessState::Created,
             process_type: ProcessType::Kernel,
-            user_stack: None,
+            user_stack_addr: None,
             kernel_stack,
             main_thread_id: None,
             file_descriptors: crate::kernel::filedesc::FileDescriptorTable::new(),
@@ -218,40 +218,33 @@ impl Process {
     /// NOTE: This is called from ProcessManager, which doesn't have access to the full process list.
     /// Stack allocation must be done in create_user_process() where we have access to the list.
     pub fn new_user_with_stack_index(id: usize, stack_index: usize) -> Self {
-        // Allocate user stack at fixed low physical address (identity-mapped in user page tables)
-        // This is critical because user stacks must be accessible with user page tables
-        let user_stack = unsafe {
-            // Calculate address for this process's stack
-            let stack_addr = (USER_STACK_BASE + (stack_index as u64 * USER_STACK_SIZE as u64)) as *mut u8;
+        // Calculate fixed address for user stack (identity-mapped in user page tables)
+        // CRITICAL: Don't use Box here - these are pre-allocated fixed regions!
+        let stack_addr = USER_STACK_BASE + (stack_index as u64 * USER_STACK_SIZE as u64);
 
+        unsafe {
             // DEBUG: Print stack allocation
-            // REMOVED: alloc::format!() causes deadlock in syscall context
             crate::kernel::uart_write_string("[PROCESS] User stack for process allocated at slot ");
-            // Print stack index (0-7)
             if stack_index < 10 {
                 core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + stack_index as u8);
             }
             crate::kernel::uart_write_string("\r\n");
 
-            // Zero the stack memory
-            core::ptr::write_bytes(stack_addr, 0, USER_STACK_SIZE);
-
-            // Create a Box from this fixed address (never actually freed)
-            Box::from_raw(core::slice::from_raw_parts_mut(stack_addr, USER_STACK_SIZE))
-        };
+            // Zero the stack memory (reusing slot from terminated process)
+            core::ptr::write_bytes(stack_addr as *mut u8, 0, USER_STACK_SIZE);
+        }
 
         // Allocate kernel stack for syscalls (from heap is fine - always accessed at EL1)
         let kernel_stack = vec![0u8; STACK_SIZE].into_boxed_slice();
 
         // DEBUG: Print kernel stack allocation
-        // REMOVED: alloc::format!() causes deadlock in syscall context
         crate::kernel::uart_write_string("[PROCESS] Kernel stack for user process allocated\r\n");
 
         Process {
             id,
             state: ProcessState::Created,
             process_type: ProcessType::User,
-            user_stack: Some(user_stack),
+            user_stack_addr: Some(stack_addr),
             kernel_stack,
             main_thread_id: None,
             file_descriptors: crate::kernel::filedesc::FileDescriptorTable::new(),
@@ -269,15 +262,12 @@ impl Process {
     }
 
     /// Get user stack top address (for EL0 processes)
-    /// CRITICAL: Converts kernel virtual address to user-accessible address
-    /// by masking off the high-half bits (0xFFFF... → 0x0000...)
+    /// Returns the top of the fixed user stack (already in low/user address space)
     pub fn get_user_stack_top(&self) -> Option<u64> {
-        self.user_stack.as_ref().map(|stack| {
-            let kernel_virt_addr = stack.as_ptr() as u64 + stack.len() as u64;
-            // Convert kernel virtual address (0xFFFF_FF00_xxxx_xxxx) to user physical address
-            // by masking to only keep low 48 bits (same as entry point conversion)
-            let user_addr = kernel_virt_addr & 0x0000_FFFF_FFFF_FFFF;
-            user_addr & !0xF // 16-byte alignment
+        self.user_stack_addr.map(|addr| {
+            // Stack grows down, so top is base + size
+            let stack_top = addr + USER_STACK_SIZE as u64;
+            stack_top & !0xF // 16-byte alignment
         })
     }
 }
@@ -657,59 +647,6 @@ impl ProcessManager {
         }
     }
 
-    /// Clean up zombie processes to reclaim memory
-    /// Removes processes that have been terminated for "long enough"
-    /// CRITICAL: Only call this when NOT on a zombie's stack!
-    pub fn reap_zombies(&mut self) {
-        // Simple heuristic: keep only the last 10 processes, remove older zombies
-        // This prevents unbounded memory growth from zombie accumulation
-        let mut alive_count = 0;
-        let mut zombie_count = 0;
-
-        // Count alive and zombie processes
-        for process in &self.processes {
-            if process.state == ProcessState::Terminated {
-                zombie_count += 1;
-            } else {
-                alive_count += 1;
-            }
-        }
-
-        // If we have more than 10 zombies, remove the oldest ones
-        if zombie_count > 10 {
-            let to_remove = zombie_count - 10;
-            let mut removed = 0;
-
-            // Remove oldest zombies (lowest PIDs)
-            self.processes.retain(|p| {
-                if removed < to_remove && p.state == ProcessState::Terminated {
-                    unsafe {
-                        crate::kernel::uart_write_string("[REAPER] Removing zombie PID ");
-                        if p.id < 100 {
-                            if p.id >= 10 {
-                                core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + (p.id / 10) as u8);
-                            }
-                            core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + (p.id % 10) as u8);
-                        }
-                        crate::kernel::uart_write_string("\r\n");
-                    }
-                    removed += 1;
-                    false // Remove this process
-                } else {
-                    true // Keep this process
-                }
-            });
-
-            crate::kernel::uart_write_string("[REAPER] Reaped ");
-            unsafe {
-                if removed < 10 {
-                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + removed as u8);
-                }
-            }
-            crate::kernel::uart_write_string(" zombies\r\n");
-        }
-    }
-
     /// Create a new kernel process
     pub fn create_kernel_process(&mut self) -> usize {
         let process_id = self.next_process_id;
@@ -790,12 +727,49 @@ impl ProcessManager {
     }
 
     /// Helper to create a user process with a specific stack slot
+    /// CRITICAL: Recycles zombie Processes instead of dropping them to avoid heap fragmentation!
     fn create_user_process_with_stack_slot(&mut self, process_id: usize, stack_index: usize) -> usize {
+        // Try to find an existing zombie at this stack slot to RECYCLE
+        if let Some(zombie) = self.processes.iter_mut().find(|p|
+            p.state == ProcessState::Terminated && p.stack_index == Some(stack_index)
+        ) {
+            // RECYCLE the zombie! Reset all fields but REUSE the kernel_stack Box
+            crate::kernel::uart_write_string("[REAPER] Recycling zombie at slot ");
+            unsafe {
+                if stack_index < 10 {
+                    core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + stack_index as u8);
+                }
+            }
+            crate::kernel::uart_write_string("\r\n");
+
+            // Reset state
+            zombie.id = process_id;
+            zombie.state = ProcessState::Created;
+            zombie.main_thread_id = None;
+
+            // Clear IPC state
+            zombie.message_queue = MessageQueue::new();
+            zombie.shm_table = SharedMemoryTable::new();
+
+            // Clear file/socket descriptors
+            zombie.file_descriptors = crate::kernel::filedesc::FileDescriptorTable::new();
+            zombie.socket_descriptors = crate::kernel::syscall::SocketDescriptorTable::new();
+
+            // Zero the user stack (kernel_stack Box is reused as-is!)
+            unsafe {
+                let stack_addr = USER_STACK_BASE + (stack_index as u64 * USER_STACK_SIZE as u64);
+                core::ptr::write_bytes(stack_addr as *mut u8, 0, USER_STACK_SIZE);
+            }
+
+            crate::kernel::uart_write_string("[PROCESS] Recycled zombie process\r\n");
+            return process_id;
+        }
+
+        // No zombie to recycle, create new Process (only happens for first 8 processes)
         let process = Process::new_user_with_stack_index(process_id, stack_index);
         self.processes.push(process);
 
-        // REMOVED: alloc::format!() causes deadlock in syscall context
-        crate::kernel::uart_write_string("[PROCESS] Created user process\r\n");
+        crate::kernel::uart_write_string("[PROCESS] Created new user process\r\n");
         process_id
     }
 
@@ -856,12 +830,20 @@ impl ProcessManager {
                 crate::kernel::uart_write_string(" marked as terminated\r\n");
             }
 
-            // NOTE: Process becomes a "zombie" - marked terminated but not freed
-            // This is safe because:
-            // 1. The thread is marked Terminated so scheduler won't run it
-            // 2. The process is marked Terminated so syscalls won't access it
-            // 3. Memory is not freed (small leak but prevents use-after-free)
-            // 4. Stack slot IS reclaimed via free list (prevents exhaustion)
+            // CRITICAL: Remove the thread from scheduler to prevent accessing freed memory!
+            // When we recycle/free the zombie Process, its kernel_stack gets reused/freed.
+            // If Thread still in scheduler.threads with sp pointing to that memory → CRASH!
+            let daif = crate::kernel::interrupts::disable_interrupts();
+            let mut scheduler = crate::kernel::scheduler::SCHEDULER.lock();
+            let before_count = scheduler.threads.len();
+            scheduler.threads.retain(|t| t.process_id != id);
+            let after_count = scheduler.threads.len();
+            drop(scheduler);
+            crate::kernel::interrupts::restore_interrupts(daif);
+
+            if before_count != after_count {
+                crate::kernel::uart_write_string("[PROCESS] Removed thread from scheduler\r\n");
+            }
         }
     }
 
