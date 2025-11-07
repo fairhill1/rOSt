@@ -225,6 +225,17 @@ fn kernel_gui_thread() {
 
                     // Handle WM response
                     match response_buf[0] {
+                        0 => {
+                            // RouteInput - WM wants us to forward input to a specific window (process)
+                            let window_id = usize::from_le_bytes([
+                                response_buf[1], response_buf[2], response_buf[3], response_buf[4],
+                                response_buf[5], response_buf[6], response_buf[7], response_buf[8],
+                            ]);
+
+                            // Forward the event to the target process
+                            // The message is already in the correct format for WMToKernel::RouteInput
+                            let _ = kernel_send_message(window_id as u32, &response_buf);
+                        }
                         1 => {
                             // RequestFocus - WM wants to change window focus
                             let window_id = usize::from_le_bytes([

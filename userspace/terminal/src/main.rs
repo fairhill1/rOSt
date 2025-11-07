@@ -203,6 +203,7 @@ impl Console {
             let cursor_y = (cursor_y_pos as i32) * LINE_HEIGHT as i32;
 
             // Draw a filled rectangle for the cursor
+            // Use volatile writes because pixel_buffer is shared memory (WM reads it)
             for dy in 0..CHAR_HEIGHT {
                 for dx in 0..CHAR_WIDTH {
                     let px = cursor_x + dx as i32;
@@ -210,7 +211,9 @@ impl Console {
                     if px >= 0 && px < buffer_width as i32 && py >= 0 && py < buffer_height as i32 {
                         let idx = (py as usize * buffer_width) + px as usize;
                         if idx < pixel_buffer.len() {
-                            pixel_buffer[idx] = 0xFF00FF00; // Green cursor
+                            unsafe {
+                                core::ptr::write_volatile(&mut pixel_buffer[idx], 0xFF00FF00); // Green cursor
+                            }
                         }
                     }
                 }
@@ -350,25 +353,26 @@ pub extern "C" fn _start() -> ! {
                     WMToKernel::RouteInput { event, .. } => {
                         // Handle keyboard input
                         if event.event_type == 1 { // KeyPressed
-                            let ch = event.key;
+                            // Convert evdev keycode to ASCII
+                            if let Some(ascii) = librost::input::evdev_to_ascii(event.key, event.modifiers) {
+                                unsafe {
+                                    CONSOLE.write_char(ascii);
 
-                            unsafe {
-                                CONSOLE.write_char(ch);
+                                    // Re-render to buffer
+                                    CONSOLE.render_to_buffer(
+                                        pixel_buffer,
+                                        buffer_width,
+                                        buffer_height
+                                    );
+                                }
 
-                                // Re-render to buffer
-                                CONSOLE.render_to_buffer(
-                                    pixel_buffer,
-                                    buffer_width,
-                                    buffer_height
-                                );
+                                // Request WM to redraw
+                                let redraw_msg = KernelToWM::RequestRedraw {
+                                    id: my_pid,
+                                };
+                                let msg_bytes = redraw_msg.to_bytes();
+                                send_message(wm_pid, &msg_bytes);
                             }
-
-                            // Request WM to redraw
-                            let redraw_msg = KernelToWM::RequestRedraw {
-                                id: my_pid,
-                            };
-                            let msg_bytes = redraw_msg.to_bytes();
-                            send_message(wm_pid, &msg_bytes);
                         }
                     }
                     _ => {
