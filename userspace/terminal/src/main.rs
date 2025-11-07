@@ -6,7 +6,7 @@ use librost::*;
 use librost::ipc_protocol::*;
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 // File server PID (well-known - file server should be spawned as PID 2)
 const FILE_SERVER_PID: u32 = 2;
@@ -83,16 +83,22 @@ const LINE_SPACING: u32 = 4;      // Extra pixels between lines
 const LINE_HEIGHT: u32 = CHAR_HEIGHT + LINE_SPACING; // 20 pixels per line
 
 /// Console state
+/// Uses AtomicU8 for buffer to properly express that this memory is visible
+/// across process boundaries (Terminal → WM via shared memory IPC)
 struct Console {
-    buffer: [[u8; CONSOLE_WIDTH]; CONSOLE_HEIGHT],
+    buffer: [[AtomicU8; CONSOLE_WIDTH]; CONSOLE_HEIGHT],
     cursor_x: AtomicUsize,
     cursor_y: AtomicUsize,
 }
 
 impl Console {
     const fn new() -> Self {
+        // SAFETY: AtomicU8::new is const, but array initialization requires manual construction
+        const EMPTY_CELL: AtomicU8 = AtomicU8::new(b' ');
+        const EMPTY_ROW: [AtomicU8; CONSOLE_WIDTH] = [EMPTY_CELL; CONSOLE_WIDTH];
+
         Self {
-            buffer: [[b' '; CONSOLE_WIDTH]; CONSOLE_HEIGHT],
+            buffer: [EMPTY_ROW; CONSOLE_HEIGHT],
             cursor_x: AtomicUsize::new(0),
             cursor_y: AtomicUsize::new(0),
         }
@@ -120,9 +126,7 @@ impl Console {
                     let new_x = x - 1;
                     self.cursor_x.store(new_x, Ordering::SeqCst);
                     let y = self.cursor_y.load(Ordering::SeqCst);
-                    unsafe {
-                        core::ptr::write_volatile(&mut self.buffer[y][new_x], b' ');
-                    }
+                    self.buffer[y][new_x].store(b' ', Ordering::Release);
                 }
             }
             _ => {
@@ -140,20 +144,14 @@ impl Console {
                         self.cursor_y.store(new_y, Ordering::SeqCst);
                     }
                     // Write character on new line
-                    unsafe {
-                        core::ptr::write_volatile(&mut self.buffer[new_y.min(CONSOLE_HEIGHT - 1)][x], ch);
-                    }
+                    self.buffer[new_y.min(CONSOLE_HEIGHT - 1)][x].store(ch, Ordering::Release);
                 } else {
                     // Normal write - y doesn't change
-                    unsafe {
-                        core::ptr::write_volatile(&mut self.buffer[y][x], ch);
-                    }
+                    self.buffer[y][x].store(ch, Ordering::Release);
                 }
 
                 x += 1;
                 self.cursor_x.store(x, Ordering::SeqCst);
-                // Force memory barrier to ensure buffer writes are visible to render
-                core::sync::atomic::compiler_fence(Ordering::SeqCst);
             }
         }
     }
@@ -168,41 +166,29 @@ impl Console {
     /// Scroll all lines up by one
     fn scroll_up(&mut self) {
         for y in 1..CONSOLE_HEIGHT {
-            self.buffer[y - 1] = self.buffer[y];
-        }
-        // Clear last line in-place to avoid stack overflow
-        for x in 0..CONSOLE_WIDTH {
-            unsafe {
-                core::ptr::write_volatile(&mut self.buffer[CONSOLE_HEIGHT - 1][x], b' ');
+            for x in 0..CONSOLE_WIDTH {
+                let ch = self.buffer[y][x].load(Ordering::Acquire);
+                self.buffer[y - 1][x].store(ch, Ordering::Release);
             }
+        }
+        // Clear last line
+        for x in 0..CONSOLE_WIDTH {
+            self.buffer[CONSOLE_HEIGHT - 1][x].store(b' ', Ordering::Release);
         }
     }
 
     /// Clear the console
     fn clear(&mut self) {
-        librost::print_debug("CLEAR_BUF: ");
-        // Clear buffer in-place to avoid stack overflow from temporary array
-        // CRITICAL: Force compiler to execute ALL writes, not optimize them away
-        let mut cells_cleared = 0u32;
+        // REALITY CHECK: Even with AtomicU8, LLVM can still optimize away loop iterations
+        // AtomicU8 tells compiler "this memory is shared" but doesn't prevent loop unrolling/elimination
+        // We need BOTH: Atomics (for semantics) + black_box (to force all iterations)
         let h = core::hint::black_box(CONSOLE_HEIGHT);
         let w = core::hint::black_box(CONSOLE_WIDTH);
         for y in 0..h {
             for x in 0..w {
-                unsafe {
-                    core::ptr::write_volatile(&mut self.buffer[y][x], b' ');
-                }
-                cells_cleared += 1;
+                self.buffer[y][x].store(b' ', Ordering::Release);
             }
         }
-        // Memory barrier to ensure all writes complete before continuing
-        core::sync::atomic::compiler_fence(Ordering::SeqCst);
-
-        librost::print_debug("cleared=");
-        for i in (0..4).rev() {
-            let digit = (cells_cleared / 10_u32.pow(i)) % 10;
-            librost::print_debug(core::str::from_utf8(&[b'0' + digit as u8]).unwrap_or("?"));
-        }
-        librost::print_debug("\r\n");
         self.cursor_x.store(0, Ordering::SeqCst);
         self.cursor_y.store(0, Ordering::SeqCst);
     }
@@ -211,73 +197,35 @@ impl Console {
     /// buffer_width and buffer_height are in pixels
     /// draw_backgrounds: if true, fill cell backgrounds (for incremental updates); if false, assume buffer is already cleared
     fn render_to_buffer(&self, pixel_buffer: &mut [u32], buffer_width: usize, buffer_height: usize, draw_backgrounds: bool) {
-        librost::print_debug("A\r\n");
         let bg_color = BG_COLOR.load(Ordering::SeqCst);
-        librost::print_debug("B\r\n");
         let fg_color = FG_COLOR.load(Ordering::SeqCst);
-        librost::print_debug("C\r\n");
 
-        // REMOVED: Full-screen clear is expensive and unnecessary
-        // We only need to redraw changed characters
-        /*
-        for pixel in pixel_buffer.iter_mut() {
-            *pixel = bg_color;
-        }
-        */
-        librost::print_debug("D\r\n");
-
-        // Sample first few cells to verify buffer state
-        librost::print_debug("SAMPLE:");
-        for i in 0..8 {
-            let ch = unsafe { core::ptr::read_volatile(&self.buffer[0][i]) };
-            if ch >= 32 && ch < 127 {
-                librost::print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
-            } else {
-                librost::print_debug(".");
-            }
-        }
-        librost::print_debug(" ");
-
-        // Draw console text
-        // CRITICAL: Force compiler to execute all loop iterations
-        let console_h = core::hint::black_box(CONSOLE_HEIGHT);
-        let console_w = core::hint::black_box(CONSOLE_WIDTH);
-        let char_h = core::hint::black_box(CHAR_HEIGHT);
-        let char_w = core::hint::black_box(CHAR_WIDTH);
-
-        let mut cells_drawn = 0u32;
-        let mut pixels_drawn = 0u32;
-
-        for y in 0..console_h {
-            for x in 0..console_w {
-                let ch = unsafe { core::ptr::read_volatile(&self.buffer[y][x]) };
+        // Draw console text - atomic loads properly handle cross-process visibility
+        for y in 0..CONSOLE_HEIGHT {
+            for x in 0..CONSOLE_WIDTH {
+                let ch = self.buffer[y][x].load(Ordering::Acquire);
 
                 // Calculate character cell position
-                let cell_x = (x as i32) * char_w as i32;
+                let cell_x = (x as i32) * CHAR_WIDTH as i32;
                 let cell_y = (y as i32) * LINE_HEIGHT as i32;
 
                 // Draw background for this character cell (clears cursor/old text)
                 // Only needed for incremental updates, not after full-screen clear
                 if draw_backgrounds {
-                    let bg_h = core::hint::black_box(char_h);
-                    let bg_w = core::hint::black_box(char_w);
-                    for dy in 0..bg_h {
-                        for dx in 0..bg_w {
+                    for dy in 0..CHAR_HEIGHT {
+                        for dx in 0..CHAR_WIDTH {
                             let px = cell_x + dx as i32;
                             let py = cell_y + dy as i32;
                             if px >= 0 && px < buffer_width as i32 && py >= 0 && py < buffer_height as i32 {
                                 let idx = (py as usize * buffer_width) + px as usize;
                                 if idx < pixel_buffer.len() {
-                                    // CRITICAL: Must use write_volatile for shared memory
+                                    // Shared memory writes to pixel buffer
                                     unsafe { core::ptr::write_volatile(&mut pixel_buffer[idx], bg_color); }
-                                    pixels_drawn += 1;
                                 }
                             }
                         }
                     }
                 }
-
-                cells_drawn += 1;
 
                 // Draw character on top of background (if not space)
                 if ch != b' ' {
@@ -293,24 +241,6 @@ impl Console {
                 }
             }
         }
-
-        librost::print_debug("CELLS=");
-        let cells = core::hint::black_box(cells_drawn);
-        for i in (0..4).rev() {
-            let digit = (cells / 10_u32.pow(i)) % 10;
-            let ch = b'0' + digit as u8;
-            librost::print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
-        }
-        librost::print_debug(" PIX=");
-        let pixels = core::hint::black_box(pixels_drawn);
-        for i in (0..7).rev() {
-            let digit = (pixels / 10_u32.pow(i)) % 10;
-            let ch = b'0' + digit as u8;
-            librost::print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
-        }
-        librost::print_debug("\r\n");
-
-        librost::print_debug("E\r\n");
 
         // Draw cursor
         let cursor_x_pos = self.cursor_x.load(Ordering::SeqCst);
@@ -333,7 +263,6 @@ impl Console {
                 }
             }
         }
-        librost::print_debug("F\r\n");
     }
 }
 
@@ -446,134 +375,27 @@ unsafe fn cmd_help() {
 
 /// Clear command
 unsafe fn cmd_clear() {
-    librost::print_debug("=== CMD_CLEAR START ===\r\n");
-
-    // Check if buffer is initialized
-    let px_ptr = PIXEL_BUFFER;
-    librost::print_debug("PIXEL_BUFFER ptr: ");
-    if px_ptr.is_null() {
-        librost::print_debug("NULL!\r\n");
-        CONSOLE.write_string("Error: Pixel buffer not initialized\n");
-        return;
-    }
-
-    // Print address
-    let addr = px_ptr as usize;
-    for i in (0..16).rev() {
-        let digit = (addr >> (i * 4)) & 0xF;
-        let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-        librost::print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
-    }
-    librost::print_debug("\r\n");
-
     CONSOLE.clear();
-    show_prompt(); // Show prompt after clearing
+    show_prompt();
 
-    // Re-render cleared buffer to pixels and notify WM (use volatile reads)
+    // Re-render cleared buffer to pixels and notify WM
     let buffer_width = unsafe { core::ptr::read_volatile(&BUFFER_WIDTH) } as usize;
     let buffer_height = unsafe { core::ptr::read_volatile(&BUFFER_HEIGHT) } as usize;
     let buffer_len = unsafe { core::ptr::read_volatile(&BUFFER_LEN) };
 
-    librost::print_debug("CLR: w=");
-    let w_val = core::hint::black_box(buffer_width);
-    if w_val < 10000 && w_val > 0 {
-        let w_str = [b'0' + (w_val / 1000) as u8, b'0' + ((w_val / 100) % 10) as u8,
-                     b'0' + ((w_val / 10) % 10) as u8, b'0' + (w_val % 10) as u8];
-        librost::print_debug(core::str::from_utf8(&w_str).unwrap_or("?"));
-    }
-    librost::print_debug(" h=");
-    let h_val = core::hint::black_box(buffer_height);
-    if h_val < 10000 && h_val > 0 {
-        let h_str = [b'0' + (h_val / 1000) as u8, b'0' + ((h_val / 100) % 10) as u8,
-                     b'0' + ((h_val / 10) % 10) as u8, b'0' + (h_val % 10) as u8];
-        librost::print_debug(core::str::from_utf8(&h_str).unwrap_or("?"));
-    }
-    librost::print_debug(" len=");
-    let len_val = core::hint::black_box(buffer_len);
-    if len_val > 0 {
-        librost::print_debug("OK");
-    } else {
-        librost::print_debug("ZERO!");
-    }
-    librost::print_debug("\r\n");
-
-    // CRITICAL: Use BUFFER_LEN, not width*height, to avoid recomputation issues
     if !PIXEL_BUFFER.is_null() && buffer_len > 0 {
-        let pixel_buffer = core::slice::from_raw_parts_mut(
-            PIXEL_BUFFER,
-            buffer_len
-        );
+        let pixel_buffer = core::slice::from_raw_parts_mut(PIXEL_BUFFER, buffer_len);
 
-        // Debug: Print buffer info
-        librost::print_debug("BUF: ptr=");
-        let ptr_val = pixel_buffer.as_ptr() as usize;
-        for i in (0..16).rev() {
-            let digit = (ptr_val >> (i * 4)) & 0xF;
-            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-            librost::print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
-        }
-
-        librost::print_debug(" len=");
-        let len = pixel_buffer.len();
-        // Print length in decimal
-        if len > 100000 {
-            let m = (len / 100000) % 10;
-            librost::print_debug(core::str::from_utf8(&[b'0' + m as u8]).unwrap_or("?"));
-        }
-        if len > 10000 {
-            let m = (len / 10000) % 10;
-            librost::print_debug(core::str::from_utf8(&[b'0' + m as u8]).unwrap_or("?"));
-        }
-        if len > 1000 {
-            let m = (len / 1000) % 10;
-            librost::print_debug(core::str::from_utf8(&[b'0' + m as u8]).unwrap_or("?"));
-        }
-        if len > 100 {
-            let m = (len / 100) % 10;
-            librost::print_debug(core::str::from_utf8(&[b'0' + m as u8]).unwrap_or("?"));
-        }
-        if len > 10 {
-            let m = (len / 10) % 10;
-            librost::print_debug(core::str::from_utf8(&[b'0' + m as u8]).unwrap_or("?"));
-        }
-        let m = len % 10;
-        librost::print_debug(core::str::from_utf8(&[b'0' + m as u8]).unwrap_or("?"));
-        librost::print_debug("\r\n");
-
-        // Clear entire screen to black - COUNT PIXELS TO VERIFY
+        // Clear entire screen to black
         let bg_color = BG_COLOR.load(Ordering::SeqCst);
-        librost::print_debug("CLEAR: color=");
-        for i in (0..8).rev() {
-            let digit = (bg_color >> (i * 4)) & 0xF;
-            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
-            librost::print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
-        }
-        librost::print_debug(" buflen=");
-        let buf_len = pixel_buffer.len();
-        for i in (0..7).rev() {
-            let digit = (buf_len / 10_usize.pow(i)) % 10;
-            librost::print_debug(core::str::from_utf8(&[b'0' + digit as u8]).unwrap_or("?"));
-        }
-        librost::print_debug(" clearing...");
-
-        let mut cleared = 0usize;
         for i in 0..pixel_buffer.len() {
             unsafe {
                 core::ptr::write_volatile(&mut pixel_buffer[i], bg_color);
             }
-            cleared += 1;
         }
 
-        librost::print_debug("CLEARED=");
-        for i in (0..7).rev() {
-            let digit = (cleared / 10_usize.pow(i)) % 10;
-            librost::print_debug(core::str::from_utf8(&[b'0' + digit as u8]).unwrap_or("?"));
-        }
-        librost::print_debug(" ");
-
+        // Render cleared console (just prompt and cursor)
         CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height, false);
-
-        librost::print_debug("rendered ");
 
         let wm_pid = 1; // WM is always PID 1
         let my_pid = getpid() as usize;
@@ -728,25 +550,14 @@ pub extern "C" fn _start() -> ! {
     print_debug("Initializing...\r\n");
 
     // Explicitly initialize console state
+    // Note: Console buffer is already initialized with spaces via AtomicU8 const initialization
     unsafe {
-        // Clear buffer with volatile writes to ensure it actually happens
-        for y in 0..CONSOLE_HEIGHT {
-            for x in 0..CONSOLE_WIDTH {
-                core::ptr::write_volatile(&mut CONSOLE.buffer[y][x], b' ');
-            }
-        }
-
-        // Reset cursor to known position
         CONSOLE.cursor_x.store(0, Ordering::SeqCst);
         CONSOLE.cursor_y.store(0, Ordering::SeqCst);
 
         CONSOLE.write_string("rOSt Terminal v0.1\n");
         CONSOLE.write_string("Type commands or text here\n");
         CONSOLE.write_string("\n> ");
-
-        // CRITICAL: Force memory barrier to ensure console writes are visible
-        // Without this, compiler optimizes away the writes above
-        let _ = getpid();
     }
 
     // Don't create buffer at startup - wait for WM to tell us our dimensions
