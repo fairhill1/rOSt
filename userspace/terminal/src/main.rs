@@ -84,11 +84,9 @@ impl Console {
     fn write_char(&mut self, ch: u8) {
         match ch {
             b'\n' => {
-                let old_y = self.cursor_y.load(Ordering::SeqCst);
                 self.cursor_x.store(0, Ordering::SeqCst);
-                let y = old_y + 1;
+                let y = self.cursor_y.load(Ordering::SeqCst) + 1;
                 self.cursor_y.store(y, Ordering::SeqCst);
-                print_debug(&alloc::format!("[CONSOLE] Newline: {} -> {}\r\n", old_y, y));
                 if y >= CONSOLE_HEIGHT {
                     self.scroll_up();
                     self.cursor_y.store(CONSOLE_HEIGHT - 1, Ordering::SeqCst);
@@ -150,7 +148,6 @@ impl Console {
 
     /// Scroll all lines up by one
     fn scroll_up(&mut self) {
-        print_debug("[CONSOLE] scroll_up() called!\r\n");
         for y in 1..CONSOLE_HEIGHT {
             self.buffer[y - 1] = self.buffer[y];
         }
@@ -245,17 +242,6 @@ pub extern "C" fn _start() -> ! {
         CONSOLE.write_string("rOSt Terminal v0.1\n");
         CONSOLE.write_string("Type commands or text here\n");
         CONSOLE.write_string("\n> ");
-
-        // Debug: check cursor position and buffer contents
-        let cursor_x = CONSOLE.cursor_x.load(Ordering::SeqCst);
-        let cursor_y = CONSOLE.cursor_y.load(Ordering::SeqCst);
-        print_debug(&alloc::format!("Cursor after prompt: ({}, {})\r\n", cursor_x, cursor_y));
-
-        // Print first few lines of buffer
-        for y in 0..5 {
-            let line = core::str::from_utf8(&CONSOLE.buffer[y]).unwrap_or("<invalid>");
-            print_debug(&alloc::format!("Line {}: '{}'\r\n", y, line));
-        }
     }
 
     // Don't create buffer at startup - wait for WM to tell us our dimensions
