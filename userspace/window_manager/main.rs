@@ -206,7 +206,7 @@ impl Framebuffer {
 /// Main window manager state
 struct WindowManager {
     windows: [WindowState; MAX_WINDOWS],
-    window_count: AtomicUsize,  // Use atomic to prevent compiler optimization bugs
+    window_count: usize,
     mouse_x: i32,
     mouse_y: i32,
     framebuffer: Framebuffer,
@@ -216,7 +216,7 @@ impl WindowManager {
     fn new(fb_ptr: *mut u32, fb_width: u32, fb_height: u32) -> Self {
         Self {
             windows: [WindowState::new(); MAX_WINDOWS],
-            window_count: AtomicUsize::new(0),
+            window_count:0,
             mouse_x: 0,
             mouse_y: 0,
             framebuffer: Framebuffer::new(fb_ptr, fb_width, fb_height),
@@ -226,8 +226,7 @@ impl WindowManager {
     /// Find window at given coordinates
     fn find_window_at(&self, x: i32, y: i32) -> Option<usize> {
         // Check windows in reverse order (top to bottom in Z order)
-        let count = self.window_count.load(Ordering::SeqCst);
-        for i in (0..count).rev() {
+        for i in (0..self.window_count).rev() {
             let window = &self.windows[i];
             if !window.visible {
                 continue;
