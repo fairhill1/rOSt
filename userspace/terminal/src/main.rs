@@ -6,7 +6,7 @@ use librost::*;
 use librost::ipc_protocol::*;
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 // Bump allocator for userspace
 const HEAP_SIZE: usize = 256 * 1024; // 256KB heap (larger than WM since we store console buffer + command history)
@@ -67,16 +67,16 @@ const LINE_HEIGHT: u32 = CHAR_HEIGHT + LINE_SPACING; // 20 pixels per line
 /// Console state
 struct Console {
     buffer: [[u8; CONSOLE_WIDTH]; CONSOLE_HEIGHT],
-    cursor_x: usize,
-    cursor_y: usize,
+    cursor_x: AtomicUsize,
+    cursor_y: AtomicUsize,
 }
 
 impl Console {
     const fn new() -> Self {
         Self {
             buffer: [[b' '; CONSOLE_WIDTH]; CONSOLE_HEIGHT],
-            cursor_x: 0,
-            cursor_y: 0,
+            cursor_x: AtomicUsize::new(0),
+            cursor_y: AtomicUsize::new(0),
         }
     }
 
@@ -84,40 +84,59 @@ impl Console {
     fn write_char(&mut self, ch: u8) {
         match ch {
             b'\n' => {
-                self.cursor_x = 0;
-                self.cursor_y += 1;
-                if self.cursor_y >= CONSOLE_HEIGHT {
+                let old_y = self.cursor_y.load(Ordering::SeqCst);
+                self.cursor_x.store(0, Ordering::SeqCst);
+                let y = old_y + 1;
+                self.cursor_y.store(y, Ordering::SeqCst);
+                print_debug(&alloc::format!("[CONSOLE] Newline: {} -> {}\r\n", old_y, y));
+                if y >= CONSOLE_HEIGHT {
                     self.scroll_up();
-                    self.cursor_y = CONSOLE_HEIGHT - 1;
+                    self.cursor_y.store(CONSOLE_HEIGHT - 1, Ordering::SeqCst);
                 }
             }
             b'\r' => {
-                self.cursor_x = 0;
+                self.cursor_x.store(0, Ordering::SeqCst);
             }
             8 | 127 => {
                 // Backspace
-                if self.cursor_x > 0 {
-                    self.cursor_x -= 1;
+                let x = self.cursor_x.load(Ordering::SeqCst);
+                if x > 0 {
+                    let new_x = x - 1;
+                    self.cursor_x.store(new_x, Ordering::SeqCst);
+                    let y = self.cursor_y.load(Ordering::SeqCst);
                     unsafe {
-                        core::ptr::write_volatile(&mut self.buffer[self.cursor_y][self.cursor_x], b' ');
+                        core::ptr::write_volatile(&mut self.buffer[y][new_x], b' ');
                     }
                 }
             }
             _ => {
                 // Regular character
-                if self.cursor_x >= CONSOLE_WIDTH {
-                    self.cursor_x = 0;
-                    self.cursor_y += 1;
-                    if self.cursor_y >= CONSOLE_HEIGHT {
+                let mut x = self.cursor_x.load(Ordering::SeqCst);
+                let y = self.cursor_y.load(Ordering::SeqCst);
+
+                if x >= CONSOLE_WIDTH {
+                    x = 0;
+                    let new_y = y + 1;
+                    if new_y >= CONSOLE_HEIGHT {
                         self.scroll_up();
-                        self.cursor_y = CONSOLE_HEIGHT - 1;
+                        self.cursor_y.store(CONSOLE_HEIGHT - 1, Ordering::SeqCst);
+                    } else {
+                        self.cursor_y.store(new_y, Ordering::SeqCst);
+                    }
+                    // Write character on new line
+                    unsafe {
+                        core::ptr::write_volatile(&mut self.buffer[new_y.min(CONSOLE_HEIGHT - 1)][x], ch);
+                    }
+                } else {
+                    // Normal write - y doesn't change
+                    unsafe {
+                        core::ptr::write_volatile(&mut self.buffer[y][x], ch);
                     }
                 }
-                // Use volatile write to prevent compiler optimization
-                unsafe {
-                    core::ptr::write_volatile(&mut self.buffer[self.cursor_y][self.cursor_x], ch);
-                }
-                self.cursor_x += 1;
+
+                x += 1;
+                self.cursor_x.store(x, Ordering::SeqCst);
+                // Note: cursor_y only updated in wrap case above
             }
         }
     }
@@ -131,6 +150,7 @@ impl Console {
 
     /// Scroll all lines up by one
     fn scroll_up(&mut self) {
+        print_debug("[CONSOLE] scroll_up() called!\r\n");
         for y in 1..CONSOLE_HEIGHT {
             self.buffer[y - 1] = self.buffer[y];
         }
@@ -140,8 +160,8 @@ impl Console {
     /// Clear the console
     fn clear(&mut self) {
         self.buffer = [[b' '; CONSOLE_WIDTH]; CONSOLE_HEIGHT];
-        self.cursor_x = 0;
-        self.cursor_y = 0;
+        self.cursor_x.store(0, Ordering::SeqCst);
+        self.cursor_y.store(0, Ordering::SeqCst);
     }
 
     /// Render console to a pixel buffer (ARGB format)
@@ -178,9 +198,12 @@ impl Console {
         }
 
         // Draw cursor (solid block)
-        if self.cursor_x < CONSOLE_WIDTH && self.cursor_y < CONSOLE_HEIGHT {
-            let cursor_x = (self.cursor_x as i32) * CHAR_WIDTH as i32;
-            let cursor_y = (self.cursor_y as i32) * LINE_HEIGHT as i32;
+        let cursor_x_pos = self.cursor_x.load(Ordering::SeqCst);
+        let cursor_y_pos = self.cursor_y.load(Ordering::SeqCst);
+
+        if cursor_x_pos < CONSOLE_WIDTH && cursor_y_pos < CONSOLE_HEIGHT {
+            let cursor_x = (cursor_x_pos as i32) * CHAR_WIDTH as i32;
+            let cursor_y = (cursor_y_pos as i32) * LINE_HEIGHT as i32;
 
             // Draw a filled rectangle for the cursor
             for dy in 0..CHAR_HEIGHT {
@@ -216,12 +239,23 @@ pub extern "C" fn _start() -> ! {
         }
 
         // Reset cursor to known position
-        CONSOLE.cursor_x = 0;
-        CONSOLE.cursor_y = 0;
+        CONSOLE.cursor_x.store(0, Ordering::SeqCst);
+        CONSOLE.cursor_y.store(0, Ordering::SeqCst);
 
         CONSOLE.write_string("rOSt Terminal v0.1\n");
         CONSOLE.write_string("Type commands or text here\n");
         CONSOLE.write_string("\n> ");
+
+        // Debug: check cursor position and buffer contents
+        let cursor_x = CONSOLE.cursor_x.load(Ordering::SeqCst);
+        let cursor_y = CONSOLE.cursor_y.load(Ordering::SeqCst);
+        print_debug(&alloc::format!("Cursor after prompt: ({}, {})\r\n", cursor_x, cursor_y));
+
+        // Print first few lines of buffer
+        for y in 0..5 {
+            let line = core::str::from_utf8(&CONSOLE.buffer[y]).unwrap_or("<invalid>");
+            print_debug(&alloc::format!("Line {}: '{}'\r\n", y, line));
+        }
     }
 
     // Don't create buffer at startup - wait for WM to tell us our dimensions
