@@ -275,10 +275,11 @@ static COMMAND_POS: AtomicUsize = AtomicUsize::new(0);
 
 /// Handle shell input character
 unsafe fn handle_shell_input(ch: u8) {
+    let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
     match ch {
         b'\n' | b'\r' => {
             // Execute command
-            CONSOLE.write_string("\n");
+            console.write_string("\n");
             execute_command();
             COMMAND_POS.store(0, Ordering::SeqCst);
             // Clear command buffer by resetting each byte individually (avoid stack overflow)
@@ -293,7 +294,7 @@ unsafe fn handle_shell_input(ch: u8) {
             if pos > 0 {
                 COMMAND_POS.store(pos - 1, Ordering::SeqCst);
                 COMMAND_BUFFER[pos - 1] = 0;
-                CONSOLE.write_char(8); // Backspace in console
+                console.write_char(8); // Backspace in console
             }
         }
         _ => {
@@ -302,7 +303,7 @@ unsafe fn handle_shell_input(ch: u8) {
             if pos < MAX_COMMAND_LEN - 1 {
                 COMMAND_BUFFER[pos] = ch;
                 COMMAND_POS.store(pos + 1, Ordering::SeqCst);
-                CONSOLE.write_char(ch);
+                console.write_char(ch);
             }
         }
     }
@@ -310,7 +311,8 @@ unsafe fn handle_shell_input(ch: u8) {
 
 /// Show command prompt
 unsafe fn show_prompt() {
-    CONSOLE.write_string("> ");
+    let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
+    console.write_string("> ");
 }
 
 /// Execute the current command
@@ -356,32 +358,35 @@ unsafe fn execute_command() {
         "create" => cmd_create(&parts, part_count),
         "write" => cmd_write(&parts, part_count),
         _ => {
-            CONSOLE.write_string("Unknown command: ");
-            CONSOLE.write_string(parts[0]);
-            CONSOLE.write_string("\nType 'help' for available commands\n");
+            let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
+            console.write_string("Unknown command: ");
+            console.write_string(parts[0]);
+            console.write_string("\nType 'help' for available commands\n");
         }
     }
 }
 
 /// Help command
 unsafe fn cmd_help() {
-    CONSOLE.write_string("Available commands:\n");
-    CONSOLE.write_string("  help                    - Show this help\n");
-    CONSOLE.write_string("  clear                   - Clear screen\n");
-    CONSOLE.write_string("  ls                      - List files\n");
-    CONSOLE.write_string("  create <name> <size>    - Create file (size in bytes)\n");
-    CONSOLE.write_string("  write <name> <text>     - Write text to file\n");
+    let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
+    console.write_string("Available commands:\n");
+    console.write_string("  help                    - Show this help\n");
+    console.write_string("  clear                   - Clear screen\n");
+    console.write_string("  ls                      - List files\n");
+    console.write_string("  create <name> <size>    - Create file (size in bytes)\n");
+    console.write_string("  write <name> <text>     - Write text to file\n");
 }
 
 /// Clear command
 unsafe fn cmd_clear() {
-    CONSOLE.clear();
+    let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
+    console.clear();
     show_prompt();
 
     // Re-render cleared buffer to pixels and notify WM
-    let buffer_width = unsafe { core::ptr::read_volatile(&BUFFER_WIDTH) } as usize;
-    let buffer_height = unsafe { core::ptr::read_volatile(&BUFFER_HEIGHT) } as usize;
-    let buffer_len = unsafe { core::ptr::read_volatile(&BUFFER_LEN) };
+    let buffer_width = unsafe { core::ptr::read_volatile(&raw const BUFFER_WIDTH) } as usize;
+    let buffer_height = unsafe { core::ptr::read_volatile(&raw const BUFFER_HEIGHT) } as usize;
+    let buffer_len = unsafe { core::ptr::read_volatile(&raw const BUFFER_LEN) };
 
     if !PIXEL_BUFFER.is_null() && buffer_len > 0 {
         let pixel_buffer = core::slice::from_raw_parts_mut(PIXEL_BUFFER, buffer_len);
@@ -395,7 +400,7 @@ unsafe fn cmd_clear() {
         }
 
         // Render cleared console (just prompt and cursor)
-        CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height, false);
+        console.render_to_buffer(pixel_buffer, buffer_width, buffer_height, false);
 
         let wm_pid = 1; // WM is always PID 1
         let my_pid = getpid() as usize;
@@ -420,15 +425,17 @@ unsafe fn cmd_ls() {
     let result = send_message(FILE_SERVER_PID, &request_bytes);
 
     if result < 0 {
-        CONSOLE.write_string("Error: Failed to send request to file server\n");
+        let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
+        console.write_string("Error: Failed to send request to file server\n");
     }
     // Response will be handled in main event loop
 }
 
 /// Create file command
 unsafe fn cmd_create(parts: &[&str], part_count: usize) {
+    let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
     if part_count < 3 {
-        CONSOLE.write_string("Usage: create <name> <size>\n");
+        console.write_string("Usage: create <name> <size>\n");
         return;
     }
 
@@ -441,13 +448,13 @@ unsafe fn cmd_create(parts: &[&str], part_count: usize) {
         if ch >= '0' && ch <= '9' {
             size = size * 10 + (ch as u32 - '0' as u32);
         } else {
-            CONSOLE.write_string("Error: Invalid size (must be a number)\n");
+            console.write_string("Error: Invalid size (must be a number)\n");
             return;
         }
     }
 
     if filename.len() > 8 {
-        CONSOLE.write_string("Error: Filename too long (max 8 characters)\n");
+        console.write_string("Error: Filename too long (max 8 characters)\n");
         return;
     }
 
@@ -474,15 +481,16 @@ unsafe fn cmd_create(parts: &[&str], part_count: usize) {
     let result = send_message(FILE_SERVER_PID, &request_bytes);
 
     if result < 0 {
-        CONSOLE.write_string("Error: Failed to send request to file server\n");
+        console.write_string("Error: Failed to send request to file server\n");
     }
     // Response will be handled in main event loop
 }
 
 /// Write file command
 unsafe fn cmd_write(parts: &[&str], part_count: usize) {
+    let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
     if part_count < 3 {
-        CONSOLE.write_string("Usage: write <name> <text>\n");
+        console.write_string("Usage: write <name> <text>\n");
         return;
     }
 
@@ -508,7 +516,7 @@ unsafe fn cmd_write(parts: &[&str], part_count: usize) {
     }
 
     if filename.len() > 8 {
-        CONSOLE.write_string("Error: Filename too long (max 8 characters)\n");
+        console.write_string("Error: Filename too long (max 8 characters)\n");
         return;
     }
 
@@ -533,7 +541,7 @@ unsafe fn cmd_write(parts: &[&str], part_count: usize) {
     let result = send_message(FILE_SERVER_PID, &request_bytes);
 
     if result < 0 {
-        CONSOLE.write_string("Error: Failed to send request to file server\n");
+        console.write_string("Error: Failed to send request to file server\n");
         return;
     }
 
@@ -552,12 +560,13 @@ pub extern "C" fn _start() -> ! {
     // Explicitly initialize console state
     // Note: Console buffer is already initialized with spaces via AtomicU8 const initialization
     unsafe {
-        CONSOLE.cursor_x.store(0, Ordering::SeqCst);
-        CONSOLE.cursor_y.store(0, Ordering::SeqCst);
+        let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
+        console.cursor_x.store(0, Ordering::SeqCst);
+        console.cursor_y.store(0, Ordering::SeqCst);
 
-        CONSOLE.write_string("rOSt Terminal v0.1\n");
-        CONSOLE.write_string("Type commands or text here\n");
-        CONSOLE.write_string("\n> ");
+        console.write_string("rOSt Terminal v0.1\n");
+        console.write_string("Type commands or text here\n");
+        console.write_string("\n> ");
     }
 
     // Don't create buffer at startup - wait for WM to tell us our dimensions
@@ -661,10 +670,10 @@ pub extern "C" fn _start() -> ! {
                             // Store in statics so cmd_clear can access (use volatile to prevent optimization)
                             let total_pixels = (width as usize) * (height as usize);
                             unsafe {
-                                core::ptr::write_volatile(&mut BUFFER_WIDTH, width);
-                                core::ptr::write_volatile(&mut BUFFER_HEIGHT, height);
-                                core::ptr::write_volatile(&mut BUFFER_LEN, total_pixels);
-                                core::ptr::write_volatile(&mut PIXEL_BUFFER, shmem_ptr as *mut u32);
+                                core::ptr::write_volatile(&raw mut BUFFER_WIDTH, width);
+                                core::ptr::write_volatile(&raw mut BUFFER_HEIGHT, height);
+                                core::ptr::write_volatile(&raw mut BUFFER_LEN, total_pixels);
+                                core::ptr::write_volatile(&raw mut PIXEL_BUFFER, shmem_ptr as *mut u32);
                             }
 
                             // Create slice from mapped buffer
@@ -679,7 +688,8 @@ pub extern "C" fn _start() -> ! {
 
                             // Render console to buffer
                             unsafe {
-                                CONSOLE.render_to_buffer(
+                                let console = &*core::ptr::addr_of!(CONSOLE);
+                                console.render_to_buffer(
                                     pixel_buffer,
                                     buffer_width,
                                     buffer_height,
@@ -726,7 +736,8 @@ pub extern "C" fn _start() -> ! {
                                         print_debug("RENDER ");
 
                                         // Re-render to buffer
-                                        CONSOLE.render_to_buffer(
+                                        let console = &*core::ptr::addr_of!(CONSOLE);
+                                        console.render_to_buffer(
                                             pixel_buffer,
                                             buffer_width,
                                             buffer_height,
@@ -755,29 +766,33 @@ pub extern "C" fn _start() -> ! {
                 match fs_msg {
                     FSToApp::ListResponse { files, files_len, .. } => {
                         unsafe {
+                            let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
                             if files_len == 0 {
-                                CONSOLE.write_string("(no files)\n");
+                                console.write_string("(no files)\n");
                             } else {
                                 // Display file list
                                 let files_str = core::str::from_utf8(&files[..files_len]).unwrap_or("(invalid)");
-                                CONSOLE.write_string(files_str);
-                                CONSOLE.write_string("\n");
+                                console.write_string(files_str);
+                                console.write_string("\n");
                             }
 
                             // Show prompt for next command
                             show_prompt();
 
                             // Re-render and request redraw
-                            CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height, true);
+                            let console = &*core::ptr::addr_of!(CONSOLE);
+                            console.render_to_buffer(pixel_buffer, buffer_width, buffer_height, true);
                         }
                         let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
                         librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
                     }
                     FSToApp::CreateSuccess { .. } => {
                         unsafe {
-                            CONSOLE.write_string("File created successfully\n");
+                            let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
+                            console.write_string("File created successfully\n");
                             show_prompt();
-                            CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height, true);
+                            let console = &*core::ptr::addr_of!(CONSOLE);
+                            console.render_to_buffer(pixel_buffer, buffer_width, buffer_height, true);
                         }
                         let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
                         librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
@@ -830,36 +845,40 @@ pub extern "C" fn _start() -> ! {
                         }
 
                         unsafe {
-                            CONSOLE.write_string("Wrote ");
+                            let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
+                            console.write_string("Wrote ");
                             // Simple number printing
                             if bytes_written >= 100 {
-                                CONSOLE.write_char(b'0' + (bytes_written / 100) as u8);
+                                console.write_char(b'0' + (bytes_written / 100) as u8);
                             }
                             if bytes_written >= 10 {
-                                CONSOLE.write_char(b'0' + ((bytes_written / 10) % 10) as u8);
+                                console.write_char(b'0' + ((bytes_written / 10) % 10) as u8);
                             }
-                            CONSOLE.write_char(b'0' + (bytes_written % 10) as u8);
-                            CONSOLE.write_string(" bytes\n");
+                            console.write_char(b'0' + (bytes_written % 10) as u8);
+                            console.write_string(" bytes\n");
                             show_prompt();
-                            CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height, true);
+                            let console = &*core::ptr::addr_of!(CONSOLE);
+                            console.render_to_buffer(pixel_buffer, buffer_width, buffer_height, true);
                         }
                         let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
                         librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
                     }
                     FSToApp::Error { error_code, .. } => {
                         unsafe {
-                            CONSOLE.write_string("Error: File server returned error code ");
+                            let console = &mut *core::ptr::addr_of_mut!(CONSOLE);
+                            console.write_string("Error: File server returned error code ");
                             if error_code < 0 && error_code > -100 {
-                                CONSOLE.write_char(b'-');
+                                console.write_char(b'-');
                                 let code = (-error_code) as u8;
                                 if code >= 10 {
-                                    CONSOLE.write_char(b'0' + code / 10);
+                                    console.write_char(b'0' + code / 10);
                                 }
-                                CONSOLE.write_char(b'0' + code % 10);
+                                console.write_char(b'0' + code % 10);
                             }
-                            CONSOLE.write_string("\n");
+                            console.write_string("\n");
                             show_prompt();
-                            CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height, true);
+                            let console = &*core::ptr::addr_of!(CONSOLE);
+                            console.render_to_buffer(pixel_buffer, buffer_width, buffer_height, true);
                         }
                         let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
                         librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());

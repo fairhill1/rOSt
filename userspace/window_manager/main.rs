@@ -117,66 +117,25 @@ struct MenuItem {
     label: [u8; 16],  // Fixed-size inline array (no pointers)
 }
 
-static mut MENU_ITEMS: [MenuItem; 5] = [
-    MenuItem { label: [0; 16] },
-    MenuItem { label: [0; 16] },
-    MenuItem { label: [0; 16] },
-    MenuItem { label: [0; 16] },
-    MenuItem { label: [0; 16] },
+// Menu items - directly initialized now that goblin handles .rodata relocations
+const MENU_ITEMS: [MenuItem; 5] = [
+    MenuItem { label: *b"Terminal\0\0\0\0\0\0\0\0" },
+    MenuItem { label: *b"Editor\0\0\0\0\0\0\0\0\0\0" },
+    MenuItem { label: *b"Files\0\0\0\0\0\0\0\0\0\0\0" },
+    MenuItem { label: *b"Browser\0\0\0\0\0\0\0\0\0" },
+    MenuItem { label: *b"Snake\0\0\0\0\0\0\0\0\0\0\0" },
 ];
 
 // Hardcoded label lengths - these never change!
 const MENU_LABEL_LENS: [usize; 5] = [8, 6, 5, 7, 5]; // Terminal, Editor, Files, Browser, Snake
 
-// App names built at runtime (avoids .rodata)
+// App names built at runtime
 static mut APP_NAMES: [[u8; 16]; 5] = [[0; 16]; 5];
 static mut APP_NAME_LENS: [usize; 5] = [0; 5];
 
-/// Initialize menu items at runtime (avoids .rodata relocation issues)
-fn init_menu_items() {
+/// Initialize app names at runtime
+fn init_app_names() {
     unsafe {
-        // Terminal
-        MENU_ITEMS[0].label[0] = b'T';
-        MENU_ITEMS[0].label[1] = b'e';
-        MENU_ITEMS[0].label[2] = b'r';
-        MENU_ITEMS[0].label[3] = b'm';
-        MENU_ITEMS[0].label[4] = b'i';
-        MENU_ITEMS[0].label[5] = b'n';
-        MENU_ITEMS[0].label[6] = b'a';
-        MENU_ITEMS[0].label[7] = b'l';
-
-        // Editor
-        MENU_ITEMS[1].label[0] = b'E';
-        MENU_ITEMS[1].label[1] = b'd';
-        MENU_ITEMS[1].label[2] = b'i';
-        MENU_ITEMS[1].label[3] = b't';
-        MENU_ITEMS[1].label[4] = b'o';
-        MENU_ITEMS[1].label[5] = b'r';
-
-        // Files
-        MENU_ITEMS[2].label[0] = b'F';
-        MENU_ITEMS[2].label[1] = b'i';
-        MENU_ITEMS[2].label[2] = b'l';
-        MENU_ITEMS[2].label[3] = b'e';
-        MENU_ITEMS[2].label[4] = b's';
-
-        // Browser
-        MENU_ITEMS[3].label[0] = b'B';
-        MENU_ITEMS[3].label[1] = b'r';
-        MENU_ITEMS[3].label[2] = b'o';
-        MENU_ITEMS[3].label[3] = b'w';
-        MENU_ITEMS[3].label[4] = b's';
-        MENU_ITEMS[3].label[5] = b'e';
-        MENU_ITEMS[3].label[6] = b'r';
-
-        // Snake
-        MENU_ITEMS[4].label[0] = b'S';
-        MENU_ITEMS[4].label[1] = b'n';
-        MENU_ITEMS[4].label[2] = b'a';
-        MENU_ITEMS[4].label[3] = b'k';
-        MENU_ITEMS[4].label[4] = b'e';
-
-        // Initialize app names
         // terminal
         APP_NAMES[0][0] = b't';
         APP_NAMES[0][1] = b'e';
@@ -294,7 +253,7 @@ fn check_menu_click(mouse_x: i32, mouse_y: i32) -> Option<usize> {
     }
 
     let mut current_x = MENU_START_X;
-    for (idx, _item) in unsafe { MENU_ITEMS.iter() }.enumerate() {
+    for (idx, _item) in MENU_ITEMS.iter().enumerate() {
         let label_len = MENU_LABEL_LENS[idx];
         let item_width = calculate_menu_item_width(label_len);
         let item_y = MENU_START_Y;
@@ -1182,10 +1141,10 @@ pub extern "C" fn _start() -> ! {
     print_debug("Framebuffer mapped\r\n");
     print_debug("WM fully initialized\r\n");
 
-    // Initialize menu items (runtime init avoids .rodata relocation issues)
-    print_debug("Initializing menu items...\r\n");
-    init_menu_items();
-    print_debug("Menu items initialized\r\n");
+    // Initialize app names
+    print_debug("Initializing app names...\r\n");
+    init_app_names();
+    print_debug("App names initialized\r\n");
 
     // Draw initial UI (menu bar with text)
     print_debug("Drawing initial UI...\r\n");
