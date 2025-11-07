@@ -10,6 +10,7 @@ path = "src/lib.rs"
 [features]
 default = []
 image-codecs = ["dep:image_codecs"]
+verbose-debug = []  # Enable detailed debug tracing via debug_trace! macro
 
 [dependencies]
 image_codecs = { path = "../image_codecs", optional = true }

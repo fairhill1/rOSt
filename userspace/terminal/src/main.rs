@@ -150,7 +150,8 @@ impl Console {
 
                 x += 1;
                 self.cursor_x.store(x, Ordering::SeqCst);
-                // Note: cursor_y only updated in wrap case above
+                // Force memory barrier to ensure buffer writes are visible to render
+                core::sync::atomic::compiler_fence(Ordering::SeqCst);
             }
         }
     }
@@ -192,6 +193,9 @@ impl Console {
     /// Render console to a pixel buffer (ARGB format)
     /// buffer_width and buffer_height are in pixels
     fn render_to_buffer(&self, pixel_buffer: &mut [u32], buffer_width: usize, buffer_height: usize) {
+        // Force memory barrier to ensure we see latest buffer writes
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
+
         let bg_color = BG_COLOR.load(Ordering::SeqCst);
         let fg_color = FG_COLOR.load(Ordering::SeqCst);
 
@@ -200,14 +204,32 @@ impl Console {
             *pixel = bg_color;
         }
 
+        // Debug: Print cursor position before render
+        let cursor_y = self.cursor_y.load(Ordering::SeqCst);
+        let cursor_x = self.cursor_x.load(Ordering::SeqCst);
+        librost::print_debug("R:");
+        if cursor_y < 10 {
+            let s = [b'0' + cursor_y as u8];
+            librost::print_debug(core::str::from_utf8(&s).unwrap_or("?"));
+        }
+        librost::print_debug(",");
+        if cursor_x < 10 {
+            let s = [b'0' + cursor_x as u8];
+            librost::print_debug(core::str::from_utf8(&s).unwrap_or("?"));
+        }
+        librost::print_debug(" ");
+
         // Draw console text using bitmap font
+        let mut chars_drawn = 0;
         for y in 0..CONSOLE_HEIGHT {
             let line_y = (y as i32) * LINE_HEIGHT as i32;
 
             // Draw each character in this line
             for x in 0..CONSOLE_WIDTH {
-                let ch = self.buffer[y][x];
+                // Use volatile read to force compiler to fetch from memory
+                let ch = unsafe { core::ptr::read_volatile(&self.buffer[y][x]) };
                 if ch != b' ' {
+                    chars_drawn += 1;
                     let char_x = (x as i32) * CHAR_WIDTH as i32;
                     librost::graphics::draw_char(
                         pixel_buffer,
@@ -221,6 +243,18 @@ impl Console {
                 }
             }
         }
+
+        // Debug: How many chars were actually drawn?
+        librost::print_debug("drew=");
+        if chars_drawn == 0 {
+            librost::print_debug("0!");
+        } else if chars_drawn < 10 {
+            let s = [b'0' + chars_drawn];
+            librost::print_debug(core::str::from_utf8(&s).unwrap_or("?"));
+        } else {
+            librost::print_debug(">10");
+        }
+        librost::print_debug(" ");
 
         // Draw cursor (solid block)
         let cursor_x_pos = self.cursor_x.load(Ordering::SeqCst);
@@ -300,7 +334,10 @@ unsafe fn show_prompt() {
 /// Execute the current command
 unsafe fn execute_command() {
     let pos = COMMAND_POS.load(Ordering::SeqCst);
-    if pos == 0 {
+
+    // Bounds check to prevent panic
+    if pos == 0 || pos > MAX_COMMAND_LEN {
+        COMMAND_POS.store(0, Ordering::SeqCst);
         return;
     }
 
@@ -520,6 +557,10 @@ pub extern "C" fn _start() -> ! {
         CONSOLE.write_string("rOSt Terminal v0.1\n");
         CONSOLE.write_string("Type commands or text here\n");
         CONSOLE.write_string("\n> ");
+
+        // CRITICAL: Force memory barrier to ensure console writes are visible
+        // Without this, compiler optimizes away the writes above
+        let _ = getpid();
     }
 
     // Don't create buffer at startup - wait for WM to tell us our dimensions
@@ -630,15 +671,14 @@ pub extern "C" fn _start() -> ! {
                     WMToKernel::RouteInput { event, .. } => {
                         // Handle keyboard input
                         if event.event_type == 1 { // KeyPressed
-                            // Debug: print key code for Enter key specifically
-                            if event.key == 28 {  // Enter is key code 28
-                                print_debug("Terminal: Enter key pressed!\r\n");
-                            }
-
                             // Convert evdev keycode to ASCII
                             if let Some(ascii) = librost::input::evdev_to_ascii(event.key, event.modifiers) {
                                 unsafe {
                                     handle_shell_input(ascii);
+
+                                    // Force memory barrier via syscall (prevents compiler optimization)
+                                    // Without this, compiler optimizes away console buffer writes
+                                    let _ = getpid();
 
                                     // Re-render to buffer
                                     CONSOLE.render_to_buffer(
@@ -648,12 +688,12 @@ pub extern "C" fn _start() -> ! {
                                     );
                                 }
 
-                                // Request WM to redraw
+                                // Request WM to redraw (sync_and_notify ensures cache coherency)
                                 let redraw_msg = KernelToWM::RequestRedraw {
                                     id: my_pid,
                                 };
                                 let msg_bytes = redraw_msg.to_bytes();
-                                send_message(wm_pid, &msg_bytes);
+                                librost::sync_and_notify(wm_pid, &msg_bytes);
                             }
                         }
                     }
@@ -682,7 +722,7 @@ pub extern "C" fn _start() -> ! {
                             CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height);
                         }
                         let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
-                        send_message(wm_pid, &redraw_msg.to_bytes());
+                        librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
                     }
                     FSToApp::CreateSuccess { .. } => {
                         unsafe {
@@ -691,7 +731,7 @@ pub extern "C" fn _start() -> ! {
                             CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height);
                         }
                         let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
-                        send_message(wm_pid, &redraw_msg.to_bytes());
+                        librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
                     }
                     FSToApp::OpenSuccess { fd, .. } => {
                         // Check if this is for a pending write
@@ -755,7 +795,7 @@ pub extern "C" fn _start() -> ! {
                             CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height);
                         }
                         let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
-                        send_message(wm_pid, &redraw_msg.to_bytes());
+                        librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
                     }
                     FSToApp::Error { error_code, .. } => {
                         unsafe {
@@ -773,7 +813,7 @@ pub extern "C" fn _start() -> ! {
                             CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height);
                         }
                         let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
-                        send_message(wm_pid, &redraw_msg.to_bytes());
+                        librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
                     }
                     _ => {
                         // Ignore other file server messages
@@ -788,7 +828,31 @@ pub extern "C" fn _start() -> ! {
 }
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    print_debug("PANIC in terminal!\r\n");
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    print_debug("PANIC in terminal: ");
+    if let Some(location) = info.location() {
+        print_debug(location.file());
+        print_debug(":");
+        // Print line number digit by digit
+        let line = location.line();
+        if line >= 100 {
+            let hundreds = (line / 100) as u8;
+            let c = [b'0' + hundreds];
+            print_debug(core::str::from_utf8(&c).unwrap_or("?"));
+        }
+        if line >= 10 {
+            let tens = ((line / 10) % 10) as u8;
+            let c = [b'0' + tens];
+            print_debug(core::str::from_utf8(&c).unwrap_or("?"));
+        }
+        let ones = (line % 10) as u8;
+        let c = [b'0' + ones];
+        print_debug(core::str::from_utf8(&c).unwrap_or("?"));
+    }
+    if let Some(msg) = info.payload().downcast_ref::<&str>() {
+        print_debug(" - ");
+        print_debug(msg);
+    }
+    print_debug("\r\n");
     exit(1);
 }

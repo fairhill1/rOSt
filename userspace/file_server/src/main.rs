@@ -236,6 +236,68 @@ impl SimpleFilesystem {
         })
     }
 
+    /// Format a new filesystem on the device
+    fn format<D: BlockDevice>(device: &mut D, total_sectors: u64) -> Result<Self, &'static str> {
+        print_debug("Formatting new filesystem...\r\n");
+
+        // Create empty file table
+        let file_table = [FileEntry {
+            name: [0; 8],
+            start_sector: 0,
+            size_sectors: 0,
+            size_bytes: 0,
+            flags: FileEntry::FLAG_FREE,
+            reserved: [0; 3],
+        }; MAX_FILES];
+
+        // Create superblock
+        let superblock = Superblock {
+            magic: FS_MAGIC,
+            version: FS_VERSION,
+            total_sectors,
+            data_start_sector: DATA_START_SECTOR,
+            file_count: 0,
+            reserved: [0; 480],
+        };
+
+        // Write superblock to sector 0
+        let mut sector_buffer = [0u8; SECTOR_SIZE];
+        unsafe {
+            core::ptr::write_volatile(sector_buffer.as_mut_ptr() as *mut Superblock, superblock);
+        }
+        device.write_block(0, &sector_buffer)?;
+
+        // Write empty file table to sectors 1-2
+        let entry_size = core::mem::size_of::<FileEntry>();
+        let entries_per_sector = SECTOR_SIZE / entry_size;
+
+        for sector in 0..FILE_TABLE_SECTORS {
+            sector_buffer = [0u8; SECTOR_SIZE];
+            let start_entry = (sector * entries_per_sector as u64) as usize;
+            let end_entry = core::cmp::min(start_entry + entries_per_sector, MAX_FILES);
+
+            for i in start_entry..end_entry {
+                let offset = (i - start_entry) * entry_size;
+                unsafe {
+                    core::ptr::write_volatile(
+                        sector_buffer.as_mut_ptr().add(offset) as *mut FileEntry,
+                        file_table[i]
+                    );
+                }
+            }
+
+            device.write_block(1 + sector, &sector_buffer)?;
+        }
+
+        print_debug("Filesystem formatted successfully!\r\n");
+
+        Ok(Self {
+            superblock,
+            file_table,
+            next_free_sector: DATA_START_SECTOR,
+        })
+    }
+
     /// List all files in the filesystem
     fn list_files(&self) -> Vec<&str> {
         let mut files = Vec::new();
@@ -425,20 +487,34 @@ pub extern "C" fn _start() -> ! {
     print_debug("=== rOSt File Server (EL0) ===");
     print_debug("Initializing...");
 
-    print_debug("Creating block device...");
+    print_debug("Creating block device...\r\n");
     let mut device = UserSpaceBlockDevice::new(0); // First VirtIO block device
 
-    print_debug("Attempting to mount filesystem...");
+    print_debug("Attempting to mount filesystem...\r\n");
     let mut fs = match SimpleFilesystem::mount(&mut device) {
         Ok(fs) => {
-            print_debug("Filesystem mounted successfully");
+            print_debug("Filesystem mounted successfully\r\n");
             fs
         }
         Err(e) => {
             print_debug("Failed to mount filesystem: ");
             print_debug(e);
-            print_debug("File server will exit");
-            exit(1);
+            print_debug("\r\n");
+
+            // Try to format the disk instead
+            print_debug("Attempting to format disk...\r\n");
+            match SimpleFilesystem::format(&mut device, 20480) { // 10MB = 20480 sectors
+                Ok(fs) => {
+                    print_debug("Disk formatted successfully\r\n");
+                    fs
+                }
+                Err(format_err) => {
+                    print_debug("Failed to format disk: ");
+                    print_debug(format_err);
+                    print_debug("\r\nFile server will exit\r\n");
+                    exit(1);
+                }
+            }
         }
     };
 

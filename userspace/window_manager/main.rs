@@ -623,7 +623,7 @@ fn draw_window_chrome(window: &WindowState) {
 
 /// Redraw all window chrome and menu bar
 fn redraw_all() {
-    // print_debug("[WM] redraw_all: START\r\n");
+    print_debug("WM:REDRAW ");
 
     // Don't recalculate layout on every frame - only when windows change
     // Layout is calculated in handle_create_window() and handle_close_window()
@@ -655,79 +655,118 @@ fn redraw_all() {
 
     // Composite window content from shared memory, then draw chrome
     let count = WINDOW_COUNT.load(Ordering::SeqCst);
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
 
-    for i in 0..count {
-        // print_debug("[WM] redraw_all: Compositing window\r\n");
-        let mut window = unsafe { core::ptr::read_volatile(&WINDOWS[i]) };
-        if !window.visible {
-            // print_debug("[WM] redraw_all: Window not visible, skipping\r\n");
-            continue;
+    print_debug("CNT=");
+    if count < 10 {
+        let s = [b'0' + count as u8];
+        print_debug(core::str::from_utf8(&s).unwrap_or("?"));
+    }
+    print_debug(" ");
+
+    // Compiler is optimizing away the loop completely in release mode
+    // Work around by unrolling manually for the first window
+    if count >= 1 {
+        let mut window = unsafe { core::ptr::read_volatile(&WINDOWS[0]) };
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
+
+        // Force compiler to actually read window fields and prevent optimization
+        let visible_val = core::hint::black_box(unsafe { core::ptr::read_volatile(&window.visible) });
+        let shm_id_val = core::hint::black_box(unsafe { core::ptr::read_volatile(&window.shm_id) });
+        getpid(); // Barrier
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
+
+        print_debug("W0:V=");
+        if core::hint::black_box(visible_val) {
+            print_debug("1");
+        } else {
+            print_debug("0");
         }
-
-        // Skip windows that don't have a buffer yet (waiting for first resize)
-        if window.shm_id == 0 {
-            // Draw window chrome only (no content)
-            draw_window_chrome(&window);
-            continue;
+        print_debug(" S=");
+        if core::hint::black_box(shm_id_val) < 10 {
+            let s = [b'0' + shm_id_val as u8];
+            print_debug(core::str::from_utf8(&s).unwrap_or("?"));
         }
+        print_debug(" ");
 
-        // Composite window content from shared memory
-        // WM owns all buffers, so just map with regular shm_map
-        let shm_id = window.shm_id;
-        let shm_ptr = shm_map(shm_id);
+        if core::hint::black_box(visible_val) && core::hint::black_box(shm_id_val) != 0 {
+            // Composite window content from shared memory
+            let shm_ptr = shm_map(shm_id_val);
+            core::sync::atomic::compiler_fence(Ordering::SeqCst);
 
-        // If shared memory mapping fails, hide window (process likely died)
-        if shm_ptr.is_null() {
-            print_debug("[WM] shm_map failed for window, hiding it (process died?)\r\n");
-            window.visible = false;
-            unsafe {
-                core::ptr::write_volatile(core::ptr::addr_of_mut!(WINDOWS[i]), window);
-            }
-            continue;
-        }
+            // If shared memory mapping fails, hide window (process likely died)
+            if shm_ptr.is_null() {
+                print_debug("[WM] shm_map failed\r\n");
+                window.visible = false;
+                unsafe {
+                    core::ptr::write_volatile(core::ptr::addr_of_mut!(WINDOWS[0]), window);
+                }
+            } else {
+                // Calculate content area (inside title bar and borders)
+                let content_x = window.x + BORDER_WIDTH as i32;
+                let content_y = window.y + TITLE_BAR_HEIGHT as i32;
 
-        if !shm_ptr.is_null() {
-            // Calculate content area (inside title bar and borders)
-            let content_x = window.x + BORDER_WIDTH as i32;
-            let content_y = window.y + TITLE_BAR_HEIGHT as i32;
-            let content_width = window.width.saturating_sub(BORDER_WIDTH * 2);
-            let content_height = window.height.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH);
+                // CRITICAL: Force compiler to actually compute these values correctly
+                // Without black_box, release mode miscompiles the buffer offset arithmetic
+                let content_width = core::hint::black_box(window.width.saturating_sub(BORDER_WIDTH * 2));
+                let content_height = core::hint::black_box(window.height.saturating_sub(TITLE_BAR_HEIGHT + BORDER_WIDTH));
 
-            // Copy pixels from shared memory to framebuffer
-            let src_buffer = unsafe {
-                core::slice::from_raw_parts(shm_ptr as *const u32, (content_width * content_height) as usize)
-            };
+                // Copy pixels from shared memory to framebuffer
+                let src_buffer = unsafe {
+                    core::slice::from_raw_parts(shm_ptr as *const u32, (content_width * content_height) as usize)
+                };
 
-            let fb_w = FB_WIDTH.load(Ordering::SeqCst) as usize;
-            let fb_h = FB_HEIGHT.load(Ordering::SeqCst) as usize;
-
-            // Use memcpy-style copy instead of pixel-by-pixel volatile writes
-            unsafe {
-                for y in 0..content_height {
-                    let screen_y = (content_y + y as i32) as usize;
-                    if screen_y >= fb_h {
-                        continue;
+                // Debug: Check if buffer has non-zero pixels
+                let mut non_zero_count = 0;
+                for idx in 0..src_buffer.len().min(1000) {
+                    if src_buffer[idx] != 0 {
+                        non_zero_count += 1;
                     }
-
-                    let screen_x = content_x as usize;
-                    if screen_x >= fb_w {
-                        continue;
+                }
+                if non_zero_count > 0 {
+                    print_debug("DATA=");
+                    if non_zero_count < 10 {
+                        let s = [b'0' + non_zero_count as u8];
+                        print_debug(core::str::from_utf8(&s).unwrap_or("?"));
+                    } else {
+                        print_debug(">10");
                     }
+                    print_debug(" ");
+                } else {
+                    print_debug("ZERO ");
+                }
 
-                    let copy_width = content_width.min((fb_w - screen_x) as u32) as usize;
-                    let src_offset = (y * content_width) as usize;
-                    let dst_offset = screen_y * fb_w + screen_x;
+                let fb_w = FB_WIDTH.load(Ordering::SeqCst) as usize;
+                let fb_h = FB_HEIGHT.load(Ordering::SeqCst) as usize;
 
-                    if src_offset + copy_width <= src_buffer.len() {
-                        core::ptr::copy_nonoverlapping(
-                            src_buffer.as_ptr().add(src_offset),
-                            FB_PTR.add(dst_offset),
-                            copy_width
-                        );
+                // CRITICAL: Must use write_volatile to prevent compiler optimization
+                // copy_nonoverlapping can be optimized away in release mode
+                unsafe {
+                    for y in 0..content_height {
+                        let screen_y = (content_y + y as i32) as usize;
+                        if screen_y >= fb_h {
+                            continue;
+                        }
+
+                        let screen_x = content_x as usize;
+                        if screen_x >= fb_w {
+                            continue;
+                        }
+
+                        let copy_width = content_width.min((fb_w - screen_x) as u32) as usize;
+                        let src_offset = (y * content_width) as usize;
+                        let dst_offset = screen_y * fb_w + screen_x;
+
+                        if src_offset + copy_width <= src_buffer.len() {
+                            // Write each pixel with write_volatile to force actual writes
+                            for x in 0..copy_width {
+                                let pixel = core::ptr::read_volatile(src_buffer.as_ptr().add(src_offset + x));
+                                core::ptr::write_volatile(FB_PTR.add(dst_offset + x), pixel);
+                            }
+                        }
                     }
                 }
             }
-            // print_debug("[WM] redraw_all: Pixels copied\r\n");
         }
 
         // Draw window chrome on top
@@ -1181,6 +1220,7 @@ pub extern "C" fn _start() -> ! {
         if need_redraw.load(Ordering::SeqCst) {
             redraw_all();
             fb_flush();
+            need_redraw.store(false, Ordering::SeqCst);
         }
 
         // CRITICAL: ALWAYS yield, even if no redraw

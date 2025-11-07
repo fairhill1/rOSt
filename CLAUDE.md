@@ -355,6 +355,82 @@ uart_write_string("[SCHED] yield_now entered\r\n");
 - Shell commands that spawn processes will freeze (shell isn't a scheduled thread)
 - To test IPC: uncomment auto-spawn section in kernel/src/kernel/mod.rs and rebuild
 
+## Shared Memory IPC - MANDATORY Pattern
+
+**ALWAYS use `sync_and_notify()` after writing to shared memory buffers.**
+
+```rust
+// ❌ WRONG - WM will read stale data from cache
+pixel_buffer[0] = 0xFF_FF_FF_FF;
+send_message(wm_pid, &msg);
+
+// ✅ CORRECT - ensures cache coherency
+pixel_buffer[0] = 0xFF_FF_FF_FF;
+librost::sync_and_notify(wm_pid, &msg);
+```
+
+**Why this is critical:**
+- Your writes may still be in CPU cache when the other process reads
+- Compiler may reorder writes after the send_message call
+- Result: Other process sees old/partial data (race condition)
+
+**Usage:**
+- Terminal → WM: After `render_to_buffer()`, use `sync_and_notify()`
+- Any process writing to shared buffer: sync before notify
+- Use `sync_memory()` if you need to flush without sending a message
+
+## Release Mode Compiler Issues - Debug Checklist
+
+If code works in one scenario but not another, check these patterns in order:
+
+### 1. Pattern: "Works with debug output, breaks without"
+**Diagnosis:** Race condition or missing memory barrier
+**Fix:** Add `sync_and_notify()` or `sync_memory()` after shared memory writes
+
+### 2. Pattern: "Loop/if-statement not executing"
+**Diagnosis:** Compiler optimizes away control flow
+**Fix:** Wrap condition in `core::hint::black_box()`
+```rust
+// ❌ Compiler optimizes away
+if window.visible { ... }
+
+// ✅ Compiler preserves
+if core::hint::black_box(window.visible) { ... }
+```
+
+### 3. Pattern: "Calculations produce wrong results"
+**Diagnosis:** Compiler miscompiles arithmetic in release mode
+**Fix:** Wrap values in `black_box()`
+```rust
+let content_width = core::hint::black_box(window.width - BORDER * 2);
+```
+
+### 4. Pattern: "Memory writes disappear"
+**Diagnosis:** Compiler eliminates "dead stores"
+**Fix:** Use `write_volatile()` or add memory barriers
+
+### 5. Faster Debug Workflow
+Instead of fighting the compiler:
+1. Notice bug in release mode
+2. **Try debug mode first**: `cargo build` (without `--release`)
+3. If it works in debug → **it's a compiler/timing issue, not logic**
+4. Apply barriers/black_box immediately, don't add debug output
+5. Test in release mode
+
+## Debug Tracing
+
+Use `debug_trace!()` instead of direct `print_debug()` calls:
+
+```rust
+// Normal build - compiled to nothing
+debug_trace!("Entering function\r\n");
+
+// With verbose debug enabled
+cargo build --release --features verbose-debug
+```
+
+This lets you leave debug code in place without performance impact.
+
 ---
 
 **🚨 Update after major changes! 🚨**

@@ -759,15 +759,6 @@ pub extern "C" fn kernel_init_high_half() -> ! {
         drivers::virtio::input::init_virtio_input();
     }
 
-    uart_write_string("\r\n");
-    uart_write_string("================================\r\n");
-    uart_write_string("  Rust OS - Interactive Shell  \r\n");
-    uart_write_string("================================\r\n");
-    uart_write_string("Type 'help' for available commands\r\n");
-    uart_write_string("\r\n");
-
-    uart_write_string("Kernel ready! Open a terminal window from the menu.\r\n");
-
     // ===== SPAWN ELF LOADER THREAD FIRST =====
     // CRITICAL: Load ELF files with ONLY this thread running to avoid allocator contention
     uart_write_string("\n=== Loading userspace applications ===\r\n");

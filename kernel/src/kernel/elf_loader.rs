@@ -17,12 +17,8 @@ use alloc::boxed::Box;
 ///
 /// Returns process ID on success, 0 on failure
 pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
-    crate::kernel::uart_write_string("[ELF] load_elf_and_spawn entered\r\n");
-
     // NOTE: RLSF allocator handles interrupt masking internally
     // DO NOT disable interrupts here - causes deadlock if GUI thread holds allocator mutex
-
-    crate::kernel::uart_write_string("[ELF] About to validate size\r\n");
 
     // Validate size
     if elf_data.len() < 4 {
@@ -30,21 +26,14 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
         return 0;
     }
 
-    crate::kernel::uart_write_string("[ELF] Size validated, about to parse ELF\r\n");
-
     // Parse ELF file with goblin
-    crate::kernel::uart_write_string("[ELF] Calling Elf::parse()...\r\n");
     let elf = match Elf::parse(elf_data) {
-        Ok(e) => {
-            crate::kernel::uart_write_string("[ELF] Elf::parse() returned Ok\r\n");
-            e
-        },
+        Ok(e) => e,
         Err(_e) => {
             crate::kernel::uart_write_string("[ELF] Error: Failed to parse ELF file\r\n");
             return 0;
         }
     };
-    crate::kernel::uart_write_string("[ELF] ELF parsed successfully\r\n");
 
     // Verify it's an AArch64 executable
     if elf.header.e_machine != goblin::elf::header::EM_AARCH64 {
@@ -56,53 +45,39 @@ pub fn load_elf_and_spawn(elf_data: &[u8]) -> usize {
     let entry_point = elf.entry;
 
     // Load program segments into memory
-    crate::kernel::uart_write_string("[ELF] Calling load_program_segments...\r\n");
     let (mut loaded_memory, base_vaddr) = match load_program_segments(&elf, elf_data) {
-        Ok(result) => {
-            crate::kernel::uart_write_string("[ELF] load_program_segments returned Ok\r\n");
-            result
-        },
+        Ok(result) => result,
         Err(_e) => {
             crate::kernel::uart_write_string("[ELF] Error loading segments\r\n");
             return 0;
         }
     };
-    crate::kernel::uart_write_string("[ELF] Destructured result tuple\r\n");
 
     let loaded_base = loaded_memory.as_ptr() as u64;
-    crate::kernel::uart_write_string("[ELF] Got loaded_base pointer\r\n");
 
     // Apply relocations (critical for .rodata string literals to work)
-    crate::kernel::uart_write_string("[ELF] Applying relocations...\r\n");
     apply_relocations(&elf, &mut loaded_memory, loaded_base, base_vaddr);
-    crate::kernel::uart_write_string("[ELF] Relocations applied\r\n");
 
     // Calculate entry point offset from the ELF base virtual address
-    crate::kernel::uart_write_string("[ELF] About to calculate entry_offset\r\n");
     let entry_offset = entry_point - base_vaddr;
-    crate::kernel::uart_write_string("[ELF] Calculated entry_offset\r\n");
     let actual_entry = loaded_base + entry_offset;
-    crate::kernel::uart_write_string("[ELF] Calculated actual_entry\r\n");
 
-    crate::kernel::uart_write_string("[ELF] About to transmute entry point\r\n");
     let entry_fn: extern "C" fn() -> ! = unsafe {
         core::mem::transmute(actual_entry as usize)
     };
-    crate::kernel::uart_write_string("[ELF] Entry function created\r\n");
 
     // Spawn through scheduler
-    crate::kernel::uart_write_string("[ELF] About to lock scheduler\r\n");
     let process_id = crate::kernel::scheduler::SCHEDULER.lock().spawn_user_process(entry_fn);
-    crate::kernel::uart_write_string("[ELF] Process spawned\r\n");
 
     // CRITICAL: We leak the memory here on purpose!
     // The process needs this memory to stay alive
     // In a real OS, this would be managed by the process manager
-    crate::kernel::uart_write_string("[ELF] About to leak memory\r\n");
     Box::leak(loaded_memory);
-    crate::kernel::uart_write_string("[ELF] Memory leaked\r\n");
 
-    crate::kernel::uart_write_string("[ELF] Returning process_id\r\n");
+    crate::kernel::uart_write_string("[ELF] Loaded successfully, PID: ");
+    print_number(process_id);
+    crate::kernel::uart_write_string("\r\n");
+
     process_id
 }
 
@@ -130,73 +105,43 @@ fn load_program_segments(elf: &Elf, elf_data: &[u8]) -> Result<(Box<[u8]>, u64),
     }
 
     let total_size = (max_addr - min_addr) as usize;
-    crate::kernel::uart_write_string("[ELF] Allocating program memory, size = ");
-    if total_size < 1000000 {  // Print size if reasonable
-        // Simple size print (just to confirm it's sane)
-    }
-    crate::kernel::uart_write_string("\r\n");
 
     // Allocate memory for the program
-    crate::kernel::uart_write_string("[ELF] About to allocate vec...\r\n");
     let mut program_memory = alloc::vec![0u8; total_size].into_boxed_slice();
-    crate::kernel::uart_write_string("[ELF] Vec allocated successfully\r\n");
-
-    crate::kernel::uart_write_string("[ELF] Copying LOAD segments\r\n");
 
     // Copy each LOAD segment
-    crate::kernel::uart_write_string("[ELF] Starting program header iteration...\r\n");
     for ph in &elf.program_headers {
-        crate::kernel::uart_write_string("[ELF] Checking segment type...\r\n");
-        crate::kernel::uart_write_string("[ELF] Got segment type\r\n");
         if ph.p_type == PT_LOAD {
-            crate::kernel::uart_write_string("[ELF] Found LOAD segment, processing...\r\n");
             let vaddr = ph.p_vaddr;
-            crate::kernel::uart_write_string("[ELF] Got vaddr\r\n");
             let memsz = ph.p_memsz as usize;
-            crate::kernel::uart_write_string("[ELF] Got memsz\r\n");
             let filesz = ph.p_filesz as usize;
-            crate::kernel::uart_write_string("[ELF] Got filesz\r\n");
             let offset = ph.p_offset as usize;
-            crate::kernel::uart_write_string("[ELF] Got offset\r\n");
 
             // Calculate offset in our allocated buffer
             let buffer_offset = (vaddr - min_addr) as usize;
-            crate::kernel::uart_write_string("[ELF] Calculated buffer_offset\r\n");
 
             // Check bounds
             if buffer_offset + memsz > total_size {
                 return Err("Segment out of bounds");
             }
-            crate::kernel::uart_write_string("[ELF] Bounds check passed\r\n");
 
             // Copy file data
             if filesz > 0 {
-                crate::kernel::uart_write_string("[ELF] About to copy file data\r\n");
                 if offset + filesz > elf_data.len() {
                     return Err("ELF file truncated");
                 }
                 program_memory[buffer_offset..buffer_offset + filesz]
                     .copy_from_slice(&elf_data[offset..offset + filesz]);
-                crate::kernel::uart_write_string("[ELF] File data copied\r\n");
             }
 
             // Zero the BSS (memsz > filesz)
             if memsz > filesz {
-                crate::kernel::uart_write_string("[ELF] About to zero BSS\r\n");
                 program_memory[buffer_offset + filesz..buffer_offset + memsz].fill(0);
-                crate::kernel::uart_write_string("[ELF] BSS zeroed\r\n");
             }
-            crate::kernel::uart_write_string("[ELF] Segment complete\r\n");
-        } else {
-            crate::kernel::uart_write_string("[ELF] Not a LOAD segment, skipping\r\n");
         }
     }
-    crate::kernel::uart_write_string("[ELF] All segments processed\r\n");
 
-    crate::kernel::uart_write_string("[ELF] About to return from load_program_segments\r\n");
-    let result = (program_memory, min_addr);
-    crate::kernel::uart_write_string("[ELF] Result tuple created\r\n");
-    Ok(result)
+    Ok((program_memory, min_addr))
 }
 
 /// Get the entry point from an ELF file without loading it
@@ -215,18 +160,6 @@ fn apply_relocations(elf: &Elf, loaded_memory: &mut [u8], loaded_base: u64, elf_
     // Calculate the load offset (difference between where ELF expected to be and where it actually is)
     let load_offset = loaded_base.wrapping_sub(elf_base_vaddr);
 
-    crate::kernel::uart_write_string("[RELOC] Processing relocations\r\n");
-
-    // Count dynamic relocations
-    crate::kernel::uart_write_string("[RELOC] Dynamic relocations (dynrelas): ");
-    print_number(elf.dynrelas.len());
-    crate::kernel::uart_write_string("\r\n");
-
-    // Count section relocations
-    crate::kernel::uart_write_string("[RELOC] Section relocations (shdr_relocs): ");
-    print_number(elf.shdr_relocs.len());
-    crate::kernel::uart_write_string("\r\n");
-
     let mut total_relocs_applied = 0;
 
     // Process dynamic relocations (.rela.dyn) - for dynamically linked binaries
@@ -238,13 +171,7 @@ fn apply_relocations(elf: &Elf, loaded_memory: &mut [u8], loaded_base: u64, elf_
     }
 
     // Process section relocations (.rela.text, .rela.rodata, etc.) - for statically linked binaries
-    crate::kernel::uart_write_string("[RELOC] Processing section relocations...\r\n");
     for (_section_idx, reloc_section) in &elf.shdr_relocs {
-        crate::kernel::uart_write_string("[RELOC] Found relocation section with ");
-        print_number(reloc_section.len());
-        crate::kernel::uart_write_string(" entries\r\n");
-
-        let mut debug_count = 0;
         for reloc in reloc_section.iter() {
             let r_addend = reloc.r_addend.unwrap_or(0);
 
@@ -262,34 +189,12 @@ fn apply_relocations(elf: &Elf, loaded_memory: &mut [u8], loaded_base: u64, elf_
                 0  // Unknown symbol, assume 0
             };
 
-            // Debug first few relocations
-            if debug_count < 3 {
-                crate::kernel::uart_write_string("[RELOC DEBUG] offset=");
-                print_hex(reloc.r_offset);
-                crate::kernel::uart_write_string(" type=");
-                print_number(reloc.r_type as usize);
-                crate::kernel::uart_write_string(" sym=");
-                print_number(reloc.r_sym as usize);
-                crate::kernel::uart_write_string(" symval=");
-                print_hex(symbol_value);
-                crate::kernel::uart_write_string(" addend=");
-                print_hex(r_addend as u64);
-                crate::kernel::uart_write_string("\r\n");
-                debug_count += 1;
-            }
-
             if apply_single_relocation(reloc.r_type, reloc.r_offset, r_addend, symbol_value,
                                        loaded_memory, load_offset, elf_base_vaddr) {
                 total_relocs_applied += 1;
             }
         }
     }
-
-    crate::kernel::uart_write_string("[RELOC] Total relocations applied: ");
-    print_number(total_relocs_applied);
-    crate::kernel::uart_write_string("\r\n");
-
-    crate::kernel::uart_write_string("[RELOC] Relocation processing complete\r\n");
 }
 
 /// Apply a single relocation entry
