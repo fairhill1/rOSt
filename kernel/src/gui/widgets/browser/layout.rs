@@ -252,11 +252,9 @@ pub fn load_html(browser: &mut Browser, html: String) {
     // Extract page title from DOM
     browser.page_title = extract_title(&dom);
 
-    // Update window title
-    if let Some(ref title) = browser.page_title {
-        let window_title = alloc::format!("Browser - {}", title);
-        crate::gui::window_manager::set_browser_window_title(browser.instance_id, &window_title);
-    }
+    // TODO: Update window title via IPC to userspace WM
+    // Browser is legacy kernel-mode widget, should be migrated to userspace
+    // For now, window title won't dynamically update when navigating pages
 
     // Extract and parse inline <style> tags
     let inline_css_blocks = extract_inline_css(&dom);

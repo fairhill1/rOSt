@@ -199,28 +199,15 @@ impl Console {
         let bg_color = BG_COLOR.load(Ordering::SeqCst);
         let fg_color = FG_COLOR.load(Ordering::SeqCst);
 
-        // Clear to background color
-        for pixel in pixel_buffer.iter_mut() {
-            *pixel = bg_color;
+        // Clear to background color using volatile writes
+        // (pixel_buffer is shared memory read by WM)
+        for i in 0..pixel_buffer.len() {
+            unsafe {
+                core::ptr::write_volatile(&mut pixel_buffer[i], bg_color);
+            }
         }
-
-        // Debug: Print cursor position before render
-        let cursor_y = self.cursor_y.load(Ordering::SeqCst);
-        let cursor_x = self.cursor_x.load(Ordering::SeqCst);
-        librost::print_debug("R:");
-        if cursor_y < 10 {
-            let s = [b'0' + cursor_y as u8];
-            librost::print_debug(core::str::from_utf8(&s).unwrap_or("?"));
-        }
-        librost::print_debug(",");
-        if cursor_x < 10 {
-            let s = [b'0' + cursor_x as u8];
-            librost::print_debug(core::str::from_utf8(&s).unwrap_or("?"));
-        }
-        librost::print_debug(" ");
 
         // Draw console text using bitmap font
-        let mut chars_drawn = 0;
         for y in 0..CONSOLE_HEIGHT {
             let line_y = (y as i32) * LINE_HEIGHT as i32;
 
@@ -229,7 +216,6 @@ impl Console {
                 // Use volatile read to force compiler to fetch from memory
                 let ch = unsafe { core::ptr::read_volatile(&self.buffer[y][x]) };
                 if ch != b' ' {
-                    chars_drawn += 1;
                     let char_x = (x as i32) * CHAR_WIDTH as i32;
                     librost::graphics::draw_char(
                         pixel_buffer,
@@ -243,18 +229,6 @@ impl Console {
                 }
             }
         }
-
-        // Debug: How many chars were actually drawn?
-        librost::print_debug("drew=");
-        if chars_drawn == 0 {
-            librost::print_debug("0!");
-        } else if chars_drawn < 10 {
-            let s = [b'0' + chars_drawn];
-            librost::print_debug(core::str::from_utf8(&s).unwrap_or("?"));
-        } else {
-            librost::print_debug(">10");
-        }
-        librost::print_debug(" ");
 
         // Draw cursor (solid block)
         let cursor_x_pos = self.cursor_x.load(Ordering::SeqCst);
@@ -281,6 +255,9 @@ impl Console {
                 }
             }
         }
+
+        // NOTE: No manual sync needed! Shared memory is mapped as non-cacheable (MAIR Attr2=0x44)
+        // Hardware ensures coherency automatically for non-cacheable regions
     }
 }
 
@@ -394,6 +371,51 @@ unsafe fn cmd_help() {
 /// Clear command
 unsafe fn cmd_clear() {
     CONSOLE.clear();
+
+    // Re-render cleared buffer to pixels and notify WM
+    let buffer_width = BUFFER_WIDTH.load(Ordering::SeqCst) as usize;
+    let buffer_height = BUFFER_HEIGHT.load(Ordering::SeqCst) as usize;
+
+    librost::print_debug("CLR: w=");
+    if buffer_width < 10000 {
+        let w_str = [b'0' + (buffer_width / 1000) as u8, b'0' + ((buffer_width / 100) % 10) as u8,
+                     b'0' + ((buffer_width / 10) % 10) as u8, b'0' + (buffer_width % 10) as u8];
+        librost::print_debug(core::str::from_utf8(&w_str).unwrap_or("?"));
+    }
+    librost::print_debug(" h=");
+    if buffer_height < 10000 {
+        let h_str = [b'0' + (buffer_height / 1000) as u8, b'0' + ((buffer_height / 100) % 10) as u8,
+                     b'0' + ((buffer_height / 10) % 10) as u8, b'0' + (buffer_height % 10) as u8];
+        librost::print_debug(core::str::from_utf8(&h_str).unwrap_or("?"));
+    }
+    librost::print_debug(" ");
+
+    if !PIXEL_BUFFER.is_null() && buffer_width > 0 && buffer_height > 0 {
+        let pixel_buffer = core::slice::from_raw_parts_mut(
+            PIXEL_BUFFER,
+            buffer_width * buffer_height
+        );
+
+        librost::print_debug("pxlen=");
+        let len = pixel_buffer.len();
+        // Simple debug: just print if it's big or small
+        if len > 500000 {
+            librost::print_debug("BIG ");
+        } else if len > 100000 {
+            librost::print_debug("MED ");
+        } else {
+            librost::print_debug("SMALL ");
+        }
+
+        CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height);
+
+        librost::print_debug("rendered ");
+
+        let wm_pid = 1; // WM is always PID 1
+        let my_pid = getpid() as usize;
+        let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
+        librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
+    }
 }
 
 /// List files command - uses file server IPC
@@ -634,6 +656,11 @@ pub extern "C" fn _start() -> ! {
                             buffer_width = width as usize;
                             buffer_height = height as usize;
 
+                            // Store in statics so cmd_clear can access
+                            BUFFER_WIDTH.store(width, Ordering::SeqCst);
+                            BUFFER_HEIGHT.store(height, Ordering::SeqCst);
+                            unsafe { PIXEL_BUFFER = shmem_ptr as *mut u32; }
+
                             // Create slice from mapped buffer
                             pixel_buffer = unsafe {
                                 core::slice::from_raw_parts_mut(
@@ -673,27 +700,46 @@ pub extern "C" fn _start() -> ! {
                         if event.event_type == 1 { // KeyPressed
                             // Convert evdev keycode to ASCII
                             if let Some(ascii) = librost::input::evdev_to_ascii(event.key, event.modifiers) {
+                                print_debug("KEY:");
+                                if ascii >= 32 && ascii < 127 {
+                                    let s = [ascii];
+                                    if let Ok(s) = core::str::from_utf8(&s) {
+                                        print_debug(s);
+                                    }
+                                }
+                                print_debug(" BUF=");
+                                if pixel_buffer.is_empty() {
+                                    print_debug("EMPTY");
+                                } else {
+                                    print_debug("OK");
+                                }
+                                print_debug(" ");
+
                                 unsafe {
                                     handle_shell_input(ascii);
 
-                                    // Force memory barrier via syscall (prevents compiler optimization)
-                                    // Without this, compiler optimizes away console buffer writes
-                                    let _ = getpid();
+                                    // Only render if buffer is initialized
+                                    if !pixel_buffer.is_empty() {
+                                        print_debug("RENDER ");
 
-                                    // Re-render to buffer
-                                    CONSOLE.render_to_buffer(
-                                        pixel_buffer,
-                                        buffer_width,
-                                        buffer_height
-                                    );
+                                        // Re-render to buffer (non-cacheable, no sync needed)
+                                        CONSOLE.render_to_buffer(
+                                            pixel_buffer,
+                                            buffer_width,
+                                            buffer_height
+                                        );
+
+                                        // Request WM to redraw
+                                        let redraw_msg = KernelToWM::RequestRedraw {
+                                            id: my_pid,
+                                        };
+                                        let msg_bytes = redraw_msg.to_bytes();
+                                        send_message(wm_pid, &msg_bytes);
+                                        print_debug("SENT ");
+                                    } else {
+                                        print_debug("SKIP(empty) ");
+                                    }
                                 }
-
-                                // Request WM to redraw (sync_and_notify ensures cache coherency)
-                                let redraw_msg = KernelToWM::RequestRedraw {
-                                    id: my_pid,
-                                };
-                                let msg_bytes = redraw_msg.to_bytes();
-                                librost::sync_and_notify(wm_pid, &msg_bytes);
                             }
                         }
                     }

@@ -19,3 +19,4 @@ panic = "abort"
 
 [profile.dev]
 panic = "abort"
+opt-level = 2  # Same as release - required for linking (lower levels cause relocation errors)

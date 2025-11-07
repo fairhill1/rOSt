@@ -122,6 +122,37 @@ pub fn init_physical_memory(memory_map: &[MemoryDescriptor]) {
     }
 }
 
+/// Configure MAIR_EL1 (Memory Attribute Indirection Register) for cache attributes
+///
+/// Sets up memory attributes used by page table entries:
+/// - Attr0: Device-nGnRnE (0x00) - Device memory, no gathering, no reordering, no early ack
+/// - Attr1: Normal Write-Back cacheable (0xFF) - Normal memory, write-back, read/write allocate
+/// - Attr2: Normal Non-Cacheable (0x44) - Normal memory, non-cacheable (for shared memory IPC)
+///
+/// CRITICAL: This solves shared memory cache coherency issues by making IPC buffers non-cacheable.
+/// Non-cacheable memory is automatically treated as Outer Shareable by ARM64 hardware.
+pub fn setup_mair_el1() {
+    unsafe {
+        // MAIR_EL1 encoding: 8 attributes × 8 bits each
+        // Attr0 [7:0]   = 0x00 = Device-nGnRnE
+        // Attr1 [15:8]  = 0xFF = Normal, Inner/Outer Write-Back Read/Write-Allocate cacheable
+        // Attr2 [23:16] = 0x44 = Normal, Inner/Outer Non-Cacheable
+        // Attr3-7: Unused (set to 0)
+        let mair_value: u64 =
+            (0x00 << 0) |  // Attr0: Device-nGnRnE
+            (0xFF << 8) |  // Attr1: Normal cacheable
+            (0x44 << 16);  // Attr2: Normal non-cacheable (for shared memory)
+
+        core::arch::asm!(
+            "msr mair_el1, {}",
+            "isb",
+            in(reg) mair_value
+        );
+
+        crate::kernel::uart_write_string("[MMU] Configured MAIR_EL1: Attr0=Device, Attr1=Cached, Attr2=NonCached\r\n");
+    }
+}
+
 /// Allocate a physical page (4KB)
 pub fn alloc_physical_page() -> Option<u64> {
     unsafe {
@@ -192,8 +223,9 @@ impl PageTableEntry {
     const SH_INNER: u64 = 3 << 8; // Inner shareable
 
     // Memory attributes (index into MAIR_EL1)
-    const ATTR_DEVICE_nGnRnE: u64 = 0 << 2;  // Device memory
-    const ATTR_NORMAL: u64 = 1 << 2;  // Normal cached memory
+    const ATTR_DEVICE_nGnRnE: u64 = 0 << 2;  // Device memory (MAIR index 0)
+    const ATTR_NORMAL: u64 = 1 << 2;          // Normal cached memory (MAIR index 1)
+    const ATTR_NORMAL_NON_CACHEABLE: u64 = 2 << 2;  // Normal non-cacheable (MAIR index 2) - for shared memory
 
     // User execute never
     const UXN: u64 = 1 << 54;
@@ -204,14 +236,14 @@ impl PageTableEntry {
         Self(addr | Self::VALID | Self::TABLE)
     }
 
-    fn new_block(addr: u64, user_access: bool, writable: bool, executable: bool) -> Self {
+    fn new_block(addr: u64, user_access: bool, writable: bool, executable: bool, mem_attr: u64) -> Self {
         let ap = if user_access {
             if writable { Self::AP_KERN_RW_USER_RW } else { Self::AP_KERN_RO_USER_RO }
         } else {
             if writable { Self::AP_KERN_RW } else { Self::AP_KERN_RO }
         };
 
-        let mut flags = addr | Self::VALID | Self::BLOCK | Self::AF | ap | Self::SH_INNER | Self::ATTR_NORMAL;
+        let mut flags = addr | Self::VALID | Self::BLOCK | Self::AF | ap | Self::SH_INNER | mem_attr;
 
         // Set execute-never bits if not executable
         if !executable {
@@ -392,7 +424,7 @@ pub extern "C" fn setup_user_page_tables(user_stack_top: u64) -> (u64, u64) {
         // L1 has 512 entries, each covering 1GB, so this covers 512GB of physical memory
         for i in 0..512usize {
             let addr = (i as u64) * 0x40000000; // 1GB blocks (0x40000000 = 1GB)
-            let entry = PageTableEntry::new_block(addr, false, true, true); // Kernel RW, execute
+            let entry = PageTableEntry::new_block(addr, false, true, true, PageTableEntry::ATTR_NORMAL); // Kernel RW, execute, cached
             KERNEL_L1_TABLE.entries[i] = entry;
         }
 
@@ -408,14 +440,14 @@ pub extern "C" fn setup_user_page_tables(user_stack_top: u64) -> (u64, u64) {
         let stack_base = (user_stack_top & !0x1FFF_F) - 4 * 1024 * 1024; // 4MB stack
         for i in 0..2usize { // 2 * 2MB = 4MB
             let addr = stack_base + (i as u64) * 0x200000;
-            let entry = PageTableEntry::new_block(addr, true, true, false); // User RW, no execute
+            let entry = PageTableEntry::new_block(addr, true, true, false, PageTableEntry::ATTR_NORMAL); // User RW, no execute, cached
             USER_L1_TABLE.entries[((addr >> 21) & 0x1FF) as usize] = entry;
         }
 
         // Map user program region (identity mapping for now)
         for i in 0..2usize { // 4MB for user program
             let addr = (i as u64) * 0x200000;
-            let entry = PageTableEntry::new_block(addr, true, true, true); // User RWX
+            let entry = PageTableEntry::new_block(addr, true, true, true, PageTableEntry::ATTR_NORMAL); // User RWX, cached
             USER_L1_TABLE.entries[i] = entry;
         }
 
@@ -473,7 +505,7 @@ pub fn setup_mmu_page_tables() {
         KERNEL_L1_TABLE.entries[0] = PageTableEntry::new_table(l2_0_addr);
         for i in 0..512usize {
             let addr = (i as u64) * 0x200000;
-            KERNEL_L2_TABLE_0.entries[i] = PageTableEntry::new_block(addr, false, true, true);
+            KERNEL_L2_TABLE_0.entries[i] = PageTableEntry::new_block(addr, false, true, true, PageTableEntry::ATTR_NORMAL);
         }
 
         // L2[1]: 1-2GB (where the kernel code is!)
@@ -481,7 +513,15 @@ pub fn setup_mmu_page_tables() {
         KERNEL_L1_TABLE.entries[1] = PageTableEntry::new_table(l2_1_addr);
         for i in 0..512usize {
             let addr = 0x40000000 + (i as u64) * 0x200000;
-            KERNEL_L2_TABLE_1.entries[i] = PageTableEntry::new_block(addr, false, true, true);
+
+            // Shared memory IPC region (0x60000000-0x70000000) must be non-cacheable
+            let mem_attr = if addr >= 0x60000000 && addr < 0x70000000 {
+                PageTableEntry::ATTR_NORMAL_NON_CACHEABLE
+            } else {
+                PageTableEntry::ATTR_NORMAL
+            };
+
+            KERNEL_L2_TABLE_1.entries[i] = PageTableEntry::new_block(addr, false, true, true, mem_attr);
         }
 
         // L2[2]: 2-3GB
@@ -489,7 +529,7 @@ pub fn setup_mmu_page_tables() {
         KERNEL_L1_TABLE.entries[2] = PageTableEntry::new_table(l2_2_addr);
         for i in 0..512usize {
             let addr = 0x80000000 + (i as u64) * 0x200000;
-            KERNEL_L2_TABLE_2.entries[i] = PageTableEntry::new_block(addr, false, true, true);
+            KERNEL_L2_TABLE_2.entries[i] = PageTableEntry::new_block(addr, false, true, true, PageTableEntry::ATTR_NORMAL);
         }
 
         // L2[3]: 3-4GB
@@ -497,7 +537,7 @@ pub fn setup_mmu_page_tables() {
         KERNEL_L1_TABLE.entries[3] = PageTableEntry::new_table(l2_3_addr);
         for i in 0..512usize {
             let addr = 0xC0000000 + (i as u64) * 0x200000;
-            KERNEL_L2_TABLE_3.entries[i] = PageTableEntry::new_block(addr, false, true, true);
+            KERNEL_L2_TABLE_3.entries[i] = PageTableEntry::new_block(addr, false, true, true, PageTableEntry::ATTR_NORMAL);
         }
 
         // CRITICAL: Clean data cache for ALL page tables
@@ -550,25 +590,35 @@ pub fn setup_mmu_page_tables() {
         // L2[0]: 0-1GB
         for i in 0..512usize {
             let addr = (i as u64) * 0x200000;
-            USER_L2_TABLE_0.entries[i] = PageTableEntry::new_block(addr, true, true, true); // User RWX
+            USER_L2_TABLE_0.entries[i] = PageTableEntry::new_block(addr, true, true, true, PageTableEntry::ATTR_NORMAL); // User RWX, cached
         }
 
         // L2[1]: 1-2GB (where kernel code is - needs execute permission!)
         for i in 0..512usize {
             let addr = 0x40000000 + (i as u64) * 0x200000;
-            USER_L2_TABLE_1.entries[i] = PageTableEntry::new_block(addr, true, true, true); // User RWX
+
+            // CRITICAL: Shared memory IPC region (0x60000000-0x70000000 = 256MB) mapped as NON-CACHEABLE
+            // This solves cache coherency issues for cross-process shared buffers (Terminal pixel buffer, WM framebuffer, etc.)
+            // Non-cacheable memory is automatically Outer Shareable per ARM64 spec
+            let mem_attr = if addr >= 0x60000000 && addr < 0x70000000 {
+                PageTableEntry::ATTR_NORMAL_NON_CACHEABLE // Shared memory IPC region
+            } else {
+                PageTableEntry::ATTR_NORMAL // Normal cacheable
+            };
+
+            USER_L2_TABLE_1.entries[i] = PageTableEntry::new_block(addr, true, true, true, mem_attr);
         }
 
         // L2[2]: 2-3GB
         for i in 0..512usize {
             let addr = 0x80000000 + (i as u64) * 0x200000;
-            USER_L2_TABLE_2.entries[i] = PageTableEntry::new_block(addr, true, true, true); // User RWX
+            USER_L2_TABLE_2.entries[i] = PageTableEntry::new_block(addr, true, true, true, PageTableEntry::ATTR_NORMAL); // User RWX, cached
         }
 
         // L2[3]: 3-4GB
         for i in 0..512usize {
             let addr = 0xC0000000 + (i as u64) * 0x200000;
-            USER_L2_TABLE_3.entries[i] = PageTableEntry::new_block(addr, true, true, true); // User RWX
+            USER_L2_TABLE_3.entries[i] = PageTableEntry::new_block(addr, true, true, true, PageTableEntry::ATTR_NORMAL); // User RWX, cached
         }
 
         // Point USER_L1_TABLE entries to the user L2 tables

@@ -2,7 +2,42 @@
 // Shared memory and message passing for inter-process communication
 
 use crate::kernel::syscall::{SyscallError, IpcMessage, MAX_MESSAGE_SIZE};
-use alloc::vec;
+
+/// Simple bump allocator for non-cacheable shared memory region
+/// Physical range: 0x60000000 - 0x70000000 (256MB)
+/// This region is mapped as ATTR_NORMAL_NON_CACHEABLE in page tables
+static SHM_ALLOCATOR: spin::Mutex<ShmAllocator> = spin::Mutex::new(ShmAllocator::new());
+
+struct ShmAllocator {
+    next_addr: u64,
+    end_addr: u64,
+}
+
+impl ShmAllocator {
+    const fn new() -> Self {
+        Self {
+            next_addr: 0x60000000, // Start of non-cacheable shared memory region
+            end_addr: 0x70000000,   // End (256MB region)
+        }
+    }
+
+    fn allocate(&mut self, size: usize) -> Option<u64> {
+        let aligned_size = (size + 4095) & !4095; // Align to 4KB
+        if self.next_addr + aligned_size as u64 > self.end_addr {
+            return None; // Out of shared memory space
+        }
+
+        let addr = self.next_addr;
+        self.next_addr += aligned_size as u64;
+
+        // Zero the memory
+        unsafe {
+            core::ptr::write_bytes(addr as *mut u8, 0, aligned_size);
+        }
+
+        Some(addr)
+    }
+}
 
 /// Create a shared memory region
 /// Returns: shared memory ID on success, negative error code on failure
@@ -10,44 +45,35 @@ pub fn sys_shm_create(size: usize) -> i64 {
     crate::kernel::uart_write_string("[SYSCALL] shm_create(size=");
     crate::kernel::uart_write_string(")\r\n");
 
-    crate::kernel::uart_write_string("[SHM] Step 1: Check size\r\n");
     if size == 0 || size > 16 * 1024 * 1024 {  // Max 16MB
         return SyscallError::InvalidArgument.as_i64();
     }
 
-    crate::kernel::uart_write_string("[SHM] Step 2: Get current process\r\n");
     // Get current process
     let process_id = match get_current_process() {
         Some(pid) => pid,
         None => return SyscallError::InvalidArgument.as_i64(),
     };
 
-    crate::kernel::uart_write_string("[SHM] Step 3: Allocate memory\r\n");
-    // CRITICAL: Disable interrupts during large allocation to prevent allocator deadlock
-    // The global allocator's spin::Mutex doesn't disable interrupts, so if a timer
-    // interrupt fires during allocation, it could deadlock on ALLOCATOR lock
-    let daif = crate::kernel::interrupts::disable_interrupts();
+    crate::kernel::uart_write_string("[SHM] Allocating from non-cacheable region (0x60000000-0x70000000)\r\n");
+    // Allocate from non-cacheable shared memory region (0x60000000-0x70000000)
+    // This region is mapped as ATTR_NORMAL_NON_CACHEABLE in page tables
+    // NO MANUAL CACHE FLUSHES NEEDED - hardware handles coherency automatically!
+    let physical_addr = match SHM_ALLOCATOR.lock().allocate(size) {
+        Some(addr) => {
+            crate::kernel::uart_write_string("[SHM] Allocated non-cacheable memory\r\n");
+            addr
+        }
+        None => {
+            crate::kernel::uart_write_string("[SHM] Failed - out of shared memory space\r\n");
+            return SyscallError::OutOfMemory.as_i64();
+        }
+    };
 
-    // Allocate physical memory for shared region
-    let memory = vec![0u8; size].into_boxed_slice();
-
-    crate::kernel::interrupts::restore_interrupts(daif);
-    crate::kernel::uart_write_string("[SHM] Step 4: Memory allocated!\r\n");
-
-    crate::kernel::uart_write_string("[SHM] Step 5: Get pointer\r\n");
-    let physical_addr = memory.as_ptr() as u64;
-
-    crate::kernel::uart_write_string("[SHM] Step 6: Leak memory\r\n");
-    // Leak the memory (it will be managed by the shared memory system)
-    alloc::boxed::Box::leak(memory);
-
-    crate::kernel::uart_write_string("[SHM] Step 7: Call with_process_mut\r\n");
-    // Allocate shared memory region in process table
+    // Register in process table
     let shm_id = crate::kernel::thread::with_process_mut(process_id, |process| {
-        crate::kernel::uart_write_string("[SHM] Step 8: Inside closure\r\n");
         process.shm_table.alloc(size, physical_addr)
     });
-    crate::kernel::uart_write_string("[SHM] Step 9: with_process_mut returned\r\n");
 
     match shm_id {
         Some(Some(id)) => {

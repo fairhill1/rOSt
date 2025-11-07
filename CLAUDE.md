@@ -379,6 +379,25 @@ librost::sync_and_notify(wm_pid, &msg);
 - Any process writing to shared buffer: sync before notify
 - Use `sync_memory()` if you need to flush without sending a message
 
+**Implementation:**
+Uses ARM64 hardware memory barriers (not syscall hacks):
+- `DMB SY`: Data Memory Barrier - ensures memory ops complete (for shared memory IPC)
+- `DSB SY`: Data Synchronization Barrier - stronger, for DMA/VirtIO (use `dsb_barrier()`)
+- `ISB`: Instruction Synchronization Barrier - for page table changes (use `isb_barrier()`)
+
+**Advanced barriers:**
+```rust
+// For VirtIO DMA operations (stronger than DMB)
+virtqueue.desc[0].addr = buffer_phys;
+dsb_barrier();  // Ensure device sees our writes
+notify_device();
+
+// After modifying page tables
+page_table[idx] = new_entry;
+unsafe { asm!("tlbi vmalle1"); }  // Flush TLB
+isb_barrier();  // Flush instruction pipeline
+```
+
 ## Release Mode Compiler Issues - Debug Checklist
 
 If code works in one scenario but not another, check these patterns in order:

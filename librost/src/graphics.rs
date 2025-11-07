@@ -150,15 +150,11 @@ pub const FONT_8X8: [[u8; 8]; 128] = [
 /// Characters are scaled 2x (8x8 font -> 16x16 pixels)
 pub fn draw_char(buffer: &mut [u32], buffer_width: usize, buffer_height: usize,
                  x: i32, y: i32, ch: u8, color: u32) {
-    use crate::print_debug;
-
     let char_data = if ch < 128 {
         FONT_8X8[ch as usize]
     } else {
         FONT_8X8[0] // Use null character for unknown
     };
-
-    let mut pixels_written = 0;
 
     // Scale 2x - each pixel in the 8x8 font becomes a 2x2 block
     for (row, &byte) in char_data.iter().enumerate() {
@@ -173,31 +169,12 @@ pub fn draw_char(buffer: &mut [u32], buffer_width: usize, buffer_height: usize,
                             let idx = (py as usize * buffer_width) + px as usize;
                             if idx < buffer.len() {
                                 buffer[idx] = color;
-                                pixels_written += 1;
                             }
                         }
                     }
                 }
             }
         }
-    }
-
-    // Debug ALL chars to see what's being drawn
-    if pixels_written > 0 {
-        print_debug("DC:");
-        let s = [ch];
-        print_debug(core::str::from_utf8(&s).unwrap_or("?"));
-        print_debug("=");
-        if pixels_written < 10 {
-            let s = [b'0' + pixels_written as u8];
-            print_debug(core::str::from_utf8(&s).unwrap_or("?"));
-        } else if pixels_written < 100 {
-            let tens = pixels_written / 10;
-            let ones = pixels_written % 10;
-            let s = [b'0' + tens as u8, b'0' + ones as u8];
-            print_debug(core::str::from_utf8(&s).unwrap_or("?"));
-        }
-        print_debug(" ");
     }
 }
 

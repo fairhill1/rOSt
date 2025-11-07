@@ -1,7 +1,7 @@
 // GUI subsystem module
+// Note: Kernel window manager removed - use userspace/window_manager instead
 
 pub mod framebuffer;
-pub mod window_manager;
 pub mod clipboard;
 pub mod html_parser;
 pub mod css_parser;

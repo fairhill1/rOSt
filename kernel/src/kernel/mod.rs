@@ -226,15 +226,8 @@ fn kernel_gui_thread() {
                     // Handle WM response
                     match response_buf[0] {
                         0 => {
-                            // RouteInput - WM wants us to forward input to a specific window (process)
-                            let window_id = usize::from_le_bytes([
-                                response_buf[1], response_buf[2], response_buf[3], response_buf[4],
-                                response_buf[5], response_buf[6], response_buf[7], response_buf[8],
-                            ]);
-
-                            // Forward the event to the target process
-                            // The message is already in the correct format for WMToKernel::RouteInput
-                            let _ = kernel_send_message(window_id as u32, &response_buf);
+                            // RouteInput - WM now sends directly to windows, this is deprecated
+                            // Just ignore it
                         }
                         1 => {
                             // RequestFocus - WM wants to change window focus
@@ -382,7 +375,10 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     uart_write_string("Initializing physical memory...\r\n");
     memory::init_physical_memory(&boot_info.memory_map);
     uart_write_string("Physical memory initialized\r\n");
-    
+
+    // Configure MAIR_EL1 for proper shared memory cache attributes
+    memory::setup_mair_el1();
+
     // Now initialize VirtIO-GPU for graphics
     uart_write_string("Trying to initialize VirtIO-GPU...\r\n");
     let mut gpu_framebuffer_info = None;

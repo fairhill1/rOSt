@@ -398,12 +398,11 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
                         return WMToKernel::RequestFocus { window_id };
                     }
 
-                    // Window is already focused, route input to it
-                    print_debug("ROUTE_INPUT!");
-                    return WMToKernel::RouteInput {
-                        window_id,
-                        event,
-                    };
+                    // Window is already focused, send input directly to it
+                    print_debug("SEND_INPUT_DIRECT!");
+                    let msg = WMToKernel::RouteInput { window_id, event };
+                    librost::send_message(window_id as u32, &msg.to_bytes());
+                    return WMToKernel::NoAction;
                 }
             }
         } else {
@@ -431,10 +430,13 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
         for i in 0..count {
             let window = unsafe { core::ptr::read_volatile(&WINDOWS[i]) };
             if window.focused {
-                return WMToKernel::RouteInput {
+                // Send input directly to focused window
+                let msg = WMToKernel::RouteInput {
                     window_id: window.id,
                     event,
                 };
+                librost::send_message(window.id as u32, &msg.to_bytes());
+                return WMToKernel::NoAction;
             }
         }
     }
