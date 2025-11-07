@@ -363,43 +363,39 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
             return WMToKernel::NoAction;
         }
 
-        // print_debug("CHECK_WINDOW...");
+        print_debug("CHECK_WINDOW...");
         if let Some(window_id) = find_window_at(click_x, click_y) {
-            // print_debug("WINDOW_HIT!");
-            // if window_id == 0 {
-            //     print_debug("WID=0!");
-            // } else if window_id == 1 {
-            //     print_debug("WID=1!");
-            // } else if window_id == 2 {
-            //     print_debug("WID=2!");
-            // } else {
-            //     print_debug("WID=OTHER!");
-            // }
+            print_debug("WINDOW_HIT! id=");
+            if window_id < 10 {
+                let s = [b'0' + window_id as u8];
+                print_debug(core::str::from_utf8(&s).unwrap_or("?"));
+            }
+            print_debug(" ");
 
             // Find window index
             let count = WINDOW_COUNT.load(Ordering::SeqCst);
-            // print_debug("LOOP_START:");
+            print_debug("LOOP_START:");
             for i in 0..count {
                 let window = unsafe { &mut WINDOWS[i] };
-                // print_debug("CHK_");
+                print_debug("CHK_");
                 if window.id == window_id {
-                    // print_debug("MATCH!");
+                    print_debug("MATCH!");
 
                     // Check if click is on close button first
                     if is_in_close_button(window, click_x, click_y) {
-                        // print_debug("CLOSE_BTN!");
+                        print_debug("CLOSE_BTN!");
                         // Request window close
                         return WMToKernel::RequestClose { window_id };
                     }
 
                     // If window is not focused, focus it first (consume the click)
                     if !window.focused {
-                        // print_debug("NOT_FOCUSED->FOCUS!");
+                        print_debug("NOT_FOCUSED->REQ_FOCUS!");
                         return WMToKernel::RequestFocus { window_id };
                     }
 
                     // Window is already focused, send input directly to it
-                    // print_debug("SEND_INPUT_DIRECT!");
+                    print_debug("SEND_INPUT_DIRECT!");
                     let msg = WMToKernel::RouteInput { window_id, event };
                     librost::send_message(window_id as u32, &msg.to_bytes());
                     return WMToKernel::NoAction;
@@ -666,10 +662,10 @@ fn redraw_all() {
     // }
     // print_debug(" ");
 
-    // Compiler is optimizing away the loop completely in release mode
-    // Work around by unrolling manually for the first window
-    if count >= 1 {
-        let mut window = unsafe { core::ptr::read_volatile(&WINDOWS[0]) };
+    // Iterate through all windows with black_box to prevent loop optimization
+    let loop_count = core::hint::black_box(count);
+    for i in 0..loop_count {
+        let mut window = unsafe { core::ptr::read_volatile(&WINDOWS[i as usize]) };
         core::sync::atomic::compiler_fence(Ordering::SeqCst);
 
         // Force compiler to actually read window fields and prevent optimization
@@ -701,7 +697,7 @@ fn redraw_all() {
                 print_debug("[WM] shm_map failed\r\n");
                 window.visible = false;
                 unsafe {
-                    core::ptr::write_volatile(core::ptr::addr_of_mut!(WINDOWS[0]), window);
+                    core::ptr::write_volatile(core::ptr::addr_of_mut!(WINDOWS[i as usize]), window);
                 }
             } else {
                 // Calculate content area (inside title bar and borders)
@@ -1111,16 +1107,45 @@ fn handle_close_window(id: usize) {
 
 /// Set window focus
 fn handle_set_focus(id: usize) {
+    print_debug("WM:SET_FOCUS id=");
+    if id < 10 {
+        let s = [b'0' + id as u8];
+        print_debug(core::str::from_utf8(&s).unwrap_or("?"));
+    }
+    print_debug("\r\n");
+
     let count = WINDOW_COUNT.load(Ordering::SeqCst);
 
     for i in 0..count {
         // Use volatile read/write to prevent compiler optimization
         let mut window = unsafe { core::ptr::read_volatile(&WINDOWS[i]) };
+        let was_focused = window.focused;
         window.focused = window.id == id;
+
+        if was_focused != window.focused {
+            print_debug("  Window[");
+            if i < 10 {
+                let s = [b'0' + i as u8];
+                print_debug(core::str::from_utf8(&s).unwrap_or("?"));
+            }
+            print_debug("] ");
+            if window.focused {
+                print_debug("FOCUSED");
+            } else {
+                print_debug("UNFOCUSED");
+            }
+            print_debug("\r\n");
+        }
+
         unsafe {
             core::ptr::write_volatile(&mut WINDOWS[i], window);
         }
     }
+
+    print_debug("WM:SET_FOCUS calling redraw_all\r\n");
+    // Redraw to show updated title bar colors
+    redraw_all();
+    print_debug("WM:SET_FOCUS done\r\n");
 }
 
 #[no_mangle]
