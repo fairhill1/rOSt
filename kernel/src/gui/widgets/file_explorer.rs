@@ -53,8 +53,9 @@ impl FileExplorer {
         };
 
         // Initialize filesystem if block device is available
-        unsafe {
-            if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+        {
+            let mut block_devices_guard = crate::kernel::BLOCK_DEVICES.lock();
+            if let Some(ref mut devices) = *block_devices_guard {
                 if !devices.is_empty() {
                     // Use last device for persistent storage (same strategy as boot)
                     let device_idx = devices.len() - 1;
@@ -88,8 +89,9 @@ impl FileExplorer {
 
         // Remount filesystem from disk to get latest changes (e.g., from terminal)
         if let Some(device_idx) = self.device_index {
-            unsafe {
-                if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+            {
+                let mut block_devices_guard = crate::kernel::BLOCK_DEVICES.lock();
+                if let Some(ref mut devices) = *block_devices_guard {
                     if let Some(device) = devices.get_mut(device_idx) {
                         match SimpleFilesystem::mount(device) {
                             Ok(fs) => {
@@ -286,8 +288,9 @@ impl FileExplorer {
 
                 // Delete from filesystem
                 if let (Some(ref mut fs), Some(device_idx)) = (&mut self.filesystem, self.device_index) {
-                    unsafe {
-                        if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+                    {
+                        let mut block_devices_guard = crate::kernel::BLOCK_DEVICES.lock();
+                        if let Some(ref mut devices) = *block_devices_guard {
                             if let Some(device) = devices.get_mut(device_idx) {
                                 if fs.delete_file(device, &filename).is_ok() {
                                     // Remove from our list

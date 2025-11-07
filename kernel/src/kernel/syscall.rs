@@ -341,8 +341,8 @@ fn sys_read(fd: i32, buf: *mut u8, count: usize) -> i64 {
     // Access filesystem
     use crate::system::fs::filesystem::SimpleFilesystem;
 
-    let block_devices = unsafe { crate::kernel::BLOCK_DEVICES.as_mut() };
-    let device = match block_devices {
+    let mut block_devices = crate::kernel::BLOCK_DEVICES.lock();
+    let device = match block_devices.as_mut() {
         Some(devs) if !devs.is_empty() => &mut devs[0],
         _ => return SyscallError::FileNotFound.as_i64(),
     };
@@ -434,8 +434,8 @@ fn sys_write(fd: i32, buf: *const u8, count: usize) -> i64 {
     // Access filesystem
     use crate::system::fs::filesystem::SimpleFilesystem;
 
-    let block_devices = unsafe { crate::kernel::BLOCK_DEVICES.as_mut() };
-    let device = match block_devices {
+    let mut block_devices = crate::kernel::BLOCK_DEVICES.lock();
+    let device = match block_devices.as_mut() {
         Some(devs) if !devs.is_empty() => &mut devs[0],
         _ => return SyscallError::FileNotFound.as_i64(),
     };
@@ -497,8 +497,8 @@ fn sys_open(path: *const u8, flags: u32) -> i64 {
     // We need to mount the filesystem to check
     use crate::system::fs::filesystem::SimpleFilesystem;
 
-    let block_devices = unsafe { crate::kernel::BLOCK_DEVICES.as_mut() };
-    let device = match block_devices {
+    let mut block_devices = crate::kernel::BLOCK_DEVICES.lock();
+    let device = match block_devices.as_mut() {
         Some(devs) if !devs.is_empty() => &mut devs[0],
         _ => return SyscallError::FileNotFound.as_i64(),
     };
@@ -670,7 +670,7 @@ fn sys_fb_info(info_ptr: *mut FbInfo) -> i64 {
 
     crate::kernel::uart_write_string("[SYSCALL] fb_info() called\r\n");
 
-    // Get framebuffer info from kernel globals
+    // Get framebuffer info from kernel globals (read-only after init, no lock needed)
     let fb_info = unsafe { crate::kernel::GPU_FRAMEBUFFER_INFO };
 
     match fb_info {
@@ -705,7 +705,7 @@ fn sys_fb_info(info_ptr: *mut FbInfo) -> i64 {
 fn sys_fb_map() -> i64 {
     crate::kernel::uart_write_string("[SYSCALL] fb_map() called\r\n");
 
-    // Get framebuffer base address from kernel globals
+    // Get framebuffer base address from kernel globals (read-only after init, no lock needed)
     let fb_info = unsafe { crate::kernel::GPU_FRAMEBUFFER_INFO };
 
     match fb_info {
@@ -736,16 +736,15 @@ fn sys_fb_map() -> i64 {
 
 fn sys_fb_flush() -> i64 {
     // Get GPU driver and flush the display
-    let result = unsafe {
-        match crate::kernel::GPU_DRIVER.as_mut() {
-            Some(gpu) => {
-                match gpu.flush_display() {
-                    Ok(_) => 0,
-                    Err(_) => SyscallError::InvalidArgument.as_i64()
-                }
+    let mut gpu_driver = crate::kernel::GPU_DRIVER.lock();
+    let result = match gpu_driver.as_mut() {
+        Some(gpu) => {
+            match gpu.flush_display() {
+                Ok(_) => 0,
+                Err(_) => SyscallError::InvalidArgument.as_i64()
             }
-            None => SyscallError::InvalidArgument.as_i64()
         }
+        None => SyscallError::InvalidArgument.as_i64()
     };
 
     result
@@ -956,8 +955,8 @@ fn sys_socket(domain: u32, socket_type: u32) -> i64 {
     }
 
     // Create socket in network stack
-    let network_stack = unsafe { crate::kernel::NETWORK_STACK.as_mut() };
-    let stack = match network_stack {
+    let mut network_stack = crate::kernel::NETWORK_STACK.lock();
+    let stack = match network_stack.as_mut() {
         Some(s) => s,
         None => return SyscallError::InvalidArgument.as_i64(),
     };
@@ -1023,8 +1022,8 @@ fn sys_connect(sockfd: i32, addr: *const SockAddrIn) -> i64 {
     let ip_bytes = ip_addr.to_be_bytes();
 
     // Connect TCP socket
-    let network_stack = unsafe { crate::kernel::NETWORK_STACK.as_mut() };
-    let stack = match network_stack {
+    let mut network_stack = crate::kernel::NETWORK_STACK.lock();
+    let stack = match network_stack.as_mut() {
         Some(s) => s,
         None => return SyscallError::InvalidArgument.as_i64(),
     };
@@ -1090,8 +1089,8 @@ fn sys_send(sockfd: i32, buf: *const u8, len: usize) -> i64 {
     let data = unsafe { core::slice::from_raw_parts(buf, len) };
 
     // Send data through network stack
-    let network_stack = unsafe { crate::kernel::NETWORK_STACK.as_mut() };
-    let stack = match network_stack {
+    let mut network_stack = crate::kernel::NETWORK_STACK.lock();
+    let stack = match network_stack.as_mut() {
         Some(s) => s,
         None => return SyscallError::InvalidArgument.as_i64(),
     };
@@ -1172,8 +1171,8 @@ fn sys_recv(sockfd: i32, buf: *mut u8, len: usize) -> i64 {
     }
 
     // Poll network stack first to receive packets
-    let network_stack = unsafe { crate::kernel::NETWORK_STACK.as_mut() };
-    let stack = match network_stack {
+    let mut network_stack = crate::kernel::NETWORK_STACK.lock();
+    let stack = match network_stack.as_mut() {
         Some(s) => s,
         None => return SyscallError::InvalidArgument.as_i64(),
     };
@@ -1299,7 +1298,7 @@ fn sys_draw_rect(x: i32, y: i32, width: u32, height: u32, color: u32) -> i64 {
     // For large rectangles (like full screen clears), use efficient bulk write
     if width > 100 && height > 100 {
 
-        // Get direct framebuffer access
+        // Get direct framebuffer access (read-only after init, no lock needed)
         let fb_info = unsafe { crate::kernel::GPU_FRAMEBUFFER_INFO };
         if let Some(fb) = fb_info {
             let fb_ptr = fb.base_address as *mut u32;
@@ -1435,16 +1434,15 @@ pub fn sys_kill(pid: u64) -> i64 {
 fn sys_fb_flush_region(x: u32, y: u32, width: u32, height: u32) -> i64 {
     // For now, just flush the entire display
     // TODO: Implement dirty region tracking for performance
-    let result = unsafe {
-        match crate::kernel::GPU_DRIVER.as_mut() {
-            Some(gpu) => {
-                match gpu.flush_display() {
-                    Ok(_) => 0,
-                    Err(_) => SyscallError::InvalidArgument.as_i64()
-                }
+    let mut gpu_driver = crate::kernel::GPU_DRIVER.lock();
+    let result = match gpu_driver.as_mut() {
+        Some(gpu) => {
+            match gpu.flush_display() {
+                Ok(_) => 0,
+                Err(_) => SyscallError::InvalidArgument.as_i64()
             }
-            None => SyscallError::InvalidArgument.as_i64()
         }
+        None => SyscallError::InvalidArgument.as_i64()
     };
 
     result
@@ -1470,30 +1468,31 @@ fn sys_read_block(device_id: u32, sector: u32, buffer: *mut u8) -> i64 {
     }
 
     // Get block device
-    let block_devices = unsafe { crate::kernel::BLOCK_DEVICES.as_mut() };
-    let device = match block_devices {
+    let mut block_devices = crate::kernel::BLOCK_DEVICES.lock();
+    let device = match block_devices.as_mut() {
         Some(devs) if device_id < devs.len() as u32 => &mut devs[device_id as usize],
         _ => return SyscallError::InvalidArgument.as_i64(),
     };
 
     // Static buffer for sector read (512 bytes)
     // CRITICAL: Do NOT allocate on stack in syscall handler
-    static mut SECTOR_BUFFER: [u8; SECTOR_SIZE] = [0; SECTOR_SIZE];
+    static SECTOR_BUFFER: spin::Mutex<[u8; SECTOR_SIZE]> = spin::Mutex::new([0; SECTOR_SIZE]);
 
     // Read sector from device
-    unsafe {
-        match device.read_sector(sector as u64, &mut SECTOR_BUFFER) {
-            Ok(_) => {
-                // Copy to userspace buffer
+    let mut sector_buffer = SECTOR_BUFFER.lock();
+    match device.read_sector(sector as u64, &mut *sector_buffer) {
+        Ok(_) => {
+            // Copy to userspace buffer
+            unsafe {
                 core::ptr::copy_nonoverlapping(
-                    SECTOR_BUFFER.as_ptr(),
+                    sector_buffer.as_ptr(),
                     buffer,
                     SECTOR_SIZE
                 );
-                0 // Success
             }
-            Err(_) => SyscallError::InvalidArgument.as_i64(),
+            0 // Success
         }
+        Err(_) => SyscallError::InvalidArgument.as_i64(),
     }
 }
 
@@ -1511,28 +1510,29 @@ fn sys_write_block(device_id: u32, sector: u32, buffer: *const u8) -> i64 {
     }
 
     // Get block device
-    let block_devices = unsafe { crate::kernel::BLOCK_DEVICES.as_mut() };
-    let device = match block_devices {
+    let mut block_devices = crate::kernel::BLOCK_DEVICES.lock();
+    let device = match block_devices.as_mut() {
         Some(devs) if device_id < devs.len() as u32 => &mut devs[device_id as usize],
         _ => return SyscallError::InvalidArgument.as_i64(),
     };
 
     // Static buffer for sector write (512 bytes)
     // CRITICAL: Do NOT allocate on stack in syscall handler
-    static mut SECTOR_BUFFER: [u8; SECTOR_SIZE] = [0; SECTOR_SIZE];
+    static SECTOR_BUFFER: spin::Mutex<[u8; SECTOR_SIZE]> = spin::Mutex::new([0; SECTOR_SIZE]);
 
     // Copy from userspace buffer
+    let mut sector_buffer = SECTOR_BUFFER.lock();
     unsafe {
         core::ptr::copy_nonoverlapping(
             buffer,
-            SECTOR_BUFFER.as_mut_ptr(),
+            sector_buffer.as_mut_ptr(),
             SECTOR_SIZE
         );
+    }
 
-        // Write sector to device
-        match device.write_sector(sector as u64, &SECTOR_BUFFER) {
-            Ok(_) => 0, // Success
-            Err(_) => SyscallError::InvalidArgument.as_i64(),
-        }
+    // Write sector to device
+    match device.write_sector(sector as u64, &*sector_buffer) {
+        Ok(_) => 0, // Success
+        Err(_) => SyscallError::InvalidArgument.as_i64(),
     }
 }

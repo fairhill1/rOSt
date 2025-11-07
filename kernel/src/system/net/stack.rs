@@ -20,6 +20,10 @@ pub struct NetworkStack {
     device: SmoltcpVirtioNetDevice,
 }
 
+// SAFETY: NetworkStack contains SmoltcpVirtioNetDevice which wraps VirtioNetDevice with raw pointers.
+// Safe to Send because we're single-core with Mutex protection.
+unsafe impl Send for NetworkStack {}
+
 impl NetworkStack {
     /// Create a new network stack with the given device and configuration
     pub fn new(

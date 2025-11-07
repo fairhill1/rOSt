@@ -55,7 +55,8 @@ pub enum MemoryType {
 }
 
 /// Physical memory allocator state
-static mut PHYS_MEM_ALLOCATOR: PhysicalMemoryAllocator = PhysicalMemoryAllocator::new();
+/// Wrapped in Mutex to prevent UB from concurrent allocation (syscalls, interrupts, etc.)
+static PHYS_MEM_ALLOCATOR: spin::Mutex<PhysicalMemoryAllocator> = spin::Mutex::new(PhysicalMemoryAllocator::new());
 
 struct PhysicalMemoryAllocator {
     initialized: bool,
@@ -108,17 +109,16 @@ impl PhysicalMemoryAllocator {
 
 /// Initialize physical memory management
 pub fn init_physical_memory(memory_map: &[MemoryDescriptor]) {
-    unsafe {
-        if memory_map.is_empty() {
-            // If no memory map provided, use a default range for QEMU ARM64
-            // QEMU ARM virt machine has RAM starting at 0x40000000
-            // Use a safe range starting at 64MB (0x44000000) for kernel allocations
-            PHYS_MEM_ALLOCATOR.next_free_page = 0x44000000;
-            PHYS_MEM_ALLOCATOR.memory_end = 0x80000000; // 1GB range
-            PHYS_MEM_ALLOCATOR.initialized = true;
-        } else {
-            PHYS_MEM_ALLOCATOR.init(memory_map);
-        }
+    let mut allocator = PHYS_MEM_ALLOCATOR.lock();
+    if memory_map.is_empty() {
+        // If no memory map provided, use a default range for QEMU ARM64
+        // QEMU ARM virt machine has RAM starting at 0x40000000
+        // Use a safe range starting at 64MB (0x44000000) for kernel allocations
+        allocator.next_free_page = 0x44000000;
+        allocator.memory_end = 0x80000000; // 1GB range
+        allocator.initialized = true;
+    } else {
+        allocator.init(memory_map);
     }
 }
 
@@ -155,9 +155,7 @@ pub fn setup_mair_el1() {
 
 /// Allocate a physical page (4KB)
 pub fn alloc_physical_page() -> Option<u64> {
-    unsafe {
-        PHYS_MEM_ALLOCATOR.alloc_page()
-    }
+    PHYS_MEM_ALLOCATOR.lock().alloc_page()
 }
 
 /// Allocate multiple contiguous physical pages (4KB each)
@@ -165,21 +163,20 @@ pub fn allocate_pages(num_pages: usize) -> Option<u64> {
     if num_pages == 0 {
         return None;
     }
-    
-    unsafe {
-        if !PHYS_MEM_ALLOCATOR.initialized {
-            return None;
-        }
-        
-        let total_size = num_pages * 4096;
-        if PHYS_MEM_ALLOCATOR.next_free_page + total_size as u64 >= PHYS_MEM_ALLOCATOR.memory_end {
-            return None;
-        }
-        
-        let base_addr = PHYS_MEM_ALLOCATOR.next_free_page;
-        PHYS_MEM_ALLOCATOR.next_free_page += total_size as u64;
-        Some(base_addr)
+
+    let mut allocator = PHYS_MEM_ALLOCATOR.lock();
+    if !allocator.initialized {
+        return None;
     }
+
+    let total_size = num_pages * 4096;
+    if allocator.next_free_page + total_size as u64 >= allocator.memory_end {
+        return None;
+    }
+
+    let base_addr = allocator.next_free_page;
+    allocator.next_free_page += total_size as u64;
+    Some(base_addr)
 }
 
 /// Page table structures for ARM64

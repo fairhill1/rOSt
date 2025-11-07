@@ -348,6 +348,10 @@ pub struct VirtioGpuDriver {
     control_resp_buffer: u64, // Reusable buffer for control responses
 }
 
+// SAFETY: VirtioGpuDriver contains DMA buffer addresses and MMIO pointers.
+// Safe to Send because we're single-core with Mutex protection.
+unsafe impl Send for VirtioGpuDriver {}
+
 impl VirtioGpuDriver {
     pub fn new() -> Option<Self> {
         if let Some(pci_device) = find_device(VIRTIO_VENDOR_ID, VIRTIO_GPU_DEVICE_ID) {

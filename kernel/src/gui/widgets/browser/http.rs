@@ -50,7 +50,8 @@ pub fn http_get(host: &str, port: u16, path: &str) -> Option<String> {
         crate::kernel::uart_write_string("http_get: Starting (using smoltcp)\r\n");
 
         // Use smoltcp network stack
-        let stack = match crate::kernel::NETWORK_STACK.as_mut() {
+        let mut network_stack = crate::kernel::NETWORK_STACK.lock();
+        let stack = match network_stack.as_mut() {
             Some(s) => s,
             None => {
                 crate::kernel::uart_write_string("http_get: No network stack\r\n");
@@ -92,7 +93,8 @@ pub fn http_get_binary(host: &str, port: u16, path: &str) -> Option<Vec<u8>> {
         crate::kernel::uart_write_string("http_get_binary: Starting (using smoltcp)\r\n");
 
         // Use smoltcp network stack
-        let stack = match crate::kernel::NETWORK_STACK.as_mut() {
+        let mut network_stack = crate::kernel::NETWORK_STACK.lock();
+        let stack = match network_stack.as_mut() {
             Some(s) => s,
             None => {
                 crate::kernel::uart_write_string("http_get_binary: No network stack\r\n");

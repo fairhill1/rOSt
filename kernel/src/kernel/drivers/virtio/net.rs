@@ -226,6 +226,10 @@ pub struct VirtioNetDevice {
     mac_addr: [u8; 6],
 }
 
+// SAFETY: VirtioNetDevice contains raw pointers to MMIO regions and DMA buffers.
+// Safe to Send because we're single-core with Mutex protection.
+unsafe impl Send for VirtioNetDevice {}
+
 impl VirtioNetDevice {
     /// Find and initialize all VirtIO network devices
     pub fn find_and_init(ecam_base: u64, mmio_base: u64) -> Vec<VirtioNetDevice> {

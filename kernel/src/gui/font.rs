@@ -37,7 +37,8 @@ fn try_load_font() {
         crate::kernel::uart_write_string("[FONT] Attempting to load i24.ttf from filesystem...\r\n");
 
         // Access global block devices and mount filesystem directly
-        if let Some(ref mut devices) = crate::kernel::BLOCK_DEVICES {
+        let mut block_devices_guard = crate::kernel::BLOCK_DEVICES.lock();
+        if let Some(ref mut devices) = *block_devices_guard {
             crate::kernel::uart_write_string("[FONT] Block devices available\r\n");
 
             if devices.is_empty() {

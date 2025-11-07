@@ -32,24 +32,28 @@ pub struct BootInfo {
 }
 
 // Static storage for block devices (needs to outlive local scope for shell access)
-pub static mut BLOCK_DEVICES: Option<alloc::vec::Vec<drivers::virtio::blk::VirtioBlkDevice>> = None;
+// Wrapped in Mutex to prevent UB from creating &mut references to static mut
+// Collections that can change over time need Mutex protection
+pub static BLOCK_DEVICES: spin::Mutex<Option<alloc::vec::Vec<drivers::virtio::blk::VirtioBlkDevice>>> = spin::Mutex::new(None);
 
 // Static storage for network devices (deprecated - use NETWORK_STACK instead)
-pub static mut NET_DEVICES: Option<alloc::vec::Vec<drivers::virtio::net::VirtioNetDevice>> = None;
+pub static NET_DEVICES: spin::Mutex<Option<alloc::vec::Vec<drivers::virtio::net::VirtioNetDevice>>> = spin::Mutex::new(None);
 
-// Static storage for smoltcp-based network stack
-pub static mut NETWORK_STACK: Option<crate::system::net::NetworkStack> = None;
+// Static storage for smoltcp-based network stack (complex struct, needs Mutex)
+pub static NETWORK_STACK: spin::Mutex<Option<crate::system::net::NetworkStack>> = spin::Mutex::new(None);
 
 // Static network configuration for QEMU user-mode networking (10.0.2.x)
-pub static mut OUR_IP: [u8; 4] = [10, 0, 2, 15];  // QEMU user-mode guest IP (default)
-pub static mut GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];  // QEMU user-mode gateway
+// These are read-only config, so use const (no mutex overhead)
+pub const OUR_IP: [u8; 4] = [10, 0, 2, 15];  // QEMU user-mode guest IP (default)
+pub const GATEWAY_IP: [u8; 4] = [10, 0, 2, 2];  // QEMU user-mode gateway
 
 // Static for GPU driver and cursor position
-static mut GPU_DRIVER: Option<drivers::virtio::gpu::VirtioGpuDriver> = None;
-static mut CURSOR_X: u32 = 0;
-static mut CURSOR_Y: u32 = 0;
-static mut SCREEN_WIDTH: u32 = 0;
-static mut SCREEN_HEIGHT: u32 = 0;
+// GPU driver is complex, needs Mutex. Cursor positions are simple values, use Atomics for performance
+static GPU_DRIVER: spin::Mutex<Option<drivers::virtio::gpu::VirtioGpuDriver>> = spin::Mutex::new(None);
+static CURSOR_X: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static CURSOR_Y: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static SCREEN_WIDTH: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static SCREEN_HEIGHT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 // Window manager PID (for IPC communication)
 // CRITICAL: Must be atomic for cross-thread visibility
@@ -57,7 +61,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 static WINDOW_MANAGER_PID: AtomicUsize = AtomicUsize::new(0);
 
 // Boot info and framebuffer for kernel_init_high_half
-static mut BOOT_INFO: Option<&'static BootInfo> = None;
+static BOOT_INFO: spin::Mutex<Option<&'static BootInfo>> = spin::Mutex::new(None);
+// GPU framebuffer is write-once during init, then read-only - no mutex needed
 static mut GPU_FRAMEBUFFER_INFO: Option<crate::gui::framebuffer::FramebufferInfo> = None;
 
 // Basic UART output for debugging
@@ -72,20 +77,29 @@ pub fn uart_write_string(s: &str) {
 
 // Handle mouse movement and update hardware cursor
 pub fn handle_mouse_movement(x_delta: i32, y_delta: i32) {
-    unsafe {
-        if let Some(ref mut gpu) = GPU_DRIVER {
-            gpu.handle_mouse_move(
-                x_delta,
-                y_delta,
-                SCREEN_WIDTH,
-                SCREEN_HEIGHT,
-                &mut CURSOR_X,
-                &mut CURSOR_Y
-            );
+    let mut gpu_driver = GPU_DRIVER.lock();
+    if let Some(ref mut gpu) = *gpu_driver {
+        // Load atomic values (lock-free, fast)
+        let mut cursor_x = CURSOR_X.load(Ordering::Relaxed);
+        let mut cursor_y = CURSOR_Y.load(Ordering::Relaxed);
+        let screen_width = SCREEN_WIDTH.load(Ordering::Relaxed);
+        let screen_height = SCREEN_HEIGHT.load(Ordering::Relaxed);
 
-            // Sync hardware cursor position to framebuffer for click detection
-            crate::gui::framebuffer::set_cursor_pos(CURSOR_X as i32, CURSOR_Y as i32);
-        }
+        gpu.handle_mouse_move(
+            x_delta,
+            y_delta,
+            screen_width,
+            screen_height,
+            &mut cursor_x,
+            &mut cursor_y
+        );
+
+        // Store updated values (lock-free, fast)
+        CURSOR_X.store(cursor_x, Ordering::Relaxed);
+        CURSOR_Y.store(cursor_y, Ordering::Relaxed);
+
+        // Sync hardware cursor position to framebuffer for click detection
+        crate::gui::framebuffer::set_cursor_pos(cursor_x as i32, cursor_y as i32);
     }
 }
 
@@ -96,10 +110,9 @@ pub fn get_time_ms() -> u64 {
 
 // Flush a partial region of the framebuffer to GPU (for menu bar updates, etc.)
 pub fn flush_display_partial(x: u32, y: u32, width: u32, height: u32) {
-    unsafe {
-        if let Some(ref mut gpu) = GPU_DRIVER {
-            let _ = gpu.flush_display_partial(x, y, width, height);
-        }
+    let mut gpu_driver = GPU_DRIVER.lock();
+    if let Some(ref mut gpu) = *gpu_driver {
+        let _ = gpu.flush_display_partial(x, y, width, height);
     }
 }
 
@@ -283,16 +296,23 @@ fn kernel_gui_thread() {
                             (2u32, key, modifiers, 0u8, 0u8, 0i8, 0i8, 0i8)
                         }
                         drivers::input_events::InputEvent::MouseMove { x_delta, y_delta } => {
-                            // Update cursor position
-                            let new_x = (CURSOR_X as i32 + x_delta as i32).max(0).min(SCREEN_WIDTH as i32 - 1);
-                            let new_y = (CURSOR_Y as i32 + y_delta as i32).max(0).min(SCREEN_HEIGHT as i32 - 1);
-                            CURSOR_X = new_x as u32;
-                            CURSOR_Y = new_y as u32;
-                            crate::gui::framebuffer::set_cursor_pos(CURSOR_X as i32, CURSOR_Y as i32);
+                            // Update cursor position (using atomics for lock-free performance)
+                            let cursor_x = CURSOR_X.load(Ordering::Relaxed);
+                            let cursor_y = CURSOR_Y.load(Ordering::Relaxed);
+                            let screen_width = SCREEN_WIDTH.load(Ordering::Relaxed);
+                            let screen_height = SCREEN_HEIGHT.load(Ordering::Relaxed);
+
+                            let new_x = (cursor_x as i32 + x_delta as i32).max(0).min(screen_width as i32 - 1);
+                            let new_y = (cursor_y as i32 + y_delta as i32).max(0).min(screen_height as i32 - 1);
+
+                            CURSOR_X.store(new_x as u32, Ordering::Relaxed);
+                            CURSOR_Y.store(new_y as u32, Ordering::Relaxed);
+                            crate::gui::framebuffer::set_cursor_pos(new_x, new_y);
 
                             // Update VirtIO GPU hardware cursor
-                            if let Some(ref mut gpu) = GPU_DRIVER {
-                                let _ = gpu.update_cursor(CURSOR_X, CURSOR_Y, 0, 0);
+                            let mut gpu_driver = GPU_DRIVER.lock();
+                            if let Some(ref mut gpu) = *gpu_driver {
+                                let _ = gpu.update_cursor(new_x as u32, new_y as u32, 0, 0);
                             }
 
                             (3u32, 0u8, 0u8, 0u8, 0u8, x_delta, y_delta, 0i8)
@@ -317,8 +337,8 @@ fn kernel_gui_thread() {
                     let mut msg_buf = [0u8; 256];
                     msg_buf[0] = 0; // KernelToWM::InputEvent type
                     msg_buf[1..5].copy_from_slice(&(my_pid as u32).to_le_bytes());
-                    msg_buf[5..9].copy_from_slice(&(CURSOR_X as i32).to_le_bytes());
-                    msg_buf[9..13].copy_from_slice(&(CURSOR_Y as i32).to_le_bytes());
+                    msg_buf[5..9].copy_from_slice(&(CURSOR_X.load(Ordering::Relaxed) as i32).to_le_bytes());
+                    msg_buf[9..13].copy_from_slice(&(CURSOR_Y.load(Ordering::Relaxed) as i32).to_le_bytes());
                     msg_buf[13..17].copy_from_slice(&event_type.to_le_bytes());
                     msg_buf[17] = key;
                     msg_buf[18] = modifiers;
@@ -343,8 +363,9 @@ fn kernel_gui_thread() {
 
         // Poll network stack (process packets, timers, etc.)
         // This is kernel-level because smoltcp runs in kernel space
-        unsafe {
-            if let Some(ref mut stack) = NETWORK_STACK {
+        {
+            let mut network_stack = NETWORK_STACK.lock();
+            if let Some(ref mut stack) = *network_stack {
                 stack.poll();
             }
         }
@@ -367,9 +388,7 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     uart_write_string("Initializing Rust OS kernel...\r\n");
 
     // Store boot_info globally for kernel_init_high_half
-    unsafe {
-        BOOT_INFO = Some(boot_info);
-    }
+    *BOOT_INFO.lock() = Some(boot_info);
     
     // Initialize physical memory manager FIRST - VirtIO-GPU needs it for allocation
     uart_write_string("Initializing physical memory...\r\n");
@@ -458,14 +477,12 @@ pub extern "C" fn kernel_main(boot_info: &'static BootInfo) -> ! {
                                     gpu_framebuffer_info = Some(fb_info);
 
                                     // Store GPU driver, framebuffer, and screen info globally
-                                    unsafe {
-                                        GPU_FRAMEBUFFER_INFO = Some(fb_info);
-                                        SCREEN_WIDTH = width;
-                                        SCREEN_HEIGHT = height;
-                                        CURSOR_X = width / 2;
-                                        CURSOR_Y = height / 2;
-                                        GPU_DRIVER = Some(virtio_gpu);
-                                    }
+                                    unsafe { GPU_FRAMEBUFFER_INFO = Some(fb_info); }
+                                    SCREEN_WIDTH.store(width, Ordering::Relaxed);
+                                    SCREEN_HEIGHT.store(height, Ordering::Relaxed);
+                                    CURSOR_X.store(width / 2, Ordering::Relaxed);
+                                    CURSOR_Y.store(height / 2, Ordering::Relaxed);
+                                    *GPU_DRIVER.lock() = Some(virtio_gpu);
 
                                     // Initialize framebuffer cursor position to match hardware cursor
                                     crate::gui::framebuffer::set_cursor_pos((width / 2) as i32, (height / 2) as i32);
@@ -556,9 +573,8 @@ pub extern "C" fn kernel_init_high_half() -> ! {
     uart_write_string("Exception vectors re-initialized for higher-half: OK\r\n");
 
     // Retrieve boot_info and framebuffer info from globals
-    let boot_info = unsafe { BOOT_INFO.expect("BOOT_INFO not set") };
-    let gpu_framebuffer_info = unsafe { GPU_FRAMEBUFFER_INFO };
-    let fb_info = gpu_framebuffer_info.as_ref().unwrap_or(&boot_info.framebuffer);
+    let boot_info = *BOOT_INFO.lock().as_ref().expect("BOOT_INFO not set");
+    let fb_info = unsafe { GPU_FRAMEBUFFER_INFO.as_ref().unwrap_or(&boot_info.framebuffer) };
 
     // Initialize interrupt controller (GIC)
     interrupts::init_gic();
@@ -597,12 +613,14 @@ pub extern "C" fn kernel_init_high_half() -> ! {
 
         // Initialize VirtIO block devices
         uart_write_string("Initializing VirtIO block devices...\r\n");
-        unsafe {
-            BLOCK_DEVICES = Some(drivers::virtio::blk::VirtioBlkDevice::find_and_init(info.ecam_base, info.mmio_base));
+        {
+            let mut block_devices = BLOCK_DEVICES.lock();
+            *block_devices = Some(drivers::virtio::blk::VirtioBlkDevice::find_and_init(info.ecam_base, info.mmio_base));
         }
 
         // Create a local reference for easier access (must borrow from static)
-        let blk_devices = unsafe { BLOCK_DEVICES.as_mut().unwrap() };
+        let mut block_devices = BLOCK_DEVICES.lock();
+        let blk_devices = block_devices.as_mut().unwrap();
 
         if !blk_devices.is_empty() {
             uart_write_string("VirtIO block device initialized! Running read/write tests...\r\n");
@@ -729,18 +747,19 @@ pub extern "C" fn kernel_init_high_half() -> ! {
                 uart_write_string("smoltcp network stack initialized!\r\n");
 
                 // Store the network stack globally
-                unsafe {
-                    NETWORK_STACK = Some(stack);
+                {
+                    let mut network_stack = NETWORK_STACK.lock();
+                    *network_stack = Some(stack);
                     // Store remaining devices (if any) for backward compatibility
-                    NET_DEVICES = Some(net_devices);
+                    let mut net_devices_lock = NET_DEVICES.lock();
+                    *net_devices_lock = Some(net_devices);
                 }
 
                 uart_write_string("Network device ready!\r\n");
             } else {
                 uart_write_string("No network devices found\r\n");
-                unsafe {
-                    NET_DEVICES = Some(net_devices);
-                }
+                let mut net_devices_lock = NET_DEVICES.lock();
+                *net_devices_lock = Some(net_devices);
             }
 
             // Filesystem handling moved to userspace file server (microkernel architecture)

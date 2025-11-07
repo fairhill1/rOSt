@@ -26,6 +26,8 @@ pub enum PixelFormat {
 static mut FRAMEBUFFER: Option<Framebuffer> = None;
 static mut BACK_BUFFER: Option<*mut u32> = None; // Offscreen buffer for double buffering
 static mut FRONT_BUFFER: *mut u32 = core::ptr::null_mut(); // Actual screen buffer
+// These are set once during init and then read-only, so static mut is acceptable here
+// They're module-private and only accessed in controlled init contexts
 static mut SCREEN_WIDTH: u32 = 0;
 static mut SCREEN_HEIGHT: u32 = 0;
 static mut SCREEN_STRIDE: u32 = 0;

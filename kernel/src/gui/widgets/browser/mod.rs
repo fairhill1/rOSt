@@ -99,8 +99,9 @@ impl Browser {
 
             HttpState::ResolvingDns { host, path, port, start_time } => {
                 // Try to resolve DNS
-                unsafe {
-                    if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                {
+                    let mut network_stack_guard = crate::kernel::NETWORK_STACK.lock();
+                    if let Some(ref mut stack) = *network_stack_guard {
                         // Check if host is already an IP (instant)
                         let server_ip = if let Some(ip) = crate::system::net::network::parse_ip(&host) {
                             Some(smoltcp::wire::IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(ip[0], ip[1], ip[2], ip[3])))
@@ -168,8 +169,9 @@ impl Browser {
             HttpState::Connecting { socket_handle, http_request, start_time } => {
                 // Check timeout (10 seconds for connection)
                 if crate::kernel::drivers::timer::get_time_ms() - start_time > 10000 {
-                    unsafe {
-                        if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                    {
+                        let mut network_stack_guard = crate::kernel::NETWORK_STACK.lock();
+                        if let Some(ref mut stack) = *network_stack_guard {
                             stack.remove_socket(socket_handle);
                         }
                     }
@@ -177,8 +179,9 @@ impl Browser {
                         message: "Connection timeout".to_string(),
                     }
                 } else {
-                    unsafe {
-                        if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                    {
+                        let mut network_stack_guard = crate::kernel::NETWORK_STACK.lock();
+                        if let Some(ref mut stack) = *network_stack_guard {
                             let is_connected = stack.with_tcp_socket(socket_handle, |socket| {
                                 socket.may_send() && socket.may_recv()
                             });
@@ -210,8 +213,9 @@ impl Browser {
             }
 
             HttpState::ReceivingResponse { socket_handle, mut response_data, last_recv_time } => {
-                unsafe {
-                    if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                {
+                    let mut network_stack_guard = crate::kernel::NETWORK_STACK.lock();
+                    if let Some(ref mut stack) = *network_stack_guard {
                         let mut received_data = false;
                         let mut connection_closed = false;
 
@@ -317,8 +321,9 @@ impl Browser {
                     ImageFormat::Bmp
                 };
 
-                unsafe {
-                    if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                {
+                    let mut network_stack_guard = crate::kernel::NETWORK_STACK.lock();
+                    if let Some(ref mut stack) = *network_stack_guard {
                         // Resolve DNS
                         let server_ip = if let Some(ip) = crate::system::net::network::parse_ip(&host) {
                             Some(smoltcp::wire::IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(ip[0], ip[1], ip[2], ip[3])))
@@ -375,8 +380,9 @@ impl Browser {
                 ImageLoadState::Idle => ImageLoadState::Idle,
 
                 ImageLoadState::Connecting { socket_handle, http_request, start_time, layout_box_index, format, url } => {
-                    unsafe {
-                        if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                    {
+                        let mut network_stack_guard = crate::kernel::NETWORK_STACK.lock();
+                        if let Some(ref mut stack) = *network_stack_guard {
                             let connected = stack.with_tcp_socket(socket_handle, |socket| {
                                 socket.may_send() && socket.may_recv()
                             });
@@ -408,8 +414,9 @@ impl Browser {
                 }
 
                 ImageLoadState::Loading { socket_handle, mut response_data, last_recv_time, layout_box_index, format, url } => {
-                    unsafe {
-                        if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                    {
+                        let mut network_stack_guard = crate::kernel::NETWORK_STACK.lock();
+                        if let Some(ref mut stack) = *network_stack_guard {
                             let mut received_data = false;
                             let mut connection_closed = false;
 
@@ -519,8 +526,9 @@ impl Browser {
                 // Parse URL and initiate TCP connection
                 let (host, port, path) = http::parse_url(&pending.url);
 
-                unsafe {
-                    if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                {
+                    let mut network_stack_guard = crate::kernel::NETWORK_STACK.lock();
+                    if let Some(ref mut stack) = *network_stack_guard {
                         // Resolve DNS
                         let server_ip = if let Some(ip) = crate::system::net::network::parse_ip(&host) {
                             Some(smoltcp::wire::IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(ip[0], ip[1], ip[2], ip[3])))
@@ -575,8 +583,9 @@ impl Browser {
                 CssLoadState::Idle => CssLoadState::Idle,
 
                 CssLoadState::Connecting { socket_handle, http_request, start_time, url } => {
-                    unsafe {
-                        if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                    {
+                        let mut network_stack_guard = crate::kernel::NETWORK_STACK.lock();
+                        if let Some(ref mut stack) = *network_stack_guard {
                             let connected = stack.with_tcp_socket(socket_handle, |socket| {
                                 socket.may_send() && socket.may_recv()
                             });
@@ -606,8 +615,9 @@ impl Browser {
                 }
 
                 CssLoadState::Loading { socket_handle, mut response_data, last_recv_time, url } => {
-                    unsafe {
-                        if let Some(ref mut stack) = crate::kernel::NETWORK_STACK {
+                    {
+                        let mut network_stack_guard = crate::kernel::NETWORK_STACK.lock();
+                        if let Some(ref mut stack) = *network_stack_guard {
                             let mut received_data = false;
                             let mut connection_closed = false;
 

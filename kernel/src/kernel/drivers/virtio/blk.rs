@@ -229,6 +229,13 @@ pub struct VirtioBlkDevice {
     capacity: u64,
 }
 
+// SAFETY: VirtioBlkDevice contains raw pointers to MMIO regions and DMA buffers.
+// This is safe to Send because:
+// 1. We're single-core, so no actual concurrent access
+// 2. The Mutex wrapper ensures exclusive access
+// 3. MMIO/DMA regions are device-specific and not shared between devices
+unsafe impl Send for VirtioBlkDevice {}
+
 impl VirtioBlkDevice {
     /// Find and initialize all VirtIO block devices
     pub fn find_and_init(ecam_base: u64, mmio_base: u64) -> Vec<VirtioBlkDevice> {
