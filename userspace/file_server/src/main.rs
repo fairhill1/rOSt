@@ -531,8 +531,9 @@ pub extern "C" fn _start() -> ! {
     let mut msg_buf = [0u8; 256];
     let mut request_count = 0u32;
     loop {
-        // Wait for messages (1 second timeout)
-        let result = recv_message(&mut msg_buf, 1000);
+        // Wait for messages (1 second timeout) and get sender PID
+        let mut sender_pid: u32 = 0;
+        let result = recv_message_from(&mut msg_buf, 1000, &mut sender_pid as *mut u32);
 
         if result > 0 {
             request_count += 1;
@@ -544,7 +545,7 @@ pub extern "C" fn _start() -> ! {
 
             // Parse and handle request
             if let Some(request) = AppToFS::from_bytes(&msg_buf) {
-                handle_request(&mut fs, &mut device, request);
+                handle_request(&mut fs, &mut device, request, sender_pid as usize);
             } else {
                 print_debug("File server: failed to parse request");
             }
@@ -556,9 +557,10 @@ pub extern "C" fn _start() -> ! {
 }
 
 /// Handle a single filesystem request
-fn handle_request<D: BlockDevice>(fs: &mut SimpleFilesystem, device: &mut D, request: AppToFS) {
+fn handle_request<D: BlockDevice>(fs: &mut SimpleFilesystem, device: &mut D, request: AppToFS, sender_pid: usize) {
     match request {
-        AppToFS::List { sender_pid, request_id } => {
+        AppToFS::List(msg) => {
+            let request_id = msg.request_id;
             print_debug("File server: handling List request");
 
             // List all files
@@ -605,12 +607,14 @@ fn handle_request<D: BlockDevice>(fs: &mut SimpleFilesystem, device: &mut D, req
             }
             print_debug("\r\n");
 
-            let response = FSToApp::ListResponse {
+            let response = FSToApp::ListResponse(FSListResponseMsg {
+                msg_type: msg_types::FS_LIST_RESPONSE,
+                has_more: 0,  // false
+                _pad1: [0; 2],
                 request_id,
-                files: files_data,
                 files_len: pos,
-                has_more: false,
-            };
+                files: files_data,
+            });
 
             print_debug("File server: sending response to PID ");
             if sender_pid < 10 {
@@ -619,7 +623,7 @@ fn handle_request<D: BlockDevice>(fs: &mut SimpleFilesystem, device: &mut D, req
             }
 
             let response_bytes = response.to_bytes();
-            let result = send_message(sender_pid, &response_bytes);
+            let result = send_message(sender_pid as u32, &response_bytes);
 
             if result < 0 {
                 print_debug("File server: ERROR sending message!");
@@ -627,23 +631,31 @@ fn handle_request<D: BlockDevice>(fs: &mut SimpleFilesystem, device: &mut D, req
                 print_debug("File server: response sent successfully");
             }
         }
-        AppToFS::Open { sender_pid, request_id, .. } => {
+        AppToFS::Open(msg) => {
             // TODO: Implement open
-            let response = FSToApp::Error {
-                request_id,
+            let response = FSToApp::Error(FSErrorMsg {
+                msg_type: msg_types::FS_ERROR,
+                _pad1: [0; 3],
+                request_id: msg.request_id,
                 error_code: -99, // Not implemented
-            };
-            send_message(sender_pid, &response.to_bytes());
+            });
+            send_message(sender_pid as u32, &response.to_bytes());
         }
-        AppToFS::Read { sender_pid, request_id, .. } => {
+        AppToFS::Read(msg) => {
             // TODO: Implement read
-            let response = FSToApp::Error {
-                request_id,
+            let response = FSToApp::Error(FSErrorMsg {
+                msg_type: msg_types::FS_ERROR,
+                _pad1: [0; 3],
+                request_id: msg.request_id,
                 error_code: -99,
-            };
-            send_message(sender_pid, &response.to_bytes());
+            });
+            send_message(sender_pid as u32, &response.to_bytes());
         }
-        AppToFS::Create { sender_pid, request_id, filename, filename_len, size } => {
+        AppToFS::Create(msg) => {
+            let request_id = msg.request_id;
+            let filename = msg.filename;
+            let filename_len = msg.filename_len;
+            let size = msg.size;
             print_debug("File server: handling Create request\r\n");
 
             // Convert filename bytes to str
@@ -654,22 +666,28 @@ fn handle_request<D: BlockDevice>(fs: &mut SimpleFilesystem, device: &mut D, req
             match fs.create_file(device, name, size) {
                 Ok(()) => {
                     print_debug("File server: file created successfully\r\n");
-                    let response = FSToApp::CreateSuccess { request_id };
-                    send_message(sender_pid, &response.to_bytes());
+                    let response = FSToApp::CreateSuccess(FSCreateSuccessMsg {
+                        msg_type: msg_types::FS_CREATE_SUCCESS,
+                        _pad1: [0; 3],
+                        request_id,
+                    });
+                    send_message(sender_pid as u32, &response.to_bytes());
                 }
                 Err(e) => {
                     print_debug("File server: create failed: ");
                     print_debug(e);
                     print_debug("\r\n");
-                    let response = FSToApp::Error {
+                    let response = FSToApp::Error(FSErrorMsg {
+                        msg_type: msg_types::FS_ERROR,
+                        _pad1: [0; 3],
                         request_id,
                         error_code: -1,
-                    };
-                    send_message(sender_pid, &response.to_bytes());
+                    });
+                    send_message(sender_pid as u32, &response.to_bytes());
                 }
             }
         }
-        AppToFS::Write { sender_pid, request_id, fd: _, data, data_len } => {
+        AppToFS::Write(msg) => {
             print_debug("File server: handling Write request\r\n");
 
             // For now, assume fd=0 means we're writing to the last pending file
@@ -678,11 +696,13 @@ fn handle_request<D: BlockDevice>(fs: &mut SimpleFilesystem, device: &mut D, req
             // For this simple implementation, we need the terminal to send filename in a different way
             // Let's just send an error for now until we implement proper file descriptors
 
-            let response = FSToApp::Error {
-                request_id,
+            let response = FSToApp::Error(FSErrorMsg {
+                msg_type: msg_types::FS_ERROR,
+                _pad1: [0; 3],
+                request_id: msg.request_id,
                 error_code: -98, // Need Open first
-            };
-            send_message(sender_pid, &response.to_bytes());
+            });
+            send_message(sender_pid as u32, &response.to_bytes());
         }
         _ => {
             // Other operations not yet implemented

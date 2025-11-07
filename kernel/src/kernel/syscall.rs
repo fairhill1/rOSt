@@ -299,7 +299,7 @@ pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
         SyscallNumber::ShmMap => sys_shm_map(args.arg0 as i32),
         SyscallNumber::ShmUnmap => sys_shm_unmap(args.arg0 as i32),
         SyscallNumber::SendMessage => sys_send_message(args.arg0 as u32, args.arg1 as *const u8, args.arg2 as usize),
-        SyscallNumber::RecvMessage => sys_recv_message(args.arg0 as *mut u8, args.arg1 as usize, args.arg2 as u32),
+        SyscallNumber::RecvMessage => sys_recv_message(args.arg0 as *mut u8, args.arg1 as usize, args.arg2 as u32, args.arg3 as *mut u32),
         SyscallNumber::DrawText => sys_draw_text(args.arg0 as i32, args.arg1 as i32, args.arg2 as *const u8, args.arg3 as usize, args.arg4 as u32),
         SyscallNumber::DrawRect => sys_draw_rect(args.arg0 as i32, args.arg1 as i32, args.arg2 as u32, args.arg3 as u32, args.arg4 as u32),
         SyscallNumber::Yield => sys_yield(),
@@ -312,6 +312,32 @@ pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
         SyscallNumber::ReadBlock => sys_read_block(args.arg0 as u32, args.arg1 as u32, args.arg2 as *mut u8),
         SyscallNumber::WriteBlock => sys_write_block(args.arg0 as u32, args.arg1 as u32, args.arg2 as *const u8),
         _ => SyscallError::NotImplemented.as_i64(),
+    }
+}
+
+// Helper to print u32 without heap allocation (for syscall debugging)
+fn print_u32(n: u32) {
+    if n == 0 {
+        crate::kernel::uart_write_string("0");
+        return;
+    }
+
+    let mut buf = [0u8; 10]; // Max 10 digits for u32
+    let mut i = 0;
+    let mut num = n;
+
+    while num > 0 {
+        buf[i] = b'0' + (num % 10) as u8;
+        num /= 10;
+        i += 1;
+    }
+
+    // Print in reverse order
+    while i > 0 {
+        i -= 1;
+        unsafe {
+            core::ptr::write_volatile(0x09000000 as *mut u8, buf[i]);
+        }
     }
 }
 
@@ -675,6 +701,12 @@ fn sys_fb_info(info_ptr: *mut FbInfo) -> i64 {
 
     match fb_info {
         Some(fb) => {
+            crate::kernel::uart_write_string("[SYSCALL] FB from kernel: ");
+            print_u32(fb.width);
+            crate::kernel::uart_write_string("x");
+            print_u32(fb.height);
+            crate::kernel::uart_write_string("\r\n");
+
             // Create FbInfo struct to return to user
             let user_info = FbInfo {
                 width: fb.width,
@@ -1268,8 +1300,8 @@ fn sys_send_message(dest_pid: u32, data: *const u8, len: usize) -> i64 {
     crate::kernel::syscall_ipc::sys_send_message(dest_pid, data, len)
 }
 
-fn sys_recv_message(buf: *mut u8, len: usize, timeout_ms: u32) -> i64 {
-    crate::kernel::syscall_ipc::sys_recv_message(buf, len, timeout_ms)
+fn sys_recv_message(buf: *mut u8, len: usize, timeout_ms: u32, out_sender_pid: *mut u32) -> i64 {
+    crate::kernel::syscall_ipc::sys_recv_message(buf, len, timeout_ms, out_sender_pid)
 }
 
 // ============================================================================

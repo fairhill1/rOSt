@@ -311,7 +311,11 @@ impl TerminalApp {
 
             let wm_pid = 1;
             let my_pid = getpid() as usize;
-            let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
+            let redraw_msg = KernelToWM::RequestRedraw(RequestRedrawMsg {
+                msg_type: msg_types::KERNEL_REQUEST_REDRAW,
+                _pad1: [0; 7],
+                id: my_pid,
+            });
             librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
         }
     }
@@ -332,7 +336,11 @@ impl TerminalApp {
 
             let wm_pid = 1;
             let my_pid = getpid() as usize;
-            let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
+            let redraw_msg = KernelToWM::RequestRedraw(RequestRedrawMsg {
+                msg_type: msg_types::KERNEL_REQUEST_REDRAW,
+                _pad1: [0; 7],
+                id: my_pid,
+            });
             librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
         }
     }
@@ -400,13 +408,13 @@ impl TerminalApp {
 
     /// List files command
     fn cmd_ls(&mut self) {
-        let my_pid = getpid();
         let request_id = self.next_request_id();
 
-        let request = AppToFS::List {
-            sender_pid: my_pid,
+        let request = AppToFS::List(FSListMsg {
+            msg_type: msg_types::FS_LIST,
+            _pad1: [0; 3],
             request_id,
-        };
+        });
 
         let request_bytes = request.to_bytes();
         let result = send_message(FILE_SERVER_PID, &request_bytes);
@@ -442,7 +450,6 @@ impl TerminalApp {
             return;
         }
 
-        let my_pid = getpid();
         let request_id = self.next_request_id();
 
         let mut filename_buf = [0u8; 128];
@@ -450,13 +457,15 @@ impl TerminalApp {
         let len = core::cmp::min(filename_bytes.len(), 128);
         filename_buf[..len].copy_from_slice(&filename_bytes[..len]);
 
-        let request = AppToFS::Create {
-            sender_pid: my_pid,
+        let request = AppToFS::Create(FSCreateMsg {
+            msg_type: msg_types::FS_CREATE,
+            _pad1: [0; 3],
             request_id,
-            filename: filename_buf,
             filename_len: len,
             size,
-        };
+            _pad2: [0; 4],
+            filename: filename_buf,
+        });
 
         let request_bytes = request.to_bytes();
         let result = send_message(FILE_SERVER_PID, &request_bytes);
@@ -506,7 +515,6 @@ impl TerminalApp {
         });
 
         // Open the file
-        let my_pid = getpid();
         let request_id = self.next_request_id();
 
         let mut filename_buf = [0u8; 128];
@@ -514,13 +522,15 @@ impl TerminalApp {
         let name_len = core::cmp::min(filename_bytes.len(), 128);
         filename_buf[..name_len].copy_from_slice(&filename_bytes[..name_len]);
 
-        let open_request = AppToFS::Open {
-            sender_pid: my_pid,
+        let open_request = AppToFS::Open(FSOpenMsg {
+            msg_type: msg_types::FS_OPEN,
+            _pad1: [0; 3],
             request_id,
-            filename: filename_buf,
             filename_len: name_len,
             flags: 1, // Write flag
-        };
+            _pad2: [0; 4],
+            filename: filename_buf,
+        });
 
         let request_bytes = open_request.to_bytes();
         let result = send_message(FILE_SERVER_PID, &request_bytes);
@@ -579,55 +589,58 @@ impl TerminalApp {
     /// Handle file server responses
     fn handle_fs_response(&mut self, msg: FSToApp) {
         match msg {
-            FSToApp::ListResponse { files, files_len, .. } => {
-                if files_len == 0 {
+            FSToApp::ListResponse(msg) => {
+                if msg.files_len == 0 {
                     self.console.write_string("(no files)\n");
                 } else {
-                    let files_str = core::str::from_utf8(&files[..files_len]).unwrap_or("(invalid)");
+                    let files_str = core::str::from_utf8(&msg.files[..msg.files_len]).unwrap_or("(invalid)");
                     self.console.write_string(files_str);
                     self.console.write_string("\n");
                 }
                 self.show_prompt();
                 self.render_and_notify();
             }
-            FSToApp::CreateSuccess { .. } => {
+            FSToApp::CreateSuccess(_) => {
                 self.console.write_string("File created successfully\n");
                 self.show_prompt();
                 self.render_and_notify();
             }
-            FSToApp::OpenSuccess { fd, .. } => {
+            FSToApp::OpenSuccess(msg) => {
+                let fd = msg.fd;
                 // Get request_id before borrowing pending_write
-                let my_pid = getpid();
                 let request_id = self.next_request_id();
 
                 // Check if this is for a pending write
                 if let Some(ref mut pending) = self.pending_write {
                     pending.fd = Some(fd);
 
-                    let write_request = AppToFS::Write {
-                        sender_pid: my_pid,
+                    let write_request = AppToFS::Write(FSWriteMsg {
+                        msg_type: msg_types::FS_WRITE,
+                        _pad1: [0; 3],
                         request_id,
                         fd,
-                        data: pending.data,
+                        _pad2: [0; 4],
                         data_len: pending.len,
-                    };
+                        data: pending.data,
+                    });
 
                     send_message(FILE_SERVER_PID, &write_request.to_bytes());
                 }
             }
-            FSToApp::WriteSuccess { bytes_written, .. } => {
+            FSToApp::WriteSuccess(msg) => {
+                let bytes_written = msg.bytes_written;
                 // Get request_id before borrowing pending_write
-                let my_pid = getpid();
                 let request_id = self.next_request_id();
 
                 // Close the file
                 if let Some(ref pending) = self.pending_write {
                     if let Some(fd) = pending.fd {
-                        let close_request = AppToFS::Close {
-                            sender_pid: my_pid,
+                        let close_request = AppToFS::Close(FSCloseMsg {
+                            msg_type: msg_types::FS_CLOSE,
+                            _pad1: [0; 3],
                             request_id,
                             fd,
-                        };
+                        });
 
                         send_message(FILE_SERVER_PID, &close_request.to_bytes());
                     }
@@ -641,11 +654,11 @@ impl TerminalApp {
                 self.show_prompt();
                 self.render_and_notify();
             }
-            FSToApp::Error { error_code, .. } => {
+            FSToApp::Error(msg) => {
                 self.console.write_string("Error: File server returned error code ");
-                if error_code < 0 && error_code > -100 {
+                if msg.error_code < 0 && msg.error_code > -100 {
                     self.console.write_char(b'-');
-                    let code = (-error_code) as u8;
+                    let code = (-msg.error_code) as u8;
                     if code >= 10 {
                         self.console.write_char(b'0' + code / 10);
                     }
@@ -694,8 +707,17 @@ pub extern "C" fn _start() -> ! {
     title[..title_str.len()].copy_from_slice(title_str);
 
     let my_pid = getpid() as usize;
+    print_debug("[TERM] My PID: ");
+    if my_pid < 10 {
+        let pid_str = [b'0' + my_pid as u8];
+        print_debug(core::str::from_utf8(&pid_str).unwrap());
+    }
+    print_debug("\r\n");
 
-    let create_window_msg = KernelToWM::CreateWindow {
+    print_debug("[TERM] Creating CreateWindow message...\r\n");
+    let create_window_msg = KernelToWM::CreateWindow(CreateWindowMsg {
+        msg_type: msg_types::KERNEL_CREATE_WINDOW,
+        _pad1: [0; 7],
         id: my_pid,
         x: 0,
         y: 0,
@@ -703,17 +725,23 @@ pub extern "C" fn _start() -> ! {
         height: 1048,
         title,
         title_len: title_str.len(),
-    };
+    });
 
+    print_debug("[TERM] Serializing message...\r\n");
     let msg_bytes = create_window_msg.to_bytes();
+
+    print_debug("[TERM] Sending to WM (PID 1)...\r\n");
     let result = send_message(wm_pid, &msg_bytes);
 
+    print_debug("[TERM] send_message result: ");
     if result < 0 {
-        print_debug("Failed to send CreateWindow message to WM\r\n");
+        print_debug("FAILED!\r\n");
         exit(1);
+    } else {
+        print_debug("SUCCESS\r\n");
     }
 
-    print_debug("CreateWindow message sent to WM\r\n");
+    print_debug("[TERM] Waiting for WindowCreated response...\r\n");
 
     // Main event loop
     print_debug("Terminal: Entering event loop\r\n");
@@ -724,12 +752,12 @@ pub extern "C" fn _start() -> ! {
             // Try to parse as WM message first
             if let Some(msg) = WMToKernel::from_bytes(&msg_buf) {
                 match msg {
-                    WMToKernel::WindowCreated { window_id, shm_id, width, height } => {
-                        app.handle_window_created(window_id, shm_id, width, height);
+                    WMToKernel::WindowCreated(msg) => {
+                        app.handle_window_created(msg.window_id, msg.shm_id, msg.width, msg.height);
                     }
-                    WMToKernel::RouteInput { event, .. } => {
-                        if event.event_type == 1 { // KeyPressed
-                            if let Some(ascii) = librost::input::evdev_to_ascii(event.key, event.modifiers) {
+                    WMToKernel::RouteInput(msg) => {
+                        if msg.event.event_type == 1 { // KeyPressed
+                            if let Some(ascii) = librost::input::evdev_to_ascii(msg.event.key, msg.event.modifiers) {
                                 app.handle_keyboard_input(ascii);
                             }
                         }

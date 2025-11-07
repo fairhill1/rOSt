@@ -266,7 +266,7 @@ pub fn sys_send_message(dest_pid: u32, data: *const u8, len: usize) -> i64 {
 /// Returns: number of bytes received on success, 0 if no message, negative on error
 /// NOTE: timeout_ms parameter is IGNORED - syscalls must be non-blocking
 /// Userspace should implement retry loops if needed
-pub fn sys_recv_message(buf: *mut u8, len: usize, _timeout_ms: u32) -> i64 {
+pub fn sys_recv_message(buf: *mut u8, len: usize, _timeout_ms: u32, out_sender_pid: *mut u32) -> i64 {
     if buf.is_null() || len == 0 {
         return SyscallError::InvalidArgument.as_i64();
     }
@@ -286,6 +286,13 @@ pub fn sys_recv_message(buf: *mut u8, len: usize, _timeout_ms: u32) -> i64 {
         // DEBUG: Terminal receiving from file server
         if process_id == 4 && msg.sender_pid == 2 {
             crate::kernel::uart_write_string("[IPC] Terminal received message from file server\r\n");
+        }
+
+        // Write sender PID to output parameter if provided
+        if !out_sender_pid.is_null() {
+            unsafe {
+                *out_sender_pid = msg.sender_pid;
+            }
         }
 
         // Copy message to user buffer

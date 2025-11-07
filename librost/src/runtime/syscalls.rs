@@ -39,6 +39,19 @@ pub unsafe fn syscall(num: u64, arg0: u64, arg1: u64, arg2: u64) -> i64 {
 /// Syscall wrapper with 6 arguments (for drawing syscalls)
 /// ARM64 calling convention: X0-X7 for arguments, X8 for syscall number
 #[inline(always)]
+pub unsafe fn syscall4(num: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64) -> i64 {
+    let result: i64;
+    asm!(
+        "svc #0",
+        in("x8") num,
+        inout("x0") arg0 => result,
+        in("x1") arg1,
+        in("x2") arg2,
+        in("x3") arg3,
+    );
+    result
+}
+
 pub unsafe fn syscall6(num: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i64 {
     let result: i64;
     asm!(
@@ -543,12 +556,17 @@ pub fn send_message(dest_pid: u32, data: &[u8]) -> i32 {
 /// NOTE: This is non-blocking. If no message is available, returns 0 immediately.
 /// Caller should implement retry logic if needed.
 pub fn recv_message(buf: &mut [u8], _timeout_ms: u32) -> isize {
+    recv_message_from(buf, _timeout_ms, core::ptr::null_mut())
+}
+
+pub fn recv_message_from(buf: &mut [u8], _timeout_ms: u32, out_sender_pid: *mut u32) -> isize {
     unsafe {
-        syscall(
+        syscall4(
             30, // SyscallNumber::RecvMessage
             buf.as_mut_ptr() as u64,
             buf.len() as u64,
-            0
+            _timeout_ms as u64,
+            out_sender_pid as u64
         ) as isize
     }
 }

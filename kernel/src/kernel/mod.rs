@@ -333,20 +333,31 @@ fn kernel_gui_thread() {
                         }).unwrap_or(0)
                     };
 
-                    // Create IPC message with current cursor position and event data
-                    let mut msg_buf = [0u8; 256];
-                    msg_buf[0] = 0; // KernelToWM::InputEvent type
-                    msg_buf[1..5].copy_from_slice(&(my_pid as u32).to_le_bytes());
-                    msg_buf[5..9].copy_from_slice(&(CURSOR_X.load(Ordering::Relaxed) as i32).to_le_bytes());
-                    msg_buf[9..13].copy_from_slice(&(CURSOR_Y.load(Ordering::Relaxed) as i32).to_le_bytes());
-                    msg_buf[13..17].copy_from_slice(&event_type.to_le_bytes());
-                    msg_buf[17] = key;
-                    msg_buf[18] = modifiers;
-                    msg_buf[19] = button;
-                    msg_buf[20] = pressed;
-                    msg_buf[21] = x_delta as u8;
-                    msg_buf[22] = y_delta as u8;
-                    msg_buf[23] = wheel_delta as u8;
+                    // Create IPC message using proper protocol struct
+                    use librost::ipc_protocol::{KernelToWM, InputEventMsg, msg_types};
+                    use librost::InputEvent;
+
+                    let input_event = InputEvent {
+                        event_type,
+                        key,
+                        modifiers,
+                        button,
+                        pressed,
+                        x_delta,
+                        y_delta,
+                        wheel_delta,
+                    };
+
+                    let msg = KernelToWM::InputEvent(InputEventMsg {
+                        msg_type: msg_types::KERNEL_INPUT_EVENT,
+                        _pad1: [0; 3],
+                        sender_pid: my_pid as u32,
+                        mouse_x: CURSOR_X.load(Ordering::Relaxed) as i32,
+                        mouse_y: CURSOR_Y.load(Ordering::Relaxed) as i32,
+                        event: input_event,
+                    });
+
+                    let msg_buf = msg.to_bytes();
 
                     // Send to window manager (kernel-side IPC)
                     // Response will be processed at the start of next loop iteration
