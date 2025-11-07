@@ -224,6 +224,99 @@ impl Console {
 
 static mut CONSOLE: Console = Console::new();
 
+// Shell command buffer
+const MAX_COMMAND_LEN: usize = 128;
+static mut COMMAND_BUFFER: [u8; MAX_COMMAND_LEN] = [0; MAX_COMMAND_LEN];
+static COMMAND_POS: AtomicUsize = AtomicUsize::new(0);
+
+/// Handle shell input character
+unsafe fn handle_shell_input(ch: u8) {
+    match ch {
+        b'\n' | b'\r' => {
+            // Execute command
+            CONSOLE.write_string("\n");
+            execute_command();
+            COMMAND_POS.store(0, Ordering::SeqCst);
+            COMMAND_BUFFER = [0; MAX_COMMAND_LEN];
+            show_prompt();
+        }
+        8 | 127 => {
+            // Backspace
+            let pos = COMMAND_POS.load(Ordering::SeqCst);
+            if pos > 0 {
+                COMMAND_POS.store(pos - 1, Ordering::SeqCst);
+                COMMAND_BUFFER[pos - 1] = 0;
+                CONSOLE.write_char(8); // Backspace in console
+            }
+        }
+        _ => {
+            // Regular character
+            let pos = COMMAND_POS.load(Ordering::SeqCst);
+            if pos < MAX_COMMAND_LEN - 1 {
+                COMMAND_BUFFER[pos] = ch;
+                COMMAND_POS.store(pos + 1, Ordering::SeqCst);
+                CONSOLE.write_char(ch);
+            }
+        }
+    }
+}
+
+/// Show command prompt
+unsafe fn show_prompt() {
+    CONSOLE.write_string("> ");
+}
+
+/// Execute the current command
+unsafe fn execute_command() {
+    let pos = COMMAND_POS.load(Ordering::SeqCst);
+    if pos == 0 {
+        return;
+    }
+
+    // Parse command
+    let cmd_str = core::str::from_utf8(&COMMAND_BUFFER[..pos])
+        .unwrap_or("")
+        .trim();
+
+    if cmd_str.is_empty() {
+        return;
+    }
+
+    // Split by whitespace
+    let mut parts = alloc::vec::Vec::new();
+    for word in cmd_str.split_whitespace() {
+        parts.push(word);
+    }
+
+    if parts.is_empty() {
+        return;
+    }
+
+    // Execute command
+    match parts[0] {
+        "help" => cmd_help(),
+        "clear" => cmd_clear(),
+        _ => {
+            CONSOLE.write_string("Unknown command: ");
+            CONSOLE.write_string(parts[0]);
+            CONSOLE.write_string("\nType 'help' for available commands\n");
+        }
+    }
+}
+
+/// Help command
+unsafe fn cmd_help() {
+    CONSOLE.write_string("Available commands:\n");
+    CONSOLE.write_string("  help   - Show this help\n");
+    CONSOLE.write_string("  clear  - Clear screen\n");
+    CONSOLE.write_string("\nMore commands coming soon!\n");
+}
+
+/// Clear command
+unsafe fn cmd_clear() {
+    CONSOLE.clear();
+}
+
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     print_debug("=== rOSt Terminal (EL0) ===\r\n");
@@ -356,7 +449,7 @@ pub extern "C" fn _start() -> ! {
                             // Convert evdev keycode to ASCII
                             if let Some(ascii) = librost::input::evdev_to_ascii(event.key, event.modifiers) {
                                 unsafe {
-                                    CONSOLE.write_char(ascii);
+                                    handle_shell_input(ascii);
 
                                     // Re-render to buffer
                                     CONSOLE.render_to_buffer(
