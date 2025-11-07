@@ -20,9 +20,11 @@ static PENDING_WRITE_LEN: AtomicUsize = AtomicUsize::new(0);
 static PENDING_WRITE_FD: AtomicU32 = AtomicU32::new(0);
 
 // Shared buffer info (from WM's WindowCreated message)
+// CRITICAL: Use unsafe statics with volatile access to prevent compiler optimization
 static mut PIXEL_BUFFER: *mut u32 = core::ptr::null_mut();
-static BUFFER_WIDTH: AtomicU32 = AtomicU32::new(0);
-static BUFFER_HEIGHT: AtomicU32 = AtomicU32::new(0);
+static mut BUFFER_WIDTH: u32 = 0;
+static mut BUFFER_HEIGHT: u32 = 0;
+static mut BUFFER_LEN: usize = 0; // Total pixel count
 
 // Bump allocator for userspace
 const HEAP_SIZE: usize = 256 * 1024; // 256KB heap (larger than WM since we store console buffer + command history)
@@ -178,51 +180,113 @@ impl Console {
 
     /// Clear the console
     fn clear(&mut self) {
+        librost::print_debug("CLEAR_BUF: ");
         // Clear buffer in-place to avoid stack overflow from temporary array
-        for y in 0..CONSOLE_HEIGHT {
-            for x in 0..CONSOLE_WIDTH {
+        // CRITICAL: Force compiler to execute ALL writes, not optimize them away
+        let mut cells_cleared = 0u32;
+        let h = core::hint::black_box(CONSOLE_HEIGHT);
+        let w = core::hint::black_box(CONSOLE_WIDTH);
+        for y in 0..h {
+            for x in 0..w {
                 unsafe {
                     core::ptr::write_volatile(&mut self.buffer[y][x], b' ');
                 }
+                cells_cleared += 1;
             }
         }
+        // Memory barrier to ensure all writes complete before continuing
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
+
+        librost::print_debug("cleared=");
+        for i in (0..4).rev() {
+            let digit = (cells_cleared / 10_u32.pow(i)) % 10;
+            librost::print_debug(core::str::from_utf8(&[b'0' + digit as u8]).unwrap_or("?"));
+        }
+        librost::print_debug("\r\n");
         self.cursor_x.store(0, Ordering::SeqCst);
         self.cursor_y.store(0, Ordering::SeqCst);
     }
 
     /// Render console to a pixel buffer (ARGB format)
     /// buffer_width and buffer_height are in pixels
-    fn render_to_buffer(&self, pixel_buffer: &mut [u32], buffer_width: usize, buffer_height: usize) {
-        // Force memory barrier to ensure we see latest buffer writes
-        core::sync::atomic::compiler_fence(Ordering::SeqCst);
-
+    /// draw_backgrounds: if true, fill cell backgrounds (for incremental updates); if false, assume buffer is already cleared
+    fn render_to_buffer(&self, pixel_buffer: &mut [u32], buffer_width: usize, buffer_height: usize, draw_backgrounds: bool) {
+        librost::print_debug("A\r\n");
         let bg_color = BG_COLOR.load(Ordering::SeqCst);
+        librost::print_debug("B\r\n");
         let fg_color = FG_COLOR.load(Ordering::SeqCst);
+        librost::print_debug("C\r\n");
 
-        // Clear to background color using volatile writes
-        // (pixel_buffer is shared memory read by WM)
-        for i in 0..pixel_buffer.len() {
-            unsafe {
-                core::ptr::write_volatile(&mut pixel_buffer[i], bg_color);
+        // REMOVED: Full-screen clear is expensive and unnecessary
+        // We only need to redraw changed characters
+        /*
+        for pixel in pixel_buffer.iter_mut() {
+            *pixel = bg_color;
+        }
+        */
+        librost::print_debug("D\r\n");
+
+        // Sample first few cells to verify buffer state
+        librost::print_debug("SAMPLE:");
+        for i in 0..8 {
+            let ch = unsafe { core::ptr::read_volatile(&self.buffer[0][i]) };
+            if ch >= 32 && ch < 127 {
+                librost::print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
+            } else {
+                librost::print_debug(".");
             }
         }
+        librost::print_debug(" ");
 
-        // Draw console text using bitmap font
-        for y in 0..CONSOLE_HEIGHT {
-            let line_y = (y as i32) * LINE_HEIGHT as i32;
+        // Draw console text
+        // CRITICAL: Force compiler to execute all loop iterations
+        let console_h = core::hint::black_box(CONSOLE_HEIGHT);
+        let console_w = core::hint::black_box(CONSOLE_WIDTH);
+        let char_h = core::hint::black_box(CHAR_HEIGHT);
+        let char_w = core::hint::black_box(CHAR_WIDTH);
 
-            // Draw each character in this line
-            for x in 0..CONSOLE_WIDTH {
-                // Use volatile read to force compiler to fetch from memory
+        let mut cells_drawn = 0u32;
+        let mut pixels_drawn = 0u32;
+
+        for y in 0..console_h {
+            for x in 0..console_w {
                 let ch = unsafe { core::ptr::read_volatile(&self.buffer[y][x]) };
+
+                // Calculate character cell position
+                let cell_x = (x as i32) * char_w as i32;
+                let cell_y = (y as i32) * LINE_HEIGHT as i32;
+
+                // Draw background for this character cell (clears cursor/old text)
+                // Only needed for incremental updates, not after full-screen clear
+                if draw_backgrounds {
+                    let bg_h = core::hint::black_box(char_h);
+                    let bg_w = core::hint::black_box(char_w);
+                    for dy in 0..bg_h {
+                        for dx in 0..bg_w {
+                            let px = cell_x + dx as i32;
+                            let py = cell_y + dy as i32;
+                            if px >= 0 && px < buffer_width as i32 && py >= 0 && py < buffer_height as i32 {
+                                let idx = (py as usize * buffer_width) + px as usize;
+                                if idx < pixel_buffer.len() {
+                                    // CRITICAL: Must use write_volatile for shared memory
+                                    unsafe { core::ptr::write_volatile(&mut pixel_buffer[idx], bg_color); }
+                                    pixels_drawn += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                cells_drawn += 1;
+
+                // Draw character on top of background (if not space)
                 if ch != b' ' {
-                    let char_x = (x as i32) * CHAR_WIDTH as i32;
                     librost::graphics::draw_char(
                         pixel_buffer,
                         buffer_width,
                         buffer_height,
-                        char_x,
-                        line_y,
+                        cell_x,
+                        cell_y,
                         ch,
                         fg_color
                     );
@@ -230,7 +294,25 @@ impl Console {
             }
         }
 
-        // Draw cursor (solid block)
+        librost::print_debug("CELLS=");
+        let cells = core::hint::black_box(cells_drawn);
+        for i in (0..4).rev() {
+            let digit = (cells / 10_u32.pow(i)) % 10;
+            let ch = b'0' + digit as u8;
+            librost::print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
+        }
+        librost::print_debug(" PIX=");
+        let pixels = core::hint::black_box(pixels_drawn);
+        for i in (0..7).rev() {
+            let digit = (pixels / 10_u32.pow(i)) % 10;
+            let ch = b'0' + digit as u8;
+            librost::print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
+        }
+        librost::print_debug("\r\n");
+
+        librost::print_debug("E\r\n");
+
+        // Draw cursor
         let cursor_x_pos = self.cursor_x.load(Ordering::SeqCst);
         let cursor_y_pos = self.cursor_y.load(Ordering::SeqCst);
 
@@ -238,8 +320,6 @@ impl Console {
             let cursor_x = (cursor_x_pos as i32) * CHAR_WIDTH as i32;
             let cursor_y = (cursor_y_pos as i32) * LINE_HEIGHT as i32;
 
-            // Draw a filled rectangle for the cursor
-            // Use volatile writes because pixel_buffer is shared memory (WM reads it)
             for dy in 0..CHAR_HEIGHT {
                 for dx in 0..CHAR_WIDTH {
                     let px = cursor_x + dx as i32;
@@ -247,17 +327,13 @@ impl Console {
                     if px >= 0 && px < buffer_width as i32 && py >= 0 && py < buffer_height as i32 {
                         let idx = (py as usize * buffer_width) + px as usize;
                         if idx < pixel_buffer.len() {
-                            unsafe {
-                                core::ptr::write_volatile(&mut pixel_buffer[idx], 0xFF00FF00); // Green cursor
-                            }
+                            unsafe { core::ptr::write_volatile(&mut pixel_buffer[idx], 0xFF00FF00); }
                         }
                     }
                 }
             }
         }
-
-        // NOTE: No manual sync needed! Shared memory is mapped as non-cacheable (MAIR Attr2=0x44)
-        // Hardware ensures coherency automatically for non-cacheable regions
+        librost::print_debug("F\r\n");
     }
 }
 
@@ -370,44 +446,132 @@ unsafe fn cmd_help() {
 
 /// Clear command
 unsafe fn cmd_clear() {
-    CONSOLE.clear();
+    librost::print_debug("=== CMD_CLEAR START ===\r\n");
 
-    // Re-render cleared buffer to pixels and notify WM
-    let buffer_width = BUFFER_WIDTH.load(Ordering::SeqCst) as usize;
-    let buffer_height = BUFFER_HEIGHT.load(Ordering::SeqCst) as usize;
+    // Check if buffer is initialized
+    let px_ptr = PIXEL_BUFFER;
+    librost::print_debug("PIXEL_BUFFER ptr: ");
+    if px_ptr.is_null() {
+        librost::print_debug("NULL!\r\n");
+        CONSOLE.write_string("Error: Pixel buffer not initialized\n");
+        return;
+    }
+
+    // Print address
+    let addr = px_ptr as usize;
+    for i in (0..16).rev() {
+        let digit = (addr >> (i * 4)) & 0xF;
+        let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
+        librost::print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
+    }
+    librost::print_debug("\r\n");
+
+    CONSOLE.clear();
+    show_prompt(); // Show prompt after clearing
+
+    // Re-render cleared buffer to pixels and notify WM (use volatile reads)
+    let buffer_width = unsafe { core::ptr::read_volatile(&BUFFER_WIDTH) } as usize;
+    let buffer_height = unsafe { core::ptr::read_volatile(&BUFFER_HEIGHT) } as usize;
+    let buffer_len = unsafe { core::ptr::read_volatile(&BUFFER_LEN) };
 
     librost::print_debug("CLR: w=");
-    if buffer_width < 10000 {
-        let w_str = [b'0' + (buffer_width / 1000) as u8, b'0' + ((buffer_width / 100) % 10) as u8,
-                     b'0' + ((buffer_width / 10) % 10) as u8, b'0' + (buffer_width % 10) as u8];
+    let w_val = core::hint::black_box(buffer_width);
+    if w_val < 10000 && w_val > 0 {
+        let w_str = [b'0' + (w_val / 1000) as u8, b'0' + ((w_val / 100) % 10) as u8,
+                     b'0' + ((w_val / 10) % 10) as u8, b'0' + (w_val % 10) as u8];
         librost::print_debug(core::str::from_utf8(&w_str).unwrap_or("?"));
     }
     librost::print_debug(" h=");
-    if buffer_height < 10000 {
-        let h_str = [b'0' + (buffer_height / 1000) as u8, b'0' + ((buffer_height / 100) % 10) as u8,
-                     b'0' + ((buffer_height / 10) % 10) as u8, b'0' + (buffer_height % 10) as u8];
+    let h_val = core::hint::black_box(buffer_height);
+    if h_val < 10000 && h_val > 0 {
+        let h_str = [b'0' + (h_val / 1000) as u8, b'0' + ((h_val / 100) % 10) as u8,
+                     b'0' + ((h_val / 10) % 10) as u8, b'0' + (h_val % 10) as u8];
         librost::print_debug(core::str::from_utf8(&h_str).unwrap_or("?"));
     }
-    librost::print_debug(" ");
+    librost::print_debug(" len=");
+    let len_val = core::hint::black_box(buffer_len);
+    if len_val > 0 {
+        librost::print_debug("OK");
+    } else {
+        librost::print_debug("ZERO!");
+    }
+    librost::print_debug("\r\n");
 
-    if !PIXEL_BUFFER.is_null() && buffer_width > 0 && buffer_height > 0 {
+    // CRITICAL: Use BUFFER_LEN, not width*height, to avoid recomputation issues
+    if !PIXEL_BUFFER.is_null() && buffer_len > 0 {
         let pixel_buffer = core::slice::from_raw_parts_mut(
             PIXEL_BUFFER,
-            buffer_width * buffer_height
+            buffer_len
         );
 
-        librost::print_debug("pxlen=");
-        let len = pixel_buffer.len();
-        // Simple debug: just print if it's big or small
-        if len > 500000 {
-            librost::print_debug("BIG ");
-        } else if len > 100000 {
-            librost::print_debug("MED ");
-        } else {
-            librost::print_debug("SMALL ");
+        // Debug: Print buffer info
+        librost::print_debug("BUF: ptr=");
+        let ptr_val = pixel_buffer.as_ptr() as usize;
+        for i in (0..16).rev() {
+            let digit = (ptr_val >> (i * 4)) & 0xF;
+            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
+            librost::print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
         }
 
-        CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height);
+        librost::print_debug(" len=");
+        let len = pixel_buffer.len();
+        // Print length in decimal
+        if len > 100000 {
+            let m = (len / 100000) % 10;
+            librost::print_debug(core::str::from_utf8(&[b'0' + m as u8]).unwrap_or("?"));
+        }
+        if len > 10000 {
+            let m = (len / 10000) % 10;
+            librost::print_debug(core::str::from_utf8(&[b'0' + m as u8]).unwrap_or("?"));
+        }
+        if len > 1000 {
+            let m = (len / 1000) % 10;
+            librost::print_debug(core::str::from_utf8(&[b'0' + m as u8]).unwrap_or("?"));
+        }
+        if len > 100 {
+            let m = (len / 100) % 10;
+            librost::print_debug(core::str::from_utf8(&[b'0' + m as u8]).unwrap_or("?"));
+        }
+        if len > 10 {
+            let m = (len / 10) % 10;
+            librost::print_debug(core::str::from_utf8(&[b'0' + m as u8]).unwrap_or("?"));
+        }
+        let m = len % 10;
+        librost::print_debug(core::str::from_utf8(&[b'0' + m as u8]).unwrap_or("?"));
+        librost::print_debug("\r\n");
+
+        // Clear entire screen to black - COUNT PIXELS TO VERIFY
+        let bg_color = BG_COLOR.load(Ordering::SeqCst);
+        librost::print_debug("CLEAR: color=");
+        for i in (0..8).rev() {
+            let digit = (bg_color >> (i * 4)) & 0xF;
+            let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
+            librost::print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
+        }
+        librost::print_debug(" buflen=");
+        let buf_len = pixel_buffer.len();
+        for i in (0..7).rev() {
+            let digit = (buf_len / 10_usize.pow(i)) % 10;
+            librost::print_debug(core::str::from_utf8(&[b'0' + digit as u8]).unwrap_or("?"));
+        }
+        librost::print_debug(" clearing...");
+
+        let mut cleared = 0usize;
+        for i in 0..pixel_buffer.len() {
+            unsafe {
+                core::ptr::write_volatile(&mut pixel_buffer[i], bg_color);
+            }
+            cleared += 1;
+        }
+
+        librost::print_debug("CLEARED=");
+        for i in (0..7).rev() {
+            let digit = (cleared / 10_usize.pow(i)) % 10;
+            librost::print_debug(core::str::from_utf8(&[b'0' + digit as u8]).unwrap_or("?"));
+        }
+        librost::print_debug(" ");
+
+        CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height, false);
 
         librost::print_debug("rendered ");
 
@@ -640,6 +804,26 @@ pub extern "C" fn _start() -> ! {
                     WMToKernel::WindowCreated { window_id, shm_id, width, height } => {
                         if window_id == my_pid {
                             print_debug("Terminal: Received WindowCreated\r\n");
+                            print_debug("W=");
+                            // Print width as hex
+                            for i in (0..8).rev() {
+                                let digit = (width >> (i * 4)) & 0xF;
+                                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
+                                print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
+                            }
+                            print_debug(" H=");
+                            // Print height as hex
+                            for i in (0..8).rev() {
+                                let digit = (height >> (i * 4)) & 0xF;
+                                let ch = if digit < 10 { b'0' + digit as u8 } else { b'A' + (digit - 10) as u8 };
+                                print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
+                            }
+                            print_debug(" shmid=");
+                            if shm_id >= 0 && shm_id < 10 {
+                                let s = [b'0' + shm_id as u8];
+                                print_debug(core::str::from_utf8(&s).unwrap_or("?"));
+                            }
+                            print_debug("\r\n");
 
                             // Map the WM's shared memory buffer
                             print_debug("Terminal: Mapping WM's buffer\r\n");
@@ -652,14 +836,25 @@ pub extern "C" fn _start() -> ! {
 
                             print_debug("Terminal: Buffer mapped successfully\r\n");
 
+                            // Sanity check dimensions (max 16MB buffer = 4M pixels)
+                            let max_pixels: u32 = 4 * 1024 * 1024; // 4M pixels = 16MB
+                            if width == 0 || height == 0 || width > 4096 || height > 4096 || (width * height) > max_pixels {
+                                print_debug("Terminal: ERROR - Invalid buffer dimensions!\r\n");
+                                exit(1);
+                            }
+
                             // Store buffer dimensions
                             buffer_width = width as usize;
                             buffer_height = height as usize;
 
-                            // Store in statics so cmd_clear can access
-                            BUFFER_WIDTH.store(width, Ordering::SeqCst);
-                            BUFFER_HEIGHT.store(height, Ordering::SeqCst);
-                            unsafe { PIXEL_BUFFER = shmem_ptr as *mut u32; }
+                            // Store in statics so cmd_clear can access (use volatile to prevent optimization)
+                            let total_pixels = (width as usize) * (height as usize);
+                            unsafe {
+                                core::ptr::write_volatile(&mut BUFFER_WIDTH, width);
+                                core::ptr::write_volatile(&mut BUFFER_HEIGHT, height);
+                                core::ptr::write_volatile(&mut BUFFER_LEN, total_pixels);
+                                core::ptr::write_volatile(&mut PIXEL_BUFFER, shmem_ptr as *mut u32);
+                            }
 
                             // Create slice from mapped buffer
                             pixel_buffer = unsafe {
@@ -676,23 +871,20 @@ pub extern "C" fn _start() -> ! {
                                 CONSOLE.render_to_buffer(
                                     pixel_buffer,
                                     buffer_width,
-                                    buffer_height
+                                    buffer_height,
+                                    true
                                 );
                             }
 
                             print_debug("Terminal: Initial render complete\r\n");
 
                             // Request WM to redraw (show our initial content)
+                            // CRITICAL: Use sync_and_notify to ensure memory barrier
                             let redraw_msg = KernelToWM::RequestRedraw {
                                 id: my_pid,
                             };
-                            let msg_bytes = redraw_msg.to_bytes();
-                            let result = send_message(wm_pid, &msg_bytes);
-                            if result < 0 {
-                                print_debug("Terminal: Failed to send RequestRedraw to WM\r\n");
-                            } else {
-                                print_debug("Terminal: RequestRedraw sent to WM\r\n");
-                            }
+                            librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
+                            print_debug("Terminal: RequestRedraw sent to WM\r\n");
                         }
                     }
                     WMToKernel::RouteInput { event, .. } => {
@@ -722,19 +914,19 @@ pub extern "C" fn _start() -> ! {
                                     if !pixel_buffer.is_empty() {
                                         print_debug("RENDER ");
 
-                                        // Re-render to buffer (non-cacheable, no sync needed)
+                                        // Re-render to buffer
                                         CONSOLE.render_to_buffer(
                                             pixel_buffer,
                                             buffer_width,
-                                            buffer_height
+                                            buffer_height,
+                                            true
                                         );
 
-                                        // Request WM to redraw
+                                        // CRITICAL: Use sync_and_notify to ensure memory barrier + IPC
                                         let redraw_msg = KernelToWM::RequestRedraw {
                                             id: my_pid,
                                         };
-                                        let msg_bytes = redraw_msg.to_bytes();
-                                        send_message(wm_pid, &msg_bytes);
+                                        librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
                                         print_debug("SENT ");
                                     } else {
                                         print_debug("SKIP(empty) ");
@@ -765,7 +957,7 @@ pub extern "C" fn _start() -> ! {
                             show_prompt();
 
                             // Re-render and request redraw
-                            CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height);
+                            CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height, true);
                         }
                         let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
                         librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
@@ -774,7 +966,7 @@ pub extern "C" fn _start() -> ! {
                         unsafe {
                             CONSOLE.write_string("File created successfully\n");
                             show_prompt();
-                            CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height);
+                            CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height, true);
                         }
                         let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
                         librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
@@ -838,7 +1030,7 @@ pub extern "C" fn _start() -> ! {
                             CONSOLE.write_char(b'0' + (bytes_written % 10) as u8);
                             CONSOLE.write_string(" bytes\n");
                             show_prompt();
-                            CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height);
+                            CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height, true);
                         }
                         let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
                         librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());
@@ -856,7 +1048,7 @@ pub extern "C" fn _start() -> ! {
                             }
                             CONSOLE.write_string("\n");
                             show_prompt();
-                            CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height);
+                            CONSOLE.render_to_buffer(pixel_buffer, buffer_width, buffer_height, true);
                         }
                         let redraw_msg = KernelToWM::RequestRedraw { id: my_pid };
                         librost::sync_and_notify(wm_pid, &redraw_msg.to_bytes());

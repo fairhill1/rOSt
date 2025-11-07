@@ -168,7 +168,8 @@ pub fn draw_char(buffer: &mut [u32], buffer_width: usize, buffer_height: usize,
                         if px >= 0 && px < buffer_width as i32 && py >= 0 && py < buffer_height as i32 {
                             let idx = (py as usize * buffer_width) + px as usize;
                             if idx < buffer.len() {
-                                buffer[idx] = color;
+                                // CRITICAL: Must use write_volatile for shared memory buffers
+                                unsafe { core::ptr::write_volatile(&mut buffer[idx], color); }
                             }
                         }
                     }

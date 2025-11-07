@@ -4,7 +4,7 @@ The goal is to build a modern, robust, modular Production-grade ARM64 Desktop OS
 
 # rOSt - Rust ARM64 Operating System
 
-**Last Updated:** 2025-11-03
+**Last Updated:** 2025-11-07
 
 ## Features
 
@@ -426,7 +426,37 @@ let content_width = core::hint::black_box(window.width - BORDER * 2);
 
 ### 4. Pattern: "Memory writes disappear"
 **Diagnosis:** Compiler eliminates "dead stores"
-**Fix:** Use `write_volatile()` or add memory barriers
+**Fix:** Use `write_volatile()` AND `black_box()` on loop bounds
+
+**CRITICAL:** `write_volatile()` alone is NOT enough - it prevents a single write from being optimized away, but the LOOP ITSELF can still be eliminated!
+
+```rust
+// ❌ BROKEN - Loop executes but writes are optimized away
+for y in 0..CONSOLE_HEIGHT {
+    for x in 0..CONSOLE_WIDTH {
+        unsafe { core::ptr::write_volatile(&mut buffer[y][x], b' '); }
+    }
+}
+// Symptom: Loop counter increments to expected value, but memory unchanged
+
+// ✅ FIXED - black_box forces ALL loop iterations to execute
+let h = core::hint::black_box(CONSOLE_HEIGHT);
+let w = core::hint::black_box(CONSOLE_WIDTH);
+for y in 0..h {
+    for x in 0..w {
+        unsafe { core::ptr::write_volatile(&mut buffer[y][x], b' '); }
+    }
+}
+core::sync::atomic::compiler_fence(Ordering::SeqCst);
+```
+
+**Why both are needed:**
+- `write_volatile()`: Prevents compiler from eliminating individual write operations
+- `black_box(bounds)`: Prevents compiler from unrolling/eliminating loop iterations
+- `compiler_fence()`: Ensures all writes complete before continuing
+
+**Real-world example (Terminal clear command):**
+The clear loop counted to 2432 cells (proving loop structure existed), but old text remained visible (proving writes were optimized away). Adding `black_box()` to loop bounds fixed it.
 
 ### 5. Faster Debug Workflow
 Instead of fighting the compiler:

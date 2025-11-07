@@ -323,7 +323,7 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
 
     // Handle mouse button clicks
     if event.event_type == 4 && event.pressed != 0 { // MouseButton pressed
-        print_debug("CLICK!");
+        // print_debug("CLICK!");
         let click_x = mouse_x;
         let click_y = mouse_y;
 
@@ -363,43 +363,43 @@ fn handle_input(event: InputEvent, mouse_x: i32, mouse_y: i32) -> WMToKernel {
             return WMToKernel::NoAction;
         }
 
-        print_debug("CHECK_WINDOW...");
+        // print_debug("CHECK_WINDOW...");
         if let Some(window_id) = find_window_at(click_x, click_y) {
-            print_debug("WINDOW_HIT!");
-            if window_id == 0 {
-                print_debug("WID=0!");
-            } else if window_id == 1 {
-                print_debug("WID=1!");
-            } else if window_id == 2 {
-                print_debug("WID=2!");
-            } else {
-                print_debug("WID=OTHER!");
-            }
+            // print_debug("WINDOW_HIT!");
+            // if window_id == 0 {
+            //     print_debug("WID=0!");
+            // } else if window_id == 1 {
+            //     print_debug("WID=1!");
+            // } else if window_id == 2 {
+            //     print_debug("WID=2!");
+            // } else {
+            //     print_debug("WID=OTHER!");
+            // }
 
             // Find window index
             let count = WINDOW_COUNT.load(Ordering::SeqCst);
-            print_debug("LOOP_START:");
+            // print_debug("LOOP_START:");
             for i in 0..count {
                 let window = unsafe { &mut WINDOWS[i] };
-                print_debug("CHK_");
+                // print_debug("CHK_");
                 if window.id == window_id {
-                    print_debug("MATCH!");
+                    // print_debug("MATCH!");
 
                     // Check if click is on close button first
                     if is_in_close_button(window, click_x, click_y) {
-                        print_debug("CLOSE_BTN!");
+                        // print_debug("CLOSE_BTN!");
                         // Request window close
                         return WMToKernel::RequestClose { window_id };
                     }
 
                     // If window is not focused, focus it first (consume the click)
                     if !window.focused {
-                        print_debug("NOT_FOCUSED->FOCUS!");
+                        // print_debug("NOT_FOCUSED->FOCUS!");
                         return WMToKernel::RequestFocus { window_id };
                     }
 
                     // Window is already focused, send input directly to it
-                    print_debug("SEND_INPUT_DIRECT!");
+                    // print_debug("SEND_INPUT_DIRECT!");
                     let msg = WMToKernel::RouteInput { window_id, event };
                     librost::send_message(window_id as u32, &msg.to_bytes());
                     return WMToKernel::NoAction;
@@ -625,7 +625,7 @@ fn draw_window_chrome(window: &WindowState) {
 
 /// Redraw all window chrome and menu bar
 fn redraw_all() {
-    print_debug("WM:REDRAW ");
+    // print_debug("WM:REDRAW ");
 
     // Don't recalculate layout on every frame - only when windows change
     // Layout is calculated in handle_create_window() and handle_close_window()
@@ -659,12 +659,12 @@ fn redraw_all() {
     let count = WINDOW_COUNT.load(Ordering::SeqCst);
     core::sync::atomic::compiler_fence(Ordering::SeqCst);
 
-    print_debug("CNT=");
-    if count < 10 {
-        let s = [b'0' + count as u8];
-        print_debug(core::str::from_utf8(&s).unwrap_or("?"));
-    }
-    print_debug(" ");
+    // print_debug("CNT=");
+    // if count < 10 {
+    //     let s = [b'0' + count as u8];
+    //     print_debug(core::str::from_utf8(&s).unwrap_or("?"));
+    // }
+    // print_debug(" ");
 
     // Compiler is optimizing away the loop completely in release mode
     // Work around by unrolling manually for the first window
@@ -678,18 +678,18 @@ fn redraw_all() {
         getpid(); // Barrier
         core::sync::atomic::compiler_fence(Ordering::SeqCst);
 
-        print_debug("W0:V=");
-        if core::hint::black_box(visible_val) {
-            print_debug("1");
-        } else {
-            print_debug("0");
-        }
-        print_debug(" S=");
-        if core::hint::black_box(shm_id_val) < 10 {
-            let s = [b'0' + shm_id_val as u8];
-            print_debug(core::str::from_utf8(&s).unwrap_or("?"));
-        }
-        print_debug(" ");
+        // print_debug("W0:V=");
+        // if core::hint::black_box(visible_val) {
+        //     print_debug("1");
+        // } else {
+        //     print_debug("0");
+        // }
+        // print_debug(" S=");
+        // if core::hint::black_box(shm_id_val) < 10 {
+        //     let s = [b'0' + shm_id_val as u8];
+        //     print_debug(core::str::from_utf8(&s).unwrap_or("?"));
+        // }
+        // print_debug(" ");
 
         if core::hint::black_box(visible_val) && core::hint::black_box(shm_id_val) != 0 {
             // Composite window content from shared memory
@@ -720,31 +720,53 @@ fn redraw_all() {
 
                 // Debug: Check if buffer has non-zero pixels
                 let mut non_zero_count = 0;
-                for idx in 0..src_buffer.len().min(1000) {
-                    if src_buffer[idx] != 0 {
+                let mut black_count = 0;
+                for idx in 0..src_buffer.len().min(10000) {
+                    let pixel = unsafe { core::ptr::read_volatile(src_buffer.as_ptr().add(idx)) };
+                    if pixel != 0 {
                         non_zero_count += 1;
                     }
-                }
-                if non_zero_count > 0 {
-                    print_debug("DATA=");
-                    if non_zero_count < 10 {
-                        let s = [b'0' + non_zero_count as u8];
-                        print_debug(core::str::from_utf8(&s).unwrap_or("?"));
-                    } else {
-                        print_debug(">10");
+                    if pixel == 0xFF000000 {  // Black
+                        black_count += 1;
                     }
-                    print_debug(" ");
+                }
+                if black_count > 5000 {
+                    print_debug("[WM-READ:MOSTLY_BLACK] ");
+                } else if non_zero_count > 100 {
+                    print_debug("[WM-READ:DATA] ");
                 } else {
-                    print_debug("ZERO ");
+                    print_debug("[WM-READ:EMPTY] ");
                 }
 
                 let fb_w = FB_WIDTH.load(Ordering::SeqCst) as usize;
                 let fb_h = FB_HEIGHT.load(Ordering::SeqCst) as usize;
 
+                // Debug: print dimensions before compositing
+                print_debug("COMP:h=");
+                let h_val = core::hint::black_box(content_height);
+                if h_val < 10000 {
+                    for i in (0..4).rev() {
+                        let digit = (h_val / 10_u32.pow(i)) % 10;
+                        let ch = b'0' + digit as u8;
+                        print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
+                    }
+                }
+                print_debug(" w=");
+                let w_val = core::hint::black_box(content_width);
+                if w_val < 10000 {
+                    for i in (0..4).rev() {
+                        let digit = (w_val / 10_u32.pow(i)) % 10;
+                        let ch = b'0' + digit as u8;
+                        print_debug(core::str::from_utf8(&[ch]).unwrap_or("?"));
+                    }
+                }
+                print_debug("\r\n");
+
                 // CRITICAL: Must use write_volatile to prevent compiler optimization
                 // copy_nonoverlapping can be optimized away in release mode
+                let loop_height = core::hint::black_box(content_height);
                 unsafe {
-                    for y in 0..content_height {
+                    for y in 0..loop_height {
                         let screen_y = (content_y + y as i32) as usize;
                         if screen_y >= fb_h {
                             continue;
