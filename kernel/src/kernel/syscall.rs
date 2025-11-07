@@ -75,10 +75,11 @@ pub enum SyscallNumber {
     // IPC operations (extended)
     ShmMapFromProcess = 37,
     ShmDestroy = 38,
+    ShmDestroyFromProcess = 39,
 
     // Raw block I/O (for microkernel file server)
-    ReadBlock = 39,
-    WriteBlock = 40,
+    ReadBlock = 40,
+    WriteBlock = 41,
 }
 
 impl SyscallNumber {
@@ -124,8 +125,9 @@ impl SyscallNumber {
             36 => Some(Self::FbFlushRegion),
             37 => Some(Self::ShmMapFromProcess),
             38 => Some(Self::ShmDestroy),
-            39 => Some(Self::ReadBlock),
-            40 => Some(Self::WriteBlock),
+            39 => Some(Self::ShmDestroyFromProcess),
+            40 => Some(Self::ReadBlock),
+            41 => Some(Self::WriteBlock),
             _ => None,
         }
     }
@@ -306,6 +308,7 @@ pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
         SyscallNumber::FbFlushRegion => sys_fb_flush_region(args.arg0 as u32, args.arg1 as u32, args.arg2 as u32, args.arg3 as u32),
         SyscallNumber::ShmMapFromProcess => sys_shm_map_from_process(args.arg0 as usize, args.arg1 as i32),
         SyscallNumber::ShmDestroy => sys_shm_destroy(args.arg0 as i32),
+        SyscallNumber::ShmDestroyFromProcess => sys_shm_destroy_from_process(args.arg0 as usize, args.arg1 as i32),
         SyscallNumber::ReadBlock => sys_read_block(args.arg0 as u32, args.arg1 as u32, args.arg2 as *mut u8),
         SyscallNumber::WriteBlock => sys_write_block(args.arg0 as u32, args.arg1 as u32, args.arg2 as *const u8),
         _ => SyscallError::NotImplemented.as_i64(),
@@ -1252,6 +1255,10 @@ fn sys_shm_map_from_process(process_id: usize, shm_id: i32) -> i64 {
 
 fn sys_shm_destroy(shm_id: i32) -> i64 {
     crate::kernel::syscall_ipc::sys_shm_destroy(shm_id)
+}
+
+fn sys_shm_destroy_from_process(process_id: usize, shm_id: i32) -> i64 {
+    crate::kernel::syscall_ipc::sys_shm_destroy_from_process(process_id, shm_id)
 }
 
 fn sys_shm_unmap(shm_id: i32) -> i64 {

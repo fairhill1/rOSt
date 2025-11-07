@@ -114,6 +114,34 @@ pub fn sys_shm_map_from_process(process_id: usize, shm_id: i32) -> i64 {
     }
 }
 
+/// Destroy a shared memory region from a specific process
+/// Used by WM to clean up shared memory from dead processes
+/// Returns: 0 on success, negative error code on failure
+pub fn sys_shm_destroy_from_process(process_id: usize, shm_id: i32) -> i64 {
+    crate::kernel::uart_write_string("[SYSCALL] shm_destroy_from_process(pid=");
+    crate::kernel::uart_write_string(", id=");
+    if shm_id < 10 {
+        unsafe { core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + shm_id as u8); }
+    }
+    crate::kernel::uart_write_string(")\r\n");
+
+    // Deallocate the shared memory region from specified process
+    let success = crate::kernel::thread::with_process_mut(process_id, |process| {
+        process.shm_table.dealloc(shm_id)
+    });
+
+    match success {
+        Some(true) => {
+            crate::kernel::uart_write_string("[SYSCALL] shm_destroy_from_process() -> SUCCESS\r\n");
+            0
+        }
+        _ => {
+            crate::kernel::uart_write_string("[SYSCALL] shm_destroy_from_process() -> FAILED (not found)\r\n");
+            SyscallError::InvalidArgument.as_i64()
+        }
+    }
+}
+
 /// Destroy a shared memory region and free its physical memory
 /// This is critical to prevent resource leaks when resizing windows
 /// Returns: 0 on success, negative error code on failure

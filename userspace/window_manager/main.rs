@@ -1075,10 +1075,12 @@ fn handle_close_window(id: usize) {
             let was_focused = window.focused;
             let shm_id = window.shm_id;
 
-            // Free the buffer (WM allocated it, WM frees it)
+            // Free the buffer from the dead process's shm_table
+            // CRITICAL: Use shm_destroy_from_process, not shm_destroy!
+            // The buffer was allocated by the dead process, not by WM
             if shm_id > 0 {
                 print_debug("WM: Destroying buffer for closed window\r\n");
-                shm_destroy(shm_id);
+                shm_destroy_from_process(id, shm_id);
             }
 
             // Shift remaining windows down

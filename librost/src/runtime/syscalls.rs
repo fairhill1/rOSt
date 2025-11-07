@@ -496,6 +496,20 @@ pub fn shm_destroy(shm_id: i32) -> i32 {
     }
 }
 
+/// Destroy a shared memory region from a specific process
+/// Used by WM to clean up shared memory from dead processes
+/// Returns: 0 on success, negative error code on failure
+pub fn shm_destroy_from_process(process_id: usize, shm_id: i32) -> i32 {
+    unsafe {
+        syscall(
+            39, // SyscallNumber::ShmDestroyFromProcess
+            process_id as u64,
+            shm_id as u64,
+            0
+        ) as i32
+    }
+}
+
 /// Unmap a shared memory region
 /// Returns: 0 on success, negative error code on failure
 pub fn shm_unmap(shm_id: i32) -> i32 {
