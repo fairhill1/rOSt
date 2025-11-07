@@ -75,6 +75,10 @@ pub enum SyscallNumber {
     // IPC operations (extended)
     ShmMapFromProcess = 37,
     ShmDestroy = 38,
+
+    // Raw block I/O (for microkernel file server)
+    ReadBlock = 39,
+    WriteBlock = 40,
 }
 
 impl SyscallNumber {
@@ -120,6 +124,8 @@ impl SyscallNumber {
             36 => Some(Self::FbFlushRegion),
             37 => Some(Self::ShmMapFromProcess),
             38 => Some(Self::ShmDestroy),
+            39 => Some(Self::ReadBlock),
+            40 => Some(Self::WriteBlock),
             _ => None,
         }
     }
@@ -300,6 +306,8 @@ pub fn handle_syscall(syscall_num: u64, args: SyscallArgs) -> i64 {
         SyscallNumber::FbFlushRegion => sys_fb_flush_region(args.arg0 as u32, args.arg1 as u32, args.arg2 as u32, args.arg3 as u32),
         SyscallNumber::ShmMapFromProcess => sys_shm_map_from_process(args.arg0 as usize, args.arg1 as i32),
         SyscallNumber::ShmDestroy => sys_shm_destroy(args.arg0 as i32),
+        SyscallNumber::ReadBlock => sys_read_block(args.arg0 as u32, args.arg1 as u32, args.arg2 as *mut u8),
+        SyscallNumber::WriteBlock => sys_write_block(args.arg0 as u32, args.arg1 as u32, args.arg2 as *const u8),
         _ => SyscallError::NotImplemented.as_i64(),
     }
 }
@@ -1433,4 +1441,91 @@ fn sys_fb_flush_region(x: u32, y: u32, width: u32, height: u32) -> i64 {
     };
 
     result
+}
+
+// ============================================================================
+// Raw block I/O syscalls (for microkernel file server)
+// ============================================================================
+
+const SECTOR_SIZE: usize = 512;
+
+/// Read a single 512-byte sector from block device
+///
+/// Args:
+///   device_id: Block device index (0 = first VirtIO block device)
+///   sector: Sector number to read
+///   buffer: Pointer to 512-byte buffer in userspace
+///
+/// Returns: 0 on success, negative error code on failure
+fn sys_read_block(device_id: u32, sector: u32, buffer: *mut u8) -> i64 {
+    if buffer.is_null() {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    // Get block device
+    let block_devices = unsafe { crate::kernel::BLOCK_DEVICES.as_mut() };
+    let device = match block_devices {
+        Some(devs) if device_id < devs.len() as u32 => &mut devs[device_id as usize],
+        _ => return SyscallError::InvalidArgument.as_i64(),
+    };
+
+    // Static buffer for sector read (512 bytes)
+    // CRITICAL: Do NOT allocate on stack in syscall handler
+    static mut SECTOR_BUFFER: [u8; SECTOR_SIZE] = [0; SECTOR_SIZE];
+
+    // Read sector from device
+    unsafe {
+        match device.read_sector(sector as u64, &mut SECTOR_BUFFER) {
+            Ok(_) => {
+                // Copy to userspace buffer
+                core::ptr::copy_nonoverlapping(
+                    SECTOR_BUFFER.as_ptr(),
+                    buffer,
+                    SECTOR_SIZE
+                );
+                0 // Success
+            }
+            Err(_) => SyscallError::InvalidArgument.as_i64(),
+        }
+    }
+}
+
+/// Write a single 512-byte sector to block device
+///
+/// Args:
+///   device_id: Block device index (0 = first VirtIO block device)
+///   sector: Sector number to write
+///   buffer: Pointer to 512-byte buffer in userspace
+///
+/// Returns: 0 on success, negative error code on failure
+fn sys_write_block(device_id: u32, sector: u32, buffer: *const u8) -> i64 {
+    if buffer.is_null() {
+        return SyscallError::InvalidArgument.as_i64();
+    }
+
+    // Get block device
+    let block_devices = unsafe { crate::kernel::BLOCK_DEVICES.as_mut() };
+    let device = match block_devices {
+        Some(devs) if device_id < devs.len() as u32 => &mut devs[device_id as usize],
+        _ => return SyscallError::InvalidArgument.as_i64(),
+    };
+
+    // Static buffer for sector write (512 bytes)
+    // CRITICAL: Do NOT allocate on stack in syscall handler
+    static mut SECTOR_BUFFER: [u8; SECTOR_SIZE] = [0; SECTOR_SIZE];
+
+    // Copy from userspace buffer
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            buffer,
+            SECTOR_BUFFER.as_mut_ptr(),
+            SECTOR_SIZE
+        );
+
+        // Write sector to device
+        match device.write_sector(sector as u64, &SECTOR_BUFFER) {
+            Ok(_) => 0, // Success
+            Err(_) => SyscallError::InvalidArgument.as_i64(),
+        }
+    }
 }

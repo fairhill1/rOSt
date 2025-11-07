@@ -25,9 +25,6 @@ The goal is to build a modern, robust, modular Production-grade ARM64 Desktop OS
 # Build kernel
 cargo build --release --target aarch64-unknown-uefi -p rust_os
 
-# Build userspace shell (optional - embedded in kernel)
-cargo build --release --target aarch64-unknown-none --bin shell
-
 # Create disk (first time)
 qemu-img create -f raw test_disk.img 10M
 

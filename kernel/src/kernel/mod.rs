@@ -747,245 +747,8 @@ pub extern "C" fn kernel_init_high_half() -> ! {
                 }
             }
 
-            // Test filesystem
-            uart_write_string("\n=== Testing SimpleFS Filesystem ===\r\n");
-
-            // Determine which device to use for persistent storage
-            // Strategy: Use the last device in the array (most likely to be the data disk)
-            let fs_device_idx = blk_devices.len() - 1;
-
-            if blk_devices.len() >= 2 {
-                uart_write_string(&alloc::format!(
-                    "Found {} block devices - using device {} for persistent storage\r\n",
-                    blk_devices.len(), fs_device_idx
-                ));
-            } else {
-                uart_write_string(&alloc::format!(
-                    "Found only 1 block device - using device {} (assuming persistent)\r\n",
-                    fs_device_idx
-                ));
-            }
-
-            // Try to mount existing filesystem first
-            uart_write_string("\nTrying to mount existing filesystem...\r\n");
-            let mut fs_result = crate::system::fs::SimpleFilesystem::mount(&mut blk_devices[fs_device_idx]);
-
-            if fs_result.is_err() {
-                // No existing filesystem, format and mount
-                uart_write_string("No existing filesystem found. Formatting disk...\r\n");
-                match crate::system::fs::SimpleFilesystem::format(&mut blk_devices[fs_device_idx], 20480) {
-                    Ok(()) => {
-                        uart_write_string("✓ Disk formatted successfully!\r\n");
-                        // Flush writes to ensure they persist
-                        uart_write_string("Flushing write cache...\r\n");
-                        if let Err(e) = blk_devices[fs_device_idx].flush() {
-                            uart_write_string("✗ Flush failed: ");
-                            uart_write_string(e);
-                            uart_write_string("\r\n");
-                        } else {
-                            uart_write_string("✓ Write cache flushed\r\n");
-                        }
-                    }
-                    Err(e) => {
-                        uart_write_string("✗ Format failed: ");
-                        uart_write_string(e);
-                        uart_write_string("\r\n");
-                    }
-                }
-
-                // Mount the freshly formatted filesystem
-                uart_write_string("\nMounting filesystem...\r\n");
-                fs_result = crate::system::fs::SimpleFilesystem::mount(&mut blk_devices[fs_device_idx]);
-            }
-
-            match fs_result {
-                Ok(mut fs) => {
-                    uart_write_string(&alloc::format!(
-                        "✓ Filesystem mounted! {} files found\r\n",
-                        fs.file_count()
-                    ));
-
-                    // List files
-                    let files = fs.list_files();
-                    let file_count = fs.file_count();
-
-                    // Skip initialization tests if filesystem already has files
-                    if file_count > 0 {
-                        uart_write_string(&alloc::format!(
-                            "Existing filesystem with {} file entries - skipping initialization tests\r\n",
-                            file_count
-                        ));
-
-                        if !files.is_empty() {
-                            uart_write_string("Visible files:\r\n");
-                            for file in &files {
-                                uart_write_string(&alloc::format!(
-                                    "  - {} ({} bytes)\r\n",
-                                    file.get_name(),
-                                    file.get_size_bytes()
-                                ));
-                            }
-                        } else {
-                            uart_write_string("Warning: file_count > 0 but list_files() returned empty (corruption?)\r\n");
-                        }
-                    } else {
-                        // Fresh filesystem - run initialization tests
-                        uart_write_string("\n--- Testing File Operations ---\r\n");
-                        let is_empty = files.is_empty();
-                        if is_empty {
-                            uart_write_string("✓ File list is empty (as expected on fresh format)\r\n");
-                        }
-
-                        // Create a welcome file on fresh filesystem
-                        if is_empty {
-                        uart_write_string("\nCreating welcome file...\r\n");
-                        match fs.create_file(&mut blk_devices[fs_device_idx], "welcome", 256) {
-                            Ok(()) => {
-                                uart_write_string("✓ Created 'welcome' file\r\n");
-                                // Write welcome message
-                                let welcome_msg = b"Welcome to rOSt!\n\nThis is a Rust ARM64 Operating System.\n\nTry opening the Files menu to browse files,\nor use the Terminal to run shell commands.";
-                                match fs.write_file(&mut blk_devices[fs_device_idx], "welcome", welcome_msg) {
-                                    Ok(()) => uart_write_string("✓ Wrote welcome message\r\n"),
-                                    Err(e) => uart_write_string(&alloc::format!("✗ Failed to write: {}\r\n", e)),
-                                }
-                            }
-                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                        }
-                    }
-
-                    // List files
-                    uart_write_string("\nListing files...\r\n");
-                    let files = fs.list_files();
-                    uart_write_string(&alloc::format!("✓ Found {} file(s):\r\n", files.len()));
-                    for file in &files {
-                        uart_write_string(&alloc::format!(
-                            "  - '{}': {} bytes ({} sectors) at sector {}\r\n",
-                            file.get_name(),
-                            file.get_size_bytes(),
-                            file.get_size_sectors(),
-                            file.get_start_sector()
-                        ));
-                    }
-
-                    // Filesystem tests removed - OS is ready for use!
-                    if false { // Disabled filesystem tests
-                        // Test duplicate file creation (should fail)
-                        uart_write_string("\nTrying to create duplicate file...\r\n");
-                        match fs.create_file(&mut blk_devices[fs_device_idx], "hello", 50) {
-                            Ok(()) => uart_write_string("✗ Should have failed!\r\n"),
-                            Err(e) => uart_write_string(&alloc::format!("✓ Correctly rejected: {}\r\n", e)),
-                        }
-
-                        // Delete a file
-                        uart_write_string("\nDeleting 'test' file...\r\n");
-                        match fs.delete_file(&mut blk_devices[fs_device_idx], "test") {
-                            Ok(()) => uart_write_string("✓ File deleted\r\n"),
-                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                        }
-
-                        // List files again
-                        uart_write_string("\nListing files after deletion...\r\n");
-                        let files = fs.list_files();
-                        uart_write_string(&alloc::format!("✓ Found {} file(s):\r\n", files.len()));
-                        for file in &files {
-                            uart_write_string(&alloc::format!(
-                                "  - '{}': {} bytes\r\n",
-                                file.get_name(),
-                                file.get_size_bytes()
-                            ));
-                        }
-
-                        // Try to delete non-existent file
-                        uart_write_string("\nTrying to delete non-existent file...\r\n");
-                        match fs.delete_file(&mut blk_devices[fs_device_idx], "missing") {
-                            Ok(()) => uart_write_string("✗ Should have failed!\r\n"),
-                            Err(e) => uart_write_string(&alloc::format!("✓ Correctly rejected: {}\r\n", e)),
-                        }
-
-                        // Test file read/write
-                        uart_write_string("\n--- Testing File Read/Write ---\r\n");
-
-                        // Write data to 'hello' file
-                        uart_write_string("\nWriting data to 'hello' file...\r\n");
-                        let test_data = b"Hello, World! This is a test message.";
-                        match fs.write_file(&mut blk_devices[fs_device_idx], "hello", test_data) {
-                            Ok(()) => uart_write_string(&alloc::format!("✓ Wrote {} bytes\r\n", test_data.len())),
-                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                        }
-
-                        // Read data back from 'hello' file
-                        uart_write_string("\nReading data from 'hello' file...\r\n");
-                        let mut read_buffer = [0u8; 100];
-                        match fs.read_file(&mut blk_devices[fs_device_idx], "hello", &mut read_buffer) {
-                        Ok(bytes_read) => {
-                            uart_write_string(&alloc::format!("✓ Read {} bytes\r\n", bytes_read));
-
-                            // Verify data
-                            let matches = read_buffer[..test_data.len()] == test_data[..];
-                            if matches {
-                                uart_write_string("✓ Data verification SUCCESS! Content matches:\r\n");
-                                uart_write_string("  \"");
-                                uart_write_string(core::str::from_utf8(&read_buffer[..test_data.len()]).unwrap_or("???"));
-                                uart_write_string("\"\r\n");
-                            } else {
-                                uart_write_string("✗ Data verification FAILED!\r\n");
-                            }
-                        }
-                        Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                    }
-
-                        // Write to 'data' file (multiple sectors)
-                        uart_write_string("\nWriting 400 bytes to 'data' file...\r\n");
-                        let mut big_data = [0u8; 400];
-                        for i in 0..400 {
-                            big_data[i] = (i % 256) as u8;
-                        }
-                        match fs.write_file(&mut blk_devices[fs_device_idx], "data", &big_data) {
-                            Ok(()) => uart_write_string("✓ Wrote 400 bytes\r\n"),
-                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                        }
-
-                        // Read it back
-                        uart_write_string("\nReading 400 bytes from 'data' file...\r\n");
-                        let mut big_read_buffer = [0u8; 512];
-                        match fs.read_file(&mut blk_devices[fs_device_idx], "data", &mut big_read_buffer) {
-                        Ok(bytes_read) => {
-                            uart_write_string(&alloc::format!("✓ Read {} bytes\r\n", bytes_read));
-
-                            // Verify
-                            let matches = big_read_buffer[..400] == big_data[..];
-                            if matches {
-                                uart_write_string("✓ Data verification SUCCESS! All 400 bytes match!\r\n");
-                                uart_write_string("  First 16 bytes: ");
-                                for i in 0..16 {
-                                    let byte = big_read_buffer[i];
-                                    let hex_chars = b"0123456789ABCDEF";
-                                    unsafe {
-                                        core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(byte >> 4) as usize]);
-                                        core::ptr::write_volatile(0x09000000 as *mut u8, hex_chars[(byte & 0x0F) as usize]);
-                                        core::ptr::write_volatile(0x09000000 as *mut u8, b' ');
-                                    }
-                                }
-                                uart_write_string("\r\n");
-                            } else {
-                                uart_write_string("✗ Data verification FAILED!\r\n");
-                            }
-                            }
-                            Err(e) => uart_write_string(&alloc::format!("✗ Failed: {}\r\n", e)),
-                        }
-                        } // End of is_empty check
-                    } // End of fresh filesystem tests / else block for file_count check
-
-                    // Filesystem mounted successfully
-                    // Shells will be created when terminal windows are opened
-                    uart_write_string("Filesystem ready!\r\n");
-                }
-                Err(e) => {
-                    uart_write_string("✗ Mount failed: ");
-                    uart_write_string(e);
-                    uart_write_string("\r\n");
-                }
-            }
+            // Filesystem handling moved to userspace file server (microkernel architecture)
+            uart_write_string("\n=== Microkernel: Filesystem handled by userspace file server ===\r\n");
         } else {
             uart_write_string("No VirtIO block devices found\r\n");
         }
@@ -1031,7 +794,18 @@ pub extern "C" fn kernel_init_high_half() -> ! {
         uart_write_string("\r\n");
         WINDOW_MANAGER_PID.store(wm_pid, Ordering::Release);
 
-        uart_write_string("[ELF-LOADER] Microkernel boot: only WM loaded, apps spawn on-demand\r\n");
+        // Load the File Server (microkernel filesystem service)
+        uart_write_string("[ELF-LOADER] Loading file server...\r\n");
+        let fs_pid = elf_loader::load_elf_and_spawn(embedded_apps::FILE_SERVER_ELF);
+        uart_write_string("[ELF-LOADER] File server loaded with PID: ");
+        if fs_pid < 10 {
+            unsafe {
+                core::ptr::write_volatile(0x09000000 as *mut u8, b'0' + fs_pid as u8);
+            }
+        }
+        uart_write_string("\r\n");
+
+        uart_write_string("[ELF-LOADER] Microkernel boot: WM and File Server loaded, apps spawn on-demand\r\n");
 
         // NOW spawn the GUI thread after ELF loading completes
         let _gui_thread_id = {

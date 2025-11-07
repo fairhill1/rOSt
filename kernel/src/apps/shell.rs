@@ -827,42 +827,9 @@ impl Shell {
                 crate::kernel::thread::yield_now();
                 self.write_output("Returned from scheduler\r\n");
             }
-            "ipc_receiver" => {
-                self.write_output("=== Loading IPC Receiver ELF ===\r\n");
-                self.write_output("Loading from embedded binary...\r\n");
-
-                let receiver_elf = crate::kernel::embedded_apps::IPC_RECEIVER_ELF;
-                self.write_output(&alloc::format!("ELF size: {} bytes\r\n", receiver_elf.len()));
-
-                let process_id = crate::kernel::elf_loader::load_elf_and_spawn(receiver_elf);
-
-                self.write_output(&alloc::format!("✓ IPC receiver loaded as process {}\r\n", process_id));
-                self.write_output("Receiver is now waiting for messages...\r\n");
-                self.write_output("Run 'exec ipc_sender' to send a message\r\n");
-
-                // Yield to let it run
-                crate::kernel::thread::yield_now();
-                self.write_output("Returned from scheduler\r\n");
-            }
-            "ipc_sender" => {
-                self.write_output("=== Loading IPC Sender ELF ===\r\n");
-                self.write_output("Loading from embedded binary...\r\n");
-
-                let sender_elf = crate::kernel::embedded_apps::IPC_SENDER_ELF;
-                self.write_output(&alloc::format!("ELF size: {} bytes\r\n", sender_elf.len()));
-
-                let process_id = crate::kernel::elf_loader::load_elf_and_spawn(sender_elf);
-
-                self.write_output(&alloc::format!("✓ IPC sender loaded as process {}\r\n", process_id));
-                self.write_output("Sender will send message to receiver...\r\n");
-
-                // Yield to let it run
-                crate::kernel::thread::yield_now();
-                self.write_output("Returned from scheduler\r\n");
-            }
             _ => {
                 self.write_output(&alloc::format!("Unknown program: {}\r\n", parts[1]));
-                self.write_output("Available: shell, image_viewer, ipc_receiver, ipc_sender\r\n");
+                self.write_output("Available: shell, image_viewer\r\n");
             }
         }
     }

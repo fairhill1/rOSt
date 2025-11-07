@@ -16,18 +16,6 @@ pub static IMAGE_VIEWER_ELF: &[u8] = &[];
 //     "/../target/aarch64-unknown-none/release/image_viewer"
 // ));
 
-/// Embedded IPC sender test binary
-pub static IPC_SENDER_ELF: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../target/aarch64-unknown-none/release/ipc_sender"
-));
-
-/// Embedded IPC receiver test binary
-pub static IPC_RECEIVER_ELF: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../target/aarch64-unknown-none/release/ipc_receiver"
-));
-
 /// Embedded CSV viewer ELF binary (temporarily disabled - needs allocator fix)
 pub static CSV_VIEWER_ELF: &[u8] = &[];
 // include_bytes!(concat!(
@@ -45,4 +33,10 @@ pub static WINDOW_MANAGER_ELF: &[u8] = include_bytes!(concat!(
 pub static TERMINAL_ELF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../target/aarch64-unknown-none/release/terminal"
+));
+
+/// Embedded file server ELF binary
+pub static FILE_SERVER_ELF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../target/aarch64-unknown-none/release/file_server"
 ));

@@ -1125,13 +1125,11 @@ pub extern "C" fn _start() -> ! {
             }
 
             messages_processed += 1;
-            // print_debug("WM: Received message, type = ");
 
             // Parse message
             if let Some(msg) = KernelToWM::from_bytes(&buf) {
                 match msg {
                     KernelToWM::InputEvent { sender_pid, mouse_x, mouse_y, event } => {
-                        // print_debug("InputEvent\r\n");
                         // Handle input and determine routing
                         let response = handle_input(event, mouse_x, mouse_y);
 

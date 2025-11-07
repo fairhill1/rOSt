@@ -599,21 +599,6 @@ pub fn test_input_events() -> (bool, bool) {
                             }
                         }
                     } // Close the else block for non-ESC keys
-                } else if let Some(terminal_id) = crate::gui::window_manager::get_focused_terminal_id() {
-                    // Check for ESC to close terminal
-                    if key == 1 { // KEY_ESC = 1 in evdev
-                        crate::gui::window_manager::close_focused_window();
-                        needs_full_redraw = true;
-                    } else {
-                        // VirtIO keyboard uses Linux evdev codes
-                        if let Some(ascii) = evdev_to_ascii(key, modifiers) {
-                            // Pass input to the focused terminal's shell
-                            if let Some(shell) = crate::apps::shell::get_shell(terminal_id) {
-                                shell.handle_char(ascii);
-                            }
-                            needs_full_redraw = true; // Keyboard input requires full redraw
-                        }
-                    }
                 } else if let Some(explorer_id) = crate::gui::window_manager::get_focused_file_explorer_id() {
                     // File explorer keyboard navigation
                     match key {

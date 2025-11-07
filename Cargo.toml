@@ -8,6 +8,7 @@ members = [
     "userspace/image_viewer",
     "userspace/csv_viewer",
     "userspace/window_manager",
+    "userspace/file_server",
 ]
 
 # Shared profile settings for all workspace members

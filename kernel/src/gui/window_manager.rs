@@ -477,7 +477,6 @@ impl WindowManager {
             // Delete the associated console/editor instance
             match window.content {
                 WindowContent::Terminal => {
-                    crate::apps::shell::remove_shell(window.instance_id);
                     crate::gui::widgets::console::remove_console(window.instance_id);
                 },
                 WindowContent::Editor => {
@@ -539,8 +538,6 @@ impl WindowManager {
             let (title, instance_id) = match window_type {
                 WindowContent::Terminal => {
                     let id = crate::gui::widgets::console::create_console();
-                    // Initialize shell for this terminal
-                    crate::apps::shell::create_shell(id);
                     ("Terminal", id)
                 },
                 WindowContent::Editor => {
@@ -1353,7 +1350,6 @@ pub fn open_window_by_menu_index(menu_idx: usize) {
     let (title, instance_id) = match window_type {
         WindowContent::Terminal => {
             let console_id = crate::gui::widgets::console::create_console();
-            crate::apps::shell::create_shell(console_id);
             ("Terminal", console_id)
         }
         WindowContent::Editor => {

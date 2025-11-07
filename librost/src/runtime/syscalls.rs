@@ -158,6 +158,50 @@ pub fn close(fd: i32) -> i32 {
 }
 
 // ============================================================================
+// RAW BLOCK I/O SYSCALLS (for microkernel file server)
+// ============================================================================
+
+pub const SECTOR_SIZE: usize = 512;
+
+/// Read a single 512-byte sector from block device
+///
+/// Args:
+///   device_id: Block device index (0 = first VirtIO block device)
+///   sector: Sector number to read (0-based)
+///   buffer: Must be at least 512 bytes
+///
+/// Returns: 0 on success, negative error code on failure
+pub fn read_block(device_id: u32, sector: u32, buffer: &mut [u8; SECTOR_SIZE]) -> i32 {
+    unsafe {
+        syscall(
+            39, // SyscallNumber::ReadBlock
+            device_id as u64,
+            sector as u64,
+            buffer.as_mut_ptr() as u64
+        ) as i32
+    }
+}
+
+/// Write a single 512-byte sector to block device
+///
+/// Args:
+///   device_id: Block device index (0 = first VirtIO block device)
+///   sector: Sector number to write (0-based)
+///   buffer: Must be exactly 512 bytes
+///
+/// Returns: 0 on success, negative error code on failure
+pub fn write_block(device_id: u32, sector: u32, buffer: &[u8; SECTOR_SIZE]) -> i32 {
+    unsafe {
+        syscall(
+            40, // SyscallNumber::WriteBlock
+            device_id as u64,
+            sector as u64,
+            buffer.as_ptr() as u64
+        ) as i32
+    }
+}
+
+// ============================================================================
 // TIME SYSCALLS
 // ============================================================================
 
@@ -479,15 +523,18 @@ pub fn send_message(dest_pid: u32, data: &[u8]) -> i32 {
 }
 
 /// Receive a message from message queue
-/// timeout_ms: 0 for non-blocking, >0 for timeout in milliseconds
+/// timeout_ms: parameter is IGNORED (kernel syscall is non-blocking)
 /// Returns: number of bytes received on success, 0 if no message, negative on error
-pub fn recv_message(buf: &mut [u8], timeout_ms: u32) -> isize {
+///
+/// NOTE: This is non-blocking. If no message is available, returns 0 immediately.
+/// Caller should implement retry logic if needed.
+pub fn recv_message(buf: &mut [u8], _timeout_ms: u32) -> isize {
     unsafe {
         syscall(
             30, // SyscallNumber::RecvMessage
             buf.as_mut_ptr() as u64,
             buf.len() as u64,
-            timeout_ms as u64
+            0
         ) as isize
     }
 }

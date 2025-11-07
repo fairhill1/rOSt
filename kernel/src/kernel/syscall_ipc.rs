@@ -163,8 +163,6 @@ pub fn sys_shm_unmap(shm_id: i32) -> i64 {
 /// Send a message to another process
 /// Returns: 0 on success, negative error code on failure
 pub fn sys_send_message(dest_pid: u32, data: *const u8, len: usize) -> i64 {
-    // CRITICAL: No debug output in hot path - WM sends many messages per second
-
     if data.is_null() || len == 0 || len > MAX_MESSAGE_SIZE {
         return SyscallError::InvalidArgument.as_i64();
     }
@@ -174,6 +172,11 @@ pub fn sys_send_message(dest_pid: u32, data: *const u8, len: usize) -> i64 {
         Some(pid) => pid as u32,
         None => return SyscallError::InvalidArgument.as_i64(),
     };
+
+    // DEBUG: Only for file server (PID 2) → terminal (PID 4) messages
+    if sender_pid == 2 && dest_pid == 4 {
+        crate::kernel::uart_write_string("[IPC] File server→terminal send_message\r\n");
+    }
 
     // Copy message data from userspace
     let mut msg = IpcMessage {
@@ -189,6 +192,14 @@ pub fn sys_send_message(dest_pid: u32, data: *const u8, len: usize) -> i64 {
     let result = crate::kernel::thread::with_process_mut(dest_pid as usize, |process| {
         process.message_queue.push(msg)
     });
+
+    if sender_pid == 2 && dest_pid == 4 {
+        match result {
+            Some(true) => crate::kernel::uart_write_string("[IPC] → pushed successfully\r\n"),
+            Some(false) => crate::kernel::uart_write_string("[IPC] → QUEUE FULL\r\n"),
+            None => crate::kernel::uart_write_string("[IPC] → PROCESS NOT FOUND\r\n"),
+        }
+    }
 
     match result {
         Some(true) => 0,
@@ -218,6 +229,11 @@ pub fn sys_recv_message(buf: *mut u8, len: usize, _timeout_ms: u32) -> i64 {
     });
 
     if let Some(Some(msg)) = msg {
+        // DEBUG: Terminal receiving from file server
+        if process_id == 4 && msg.sender_pid == 2 {
+            crate::kernel::uart_write_string("[IPC] Terminal received message from file server\r\n");
+        }
+
         // Copy message to user buffer
         let copy_len = core::cmp::min(msg.data_len as usize, len);
         unsafe {
