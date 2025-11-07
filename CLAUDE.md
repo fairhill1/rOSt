@@ -425,21 +425,48 @@ let content_width = core::hint::black_box(window.width - BORDER * 2);
 ```
 
 ### 4. Pattern: "Memory writes disappear"
-**Diagnosis:** Compiler eliminates "dead stores"
-**Fix:** Use `write_volatile()` AND `black_box()` on loop bounds
+**Diagnosis:** Compiler eliminates "dead stores" or loop iterations
+**Fix:** Use `AtomicU8` (or appropriate atomic type) AND `black_box()` on loop bounds
 
-**CRITICAL:** `write_volatile()` alone is NOT enough - it prevents a single write from being optimized away, but the LOOP ITSELF can still be eliminated!
+**CRITICAL:** Even atomic operations alone are NOT enough! LLVM can still optimize away loop iterations despite atomics. You need BOTH:
 
 ```rust
-// ❌ BROKEN - Loop executes but writes are optimized away
-for y in 0..CONSOLE_HEIGHT {
-    for x in 0..CONSOLE_WIDTH {
-        unsafe { core::ptr::write_volatile(&mut buffer[y][x], b' '); }
+// ❌ BROKEN - Even with atomics, loop iterations can be optimized away
+struct Console {
+    buffer: [[AtomicU8; WIDTH]; HEIGHT],
+}
+fn clear(&mut self) {
+    for y in 0..CONSOLE_HEIGHT {
+        for x in 0..CONSOLE_WIDTH {
+            self.buffer[y][x].store(b' ', Ordering::Release);
+        }
     }
 }
-// Symptom: Loop counter increments to expected value, but memory unchanged
+// Symptom: Memory unchanged despite atomic stores
 
-// ✅ FIXED - black_box forces ALL loop iterations to execute
+// ✅ FIXED - AtomicU8 + black_box on loop bounds
+struct Console {
+    buffer: [[AtomicU8; WIDTH]; HEIGHT],  // Semantically correct for shared memory
+}
+fn clear(&mut self) {
+    let h = core::hint::black_box(CONSOLE_HEIGHT);  // Force all iterations
+    let w = core::hint::black_box(CONSOLE_WIDTH);
+    for y in 0..h {
+        for x in 0..w {
+            self.buffer[y][x].store(b' ', Ordering::Release);
+        }
+    }
+}
+```
+
+**Why BOTH are needed:**
+- `AtomicU8`: Semantically correct - tells compiler memory is shared across processes/threads
+- `black_box(bounds)`: Pragmatically necessary - forces compiler to execute ALL loop iterations
+- `Ordering::Release/Acquire`: Ensures proper memory ordering for IPC
+
+**Alternative (if atomics not available):**
+If your target doesn't support AtomicU8 (e.g., some embedded platforms), fall back to:
+```rust
 let h = core::hint::black_box(CONSOLE_HEIGHT);
 let w = core::hint::black_box(CONSOLE_WIDTH);
 for y in 0..h {
@@ -450,13 +477,10 @@ for y in 0..h {
 core::sync::atomic::compiler_fence(Ordering::SeqCst);
 ```
 
-**Why both are needed:**
-- `write_volatile()`: Prevents compiler from eliminating individual write operations
-- `black_box(bounds)`: Prevents compiler from unrolling/eliminating loop iterations
-- `compiler_fence()`: Ensures all writes complete before continuing
-
 **Real-world example (Terminal clear command):**
-The clear loop counted to 2432 cells (proving loop structure existed), but old text remained visible (proving writes were optimized away). Adding `black_box()` to loop bounds fixed it.
+First tried `write_volatile()` + `black_box` - worked. Then tried just `AtomicU8` alone - FAILED (writes disappeared). Final solution: `AtomicU8` + `black_box` - works and is semantically correct.
+
+**Lesson:** Modern optimizers (LLVM) are so aggressive that even atomic operations don't guarantee loop execution. The combination of proper types (atomics) + execution guarantees (black_box) is required for kernel/embedded code with IPC.
 
 ### 5. Faster Debug Workflow
 Instead of fighting the compiler:
